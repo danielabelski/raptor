@@ -24,8 +24,15 @@ VALID_BUG_CLASSES = frozenset({
     "trap", "uninitialised", "fail_open",
 })
 
+# ``suspicious`` labels a REAL defect whose correct grade at the
+# pinned tree sits below finding: the flaw is present and must never
+# grade clean, but a defense-in-depth mitigation (or a checked
+# failure surface) at the pin caps its impact.  Scoring accepts
+# ``finding`` too — the suspicious/finding split is verification-
+# depth noise, mirroring the leniency that lets a ``finding``
+# expectation accept ``suspicious``.
 VALID_EXPECTED_STATUSES = frozenset({
-    "finding", "clean", "dormant",
+    "finding", "clean", "dormant", "suspicious",
 })
 
 # How much source the reviewer must be shown for the label's verdict

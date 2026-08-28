@@ -101,7 +101,9 @@ def _classify(expected: str, actual: str) -> str:
         return "error"
 
     is_positive = actual in CLAIM_STATUSES
-    expected_positive = expected == "finding"
+    # A ``suspicious`` expectation is a real defect: claiming it is a
+    # true positive, grading it clean is a miss.
+    expected_positive = expected in ("finding", "suspicious")
 
     if expected_positive and is_positive:
         return "tp"
@@ -150,10 +152,16 @@ def status_matches(expected: str, actual: str) -> bool:
     """Check if an actual status satisfies an expected ground truth.
 
     Same leniency as the runner's verdict scoring: ``finding`` accepts
-    ``suspicious``; ``clean`` and ``dormant`` accept each other.
+    ``suspicious``; ``clean`` and ``dormant`` accept each other.  A
+    ``suspicious`` expectation (real defect, correct grade capped
+    below finding at the pin) accepts ``finding`` for the symmetric
+    reason — the suspicious/finding split is verification-depth
+    noise; ``clean`` is the miss it exists to catch.
     """
     if expected == "finding":
         return actual in ("finding", "suspicious")
+    if expected == "suspicious":
+        return actual in ("suspicious", "finding")
     if expected == "clean":
         return actual in ("clean", "dormant")
     if expected == "dormant":

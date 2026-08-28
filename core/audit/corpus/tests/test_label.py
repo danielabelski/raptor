@@ -53,7 +53,13 @@ class TestFunctionLabel:
 
     def test_invalid_expected_status(self):
         with pytest.raises(ValueError, match="Invalid expected_status"):
-            _make_label(expected_status="suspicious")
+            _make_label(expected_status="exploitable")
+
+    def test_suspicious_expected_status_accepted(self):
+        # A real defect whose correct grade at the pin is capped below
+        # finding (mitigated / checked-failure surface).
+        label = _make_label(expected_status="suspicious")
+        assert label.expected_status == "suspicious"
 
     def test_error_not_valid_expected_status(self):
         with pytest.raises(ValueError, match="Invalid expected_status"):
@@ -103,7 +109,13 @@ class TestFunctionLabel:
         with pytest.raises(
             ValueError, match="Invalid expected_mode_results status",
         ):
-            _make_label(expected_mode_results={"security": "suspicious"})
+            _make_label(expected_mode_results={"security": "exploitable"})
+
+    def test_expected_mode_results_suspicious_accepted(self):
+        label = _make_label(
+            expected_mode_results={"security": "suspicious"},
+        )
+        assert label.expected_mode_results["security"] == "suspicious"
 
     def test_expected_rule_hits_default_empty(self):
         assert _make_label().expected_rule_hits == {}

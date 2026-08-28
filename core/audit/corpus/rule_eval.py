@@ -977,7 +977,7 @@ def evaluate(
                 continue
             has_hit = bool(joined.get((label.function_id, rule.key)))
             targets = rule_targets_label(rule, label)
-            if label.expected_status == "finding":
+            if label.expected_status in ("finding", "suspicious"):
                 if targets and has_hit:
                     tp.append(label.function_id)
                 elif targets:
@@ -1019,7 +1019,7 @@ def evaluate(
             r for r in label_rows
             if r["function_id"] == label.function_id
         )
-        if label.expected_status == "finding":
+        if label.expected_status in ("finding", "suspicious"):
             cls["finding_total"] += 1
             if row["detected_by"]:
                 cls["finding_detected"] += 1
@@ -1035,7 +1035,7 @@ def evaluate(
     # Rule-coverage gaps — the actionable list for rule authoring.
     gaps: list[dict[str, Any]] = []
     for label in labels:
-        if label.expected_status != "finding":
+        if label.expected_status not in ("finding", "suspicious"):
             continue
         row = next(
             r for r in label_rows

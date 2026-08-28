@@ -204,6 +204,21 @@ class TestEvaluate:
         cls = report["per_class"]["lifecycle"]
         assert cls["finding_detected"] == 1
 
+    def test_suspicious_label_scores_like_a_real_defect(self):
+        # A suspicious-expected label is a real defect a rule may
+        # legitimately target: a targeting hit is a tp, a targeting
+        # rule with no hit is a miss — never an fp.
+        labels = [_label(expected="suspicious")]
+        report = evaluate(labels, _outcomes([_hit()]), [_rule()])
+        (row,) = report["per_rule"]
+        assert row["tp"] == ["net/a.c:f"]
+        assert not row["fp"]
+        assert report["per_class"]["lifecycle"]["finding_detected"] == 1
+        report = evaluate(labels, _outcomes([]), [_rule()])
+        (row,) = report["per_rule"]
+        assert row["misses"] == ["net/a.c:f"]
+        assert not row["fp"]
+
     def test_false_positive_on_clean(self):
         labels = [_label(expected="clean")]
         report = evaluate(

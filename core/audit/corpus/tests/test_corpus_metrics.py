@@ -87,6 +87,19 @@ class TestComputeMetrics:
         assert per_class["aliasing"].fn == 1
         assert per_class["auth"].fp == 1
 
+    def test_suspicious_expectation_is_a_positive(self):
+        rows = [
+            _row("v:f1", "variant", "suspicious", "suspicious"),
+            _row("v:f2", "variant", "suspicious", "finding"),
+            _row("v:f3", "variant", "suspicious", "clean"),
+            _row("v:f4", "variant", "suspicious", "error"),
+        ]
+        agg, per_class, _ = compute_metrics(rows)
+        assert agg.tp == 2
+        assert agg.fn == 1
+        assert agg.error == 1
+        assert agg.fp == 0
+
     def test_dormant_as_clean(self):
         rows = [
             _row("h:f1", "trap", "dormant", "dormant"),
@@ -312,6 +325,13 @@ class TestStatusMatches:
     def test_error_never_matches(self):
         assert not status_matches("clean", "error")
         assert not status_matches("finding", "error")
+        assert not status_matches("suspicious", "error")
+
+    def test_suspicious_accepts_finding_never_clean(self):
+        assert status_matches("suspicious", "suspicious")
+        assert status_matches("suspicious", "finding")
+        assert not status_matches("suspicious", "clean")
+        assert not status_matches("suspicious", "dormant")
 
 
 class TestComputeAttribution:

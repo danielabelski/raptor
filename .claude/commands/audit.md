@@ -48,7 +48,7 @@ Two-phase: Claude runs `/understand --map` (LLM-driven, produces context-map.jso
 - `--schedule {cost,priority}` — parallel review ordering: `cost` packs predicted-longest reviews first (shortest wall time), `priority` reviews the most promising functions first (fastest first finding)
 - `--prior-journal <run-dir>` — run directory whose `review-journal.jsonl` feeds prior finding-grade claims (/agentic per-finding analyses) into review context (repeatable). Covers journals not yet merged into the project index — the `/agentic --gap-audit` post-pass passes its parent run dir here
 - `--prior-claims <N>` — max prior finding-grade claims injected per function, newest first (default: 3; 0 disables the injection)
-- `--dynamic` / `--no-dynamic` — enable/disable dynamic validation (Frida observation / target execution) for confirmed findings; `--no-dynamic` also overrides the project's `dynamic` trust marker
+- `--dynamic` / `--no-dynamic` — enable/disable dynamic validation (Frida observation / target execution) for confirmed findings; `--no-dynamic` also overrides the project's `dynamic` trust marker. The run also resolves the project's `config` trust marker (the `--trust-repo` umbrella) into `repo_trusted`, which arms the trust-gated refutation witnesses — there is no per-run flag for that; the marker is the control (a banner prints when it affects the run)
 - `--binary <path>` — debug binary for binary-oracle enrichment (repeatable); `--binary-auto` auto-detects under common build dirs; `--no-binary-oracle` disables the oracle for this run
 - `--annotations-dir <path>` — annotations directory for team workflows or cross-run review (default: project-level `annotations/` for lifecycle runs, else `$OUTPUT_DIR/annotations`)
 - `--no-validate` — skip the /validate post-pass (not recommended)
@@ -239,6 +239,7 @@ OUTPUT_DIR=/path/to/out libexec/raptor-audit gaps --out /path/to/out
 - `$OUTPUT_DIR/.audit-log.jsonl` — full audit trail (context/sweep/record/feedback actions)
 - `$OUTPUT_DIR/return-census.json` — return-usage census from the consistency pre-pass
 - `$OUTPUT_DIR/prefilter-kills.jsonl` — one record per prefilter/triage kill, with spot-audit corroboration
+- `$OUTPUT_DIR/suppressions.jsonl` — decision audit trail: oracle-earned triage skips plus the refutation lattice's record-or-refuse rows (witness discharges, receipt-floor overrides, merge-fence holds; `dropped: false`)
 - `$OUTPUT_DIR/fuzz-dict.json` + `fuzz.dict` — fuzz handoff (AFL dictionary; auto-discovered by `/fuzz`)
 - `$OUTPUT_DIR/cost-breakdown.json` — per-phase cost ledger reconciliation
 - `$OUTPUT_DIR/llm-telemetry.jsonl` — per-call LLM telemetry

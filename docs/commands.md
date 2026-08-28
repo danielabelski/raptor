@@ -892,13 +892,16 @@ gate its per-run flag already loosens:
 
 | Marker | Equivalent per-run flag | Effect |
 |--------|------------------------|--------|
-| `config` | `--trust-repo` | Lifts BOTH the Claude Code config check (`cc_trust`) and the CodeQL pack-config check (`codeql_trust`) |
+| `config` | `--trust-repo` | Lifts the Claude Code config check (`cc_trust`) and the CodeQL pack-config check (`codeql_trust`); also arms the audit pipeline's trust-gated refutation witnesses |
 | `build` | `--traced-build` | Traced-build C/C++ CodeQL extraction (executes the repo's build system) |
 | `dynamic` | `--dynamic` (audit) | Dynamic validation: Frida observation / target execution defaults on |
 
 Markers are consumed where `/agentic` and `/codeql` load the project's
 persisted binaries, and where the audit pipeline builds
-`dynamic_validation`. Per-run flags always win, in both directions:
+`dynamic_validation` and `repo_trusted` (the `config` marker arms
+audit's trust-gated refutation witnesses; that consumption has no
+per-run flag pair — the marker is the only control, see
+[audit.md](audit.md)). Per-run flags always win, in both directions:
 explicit negative flag (`--no-trust-repo`, `--no-traced-build`,
 `--no-dynamic`) > explicit positive flag > project marker > default
 (off). Whenever a marker affects a run, one banner line prints at

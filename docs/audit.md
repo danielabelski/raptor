@@ -116,6 +116,32 @@ This achieves substantially higher precision than self-critique loops:
 LLM self-refinement without tool feedback is known to *increase* false
 positives, which is why gate G3 below prohibits it.
 
+The refutation direction is guarded the same way.  A reviewer cannot
+talk a mechanical detection away: when a detector receipt (for example
+an uninitialised-return or scatterlist-undersize receipt) stands
+against an unverified dismissal, the dismissal is floored back to
+`suspicious` unless the refuting fact itself carries proof grade --
+verdicts record whether the refuter was a proof or a heuristic, and a
+proof-grade override is only accepted once its record lands in
+`suppressions.jsonl`.  The same fence holds across ensemble merges: a
+standing receipt survives a merge-level demotion to clean (Phase 2)
+unless a recorded proof-grade dominance row lifts it.
+
+Some dismissals can be discharged mechanically instead: trust-gated
+witnesses (Go internal-concurrency, C caller-held-lock, C lifetime,
+and the definite-assignment prover) corroborate a reviewer's dismissal
+of race/lifetime/uninitialised-value claims.  These witnesses only arm
+when the operator has asserted repo trust -- the project's `config`
+trust marker, the `--trust-repo` umbrella (see the trust-marker table
+in [commands.md](commands.md#project)).  There is no per-run audit
+flag for this: the marker is the control, and the usual trust banner
+prints when it affects a run.  Every witness discharge is
+accept-with-record -- the row must land in `suppressions.jsonl`
+(`dropped: false`) or the discharge is refused and the floor stands.
+Binary checklist items additionally journal which refutation gates
+could not run on them, so "no refutation" is distinguishable from
+"gate never ran".
+
 
 ## Strategies
 
@@ -391,7 +417,7 @@ Query audit state across all four layers:
 | `return-census.json` | Return-usage census from the consistency pre-pass (six-value usage enum per call site) |
 | `field-census.json` | Field-access census from the lifecycle channel pre-pass (per-field write sites with rhs provenance, read sites with use context) |
 | `prefilter-kills.jsonl` | One record per prefilter/triage kill (summary row first, then `file`, `function`, `gate`, `reason`, plus spot-audit corroboration fields on sampled rows) |
-| `suppressions.jsonl` | Triage-decision audit trail: oracle-earned skips plus vendored/generated skip/glance routings (same record shape as `/agentic`/`/codeql`) |
+| `suppressions.jsonl` | Decision audit trail: oracle-earned skips, vendored/generated skip/glance routings, plus the refutation lattice's record-or-refuse rows — witness discharges, proof-grade receipt-floor overrides, and merge-fence holds, all `dropped: false` (same record shape as `/agentic`/`/codeql`) |
 | `tier-diagnostics.json` | Per-channel outcome counters (prefilter, semgrep, smt, fail_open, consistency, ...) |
 | `fuzz-dict.json` / `fuzz.dict` | Fuzz handoff: dictionary tokens mined from constants, parse-shape literals, and dispatch keys; `fuzz.dict` is AFL format and is auto-discovered by [/fuzz](fuzzing.md#dictionary-auto-discovery) |
 | `cost-breakdown.json` | Per-phase cost ledger reconciliation (completed + failed-attempt + unattributed spend always sum to the authoritative total; the pre-loop summary pass books as the `summary` phase) |

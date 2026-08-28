@@ -1,0 +1,137 @@
+name: Weekly (corpus measurement)
+
+# The `corpus` marker (deselected by default in pytest.ini, excluded
+# from the nightly's `-m slow` selection) covers the corpus-scale
+# binary-oracle precision drivers: full clone → build (cmake / make /
+# cargo, with coverage instrumentation) → run tests → gcov / llvm-cov →
+# classify over real third-party projects. They are measurement
+# harnesses that RE-DERIVE the published absent-precision numbers, not
+# regression tests — a nightly re-derivation was pure spend (the
+# regex-rust driver alone is a ~11-minute cargo build+run). Weekly
+# keeps the numbers honest against toolchain drift; `pytest -m corpus`
+# or workflow_dispatch reruns them on demand (e.g. after touching the
+# classifier or a driver).
+#
+# The nightly retains the synthetic driver
+# (test_synthetic_driver_end_to_end_via_harness, @pytest.mark.slow,
+# no network, seconds) as the harness smoke, so a broken run_corpus
+# path still surfaces within a day.
+
+on:
+  schedule:
+    # 05:00 UTC Saturday — clear of the daily nightlies (07:00/07:15)
+    # and the Mon/Thu full-suite crons (06:00).
+    - cron: '0 5 * * 6'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: '3.14'
+  VENV_PATH: .venv
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  corpus-drivers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Enable unprivileged user namespaces
+        # Same rationale as nightly.yml: the drivers execute fetched
+        # build systems through the mount-ns sandbox substrate, which
+        # needs unprivileged user namespaces (blocked by AppArmor on
+        # ubuntu-24.04 runners by default) plus newuidmap/newgidmap.
+        run: |
+          sudo apt-get install -y --no-install-recommends uidmap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9  # v9.0.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "requirements*.txt"
+
+      - name: Create venv and install deps
+        run: |
+          uv venv $VENV_PATH
+          source $VENV_PATH/bin/activate
+          uv pip install -r requirements-dev.txt
+
+      - name: Install binary-analysis toolchain (radare2 + LLVM 21)
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends radare2
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 21
+          sudo apt-get install -y --no-install-recommends llvm-21 clang-21
+          sudo update-alternatives --install /usr/bin/clang clang \
+            /usr/bin/clang-21 100
+          sudo update-alternatives --install /usr/bin/clang++ clang++ \
+            /usr/bin/clang++-21 100
+          echo "/usr/lib/llvm-21/bin" >> "$GITHUB_PATH"
+          r2 -v || true
+          clang --version || true
+          /usr/lib/llvm-21/bin/llvm-cov --version || true
+          /usr/lib/llvm-21/bin/llvm-profdata --version || true
+
+      - name: Run corpus-scale drivers
+        run: |
+          source $VENV_PATH/bin/activate
+          python -m pytest -m corpus core packages -q --durations=25 \
+            --junitxml="$RUNNER_TEMP/corpus-results.xml"
+
+      - name: Refuse an all-skipped measurement run
+        # The toolchain install above is continue-on-error (a transient
+        # apt/llvm mirror outage must not read as a precision
+        # regression), and every driver skips-with-reason when its
+        # toolchain is missing. Green-with-all-skips would silently rot
+        # the tier — these five tests are this job's entire purpose, so
+        # a run where none of them executed is a failure of the RUN,
+        # reported as exactly that.
+        run: |
+          python3 - "$RUNNER_TEMP/corpus-results.xml" <<'EOF'
+          import sys
+          import xml.etree.ElementTree as ET
+          root = ET.parse(sys.argv[1]).getroot()
+          suites = root.iter("testsuite")
+          tests = skipped = errors = 0
+          for s in suites:
+              tests += int(s.get("tests", 0))
+              skipped += int(s.get("skipped", 0))
+              errors += int(s.get("errors", 0))
+          executed = tests - skipped
+          print(f"corpus drivers: {tests} collected, "
+                f"{skipped} skipped, {executed} executed")
+          if executed == 0:
+              print("::error::No corpus driver actually ran — toolchain "
+                    "provisioning failed upstream; the measurement tier "
+                    "produced no measurement.")
+              sys.exit(1)
+          EOF
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: weekly-corpus-results
+          path: ${{ runner.temp }}/corpus-results.xml
+          retention-days: 30
+          if-no-files-found: ignore

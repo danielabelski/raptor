@@ -645,7 +645,14 @@ def main() -> int:
             print(f"\n  # Standard environment ({len(tests)} files)")
         else:
             print(f"\n  # {env} ({len(tests)} files)")
-        print(f"  pytest -m \"not slow\" {file_args}")
+        # Mirror pytest.ini's addopts marker expression: a CLI -m
+        # REPLACES addopts' -m entirely, so a bare "not slow" here
+        # would un-deselect the integration and corpus tiers (live
+        # network / minutes-long corpus builds) on equipped hosts.
+        print(
+            "  pytest -m \"not integration and not slow and not corpus\" "
+            f"{file_args}"
+        )
 
     if args.compare:
         _print_comparison(repo, affected_tests, slow_files, durations)

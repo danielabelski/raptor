@@ -11,6 +11,12 @@ name: Nightly (slow + integration)
 #                    GitHub (may flake on external outages; failures
 #                    red-fail the run so they are investigated).
 #
+# The corpus-scale binary-oracle precision drivers carry their own
+# `corpus` marker and run in weekly_corpus.yml, NOT here — they
+# re-derive measurement numbers rather than pin regressions, and at
+# minutes-per-driver they were the bulk of this job's wallclock. The
+# synthetic driver stays `slow` as the nightly harness smoke.
+#
 # Deliberately a standalone workflow, NOT a job in tests.yml: it must
 # never ride tests.yml's `merge_group` force_full path — the merge queue
 # must not block on a live-API hiccup or a multi-minute perf baseline.

@@ -29,10 +29,13 @@ from core.analysis.binary_oracle_precision import (
 # ---------------------------------------------------------------------------
 # Toolchain availability — the ``*_driver_end_to_end_via_harness`` tests
 # clone + build real projects, so they need system tooling beyond the
-# Python deps. They are @pytest.mark.slow (nightly-only); the skipif guards
-# below make a missing toolchain degrade to SKIP-with-reason rather than a
-# red FAIL that looks like a precision regression. The nightly workflow
-# provisions radare2 + LLVM 21 so these actually run there.
+# Python deps. They are @pytest.mark.corpus (weekly corpus workflow /
+# manual only — they re-derive the precision numbers, they are not
+# regression tests; the synthetic driver stays @pytest.mark.slow as the
+# nightly harness smoke). The skipif guards below make a missing
+# toolchain degrade to SKIP-with-reason rather than a red FAIL that
+# looks like a precision regression. The corpus workflow provisions
+# radare2 + LLVM 21 so these actually run there.
 # ---------------------------------------------------------------------------
 def _which_any(candidates: tuple) -> bool:
     return any(shutil.which(c) for c in candidates)
@@ -589,7 +592,7 @@ def test_snappy_stdlib_helpers_filtered_out() -> None:
     assert not _is_stdlib_or_helper("plain_function")
 
 
-@pytest.mark.slow
+@pytest.mark.corpus
 @_NEED_LLVM_CXX
 def test_snappy_driver_end_to_end_via_harness(tmp_path: Path) -> None:
     """Full clone → CMake build (clang+LLVM coverage) → ctest →
@@ -685,7 +688,7 @@ def test_regex_rust_strips_crate_hash_from_demangled_names() -> None:
         "plain::module::function")
 
 
-@pytest.mark.slow
+@pytest.mark.corpus
 @_NEED_LLVM_RUST
 def test_regex_rust_driver_end_to_end_via_harness(tmp_path: Path) -> None:
     """Full clone → cargo build (release + coverage + DWARF) → run test
@@ -705,7 +708,7 @@ def test_regex_rust_driver_end_to_end_via_harness(tmp_path: Path) -> None:
     _assert_precision_threshold(rep, "regex-rust", 0.99)
 
 
-@pytest.mark.slow
+@pytest.mark.corpus
 @_NEED_GCOV_BUILD
 def test_libsodium_driver_end_to_end_via_harness(tmp_path: Path) -> None:
     """Full clone → autogen → configure × 2 → build × 2 → make check ×
@@ -720,7 +723,7 @@ def test_libsodium_driver_end_to_end_via_harness(tmp_path: Path) -> None:
     _assert_precision_threshold(rep, "libsodium", 1.0)
 
 
-@pytest.mark.slow
+@pytest.mark.corpus
 @_NEED_LLVM_CXX
 def test_leveldb_driver_end_to_end_via_harness(tmp_path: Path) -> None:
     """Full clone → patch CMake → CMake build (clang+LLVM coverage) →
@@ -735,7 +738,7 @@ def test_leveldb_driver_end_to_end_via_harness(tmp_path: Path) -> None:
     _assert_precision_threshold(rep, "leveldb", 1.0)
 
 
-@pytest.mark.slow
+@pytest.mark.corpus
 @_NEED_GCOV_BUILD
 def test_zlib_driver_end_to_end_via_harness(tmp_path: Path) -> None:
     """Full clone → build (×2) → test → gcov → classify → cross-tab.

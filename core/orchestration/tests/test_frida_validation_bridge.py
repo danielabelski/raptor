@@ -848,14 +848,20 @@ class TestObservedCallsites:
         binary = tmp_path / "victim"
         subprocess.run(["gcc", "-O0", "-g", "-no-pie", "-o",
                         str(binary), str(src)],
-                       check=True, capture_output=True, timeout=30)
+                       check=True, capture_output=True, timeout=60)
         # Find the call instruction's address from the symbol table:
         # use the main symbol's address + a small scan is overkill —
         # instead resolve main's address and let the dual-candidate
         # logic prove the plumbing: emit a callsite whose offset IS
         # main's vaddr (non-PIE → file vaddr == runtime address).
+        # 60s: generous headroom for a starved runner (nm on this tiny
+        # binary is milliseconds when healthy — the timeout exists only
+        # to bound a hung process, not to assert speed; a CI runner
+        # under disk/CPU pressure has been observed blowing a 10s
+        # budget here). Matches the gcc-class tool-subprocess budgets
+        # this tier uses elsewhere.
         nm = subprocess.run(["nm", str(binary)], capture_output=True,
-                            text=True, timeout=10, check=True)
+                            text=True, timeout=60, check=True)
         main_addr = next(int(line.split()[0], 16)
                          for line in nm.stdout.splitlines()
                          if line.strip().endswith(" T main"))

@@ -1,22 +1,22 @@
 {
   "by_ecosystem": {
     "Cargo": {
-      "spearman_rho": 0.5389764323286966,
+      "spearman_rho": 0.5360069996353444,
       "top_20_precision": 0.75,
-      "total": 305,
+      "total": 311,
       "with_signal": 39
     },
     "Go": {
-      "spearman_rho": 0.3465679056148751,
+      "spearman_rho": 0.34253851359251186,
       "top_20_precision": 1.0,
-      "total": 3475,
+      "total": 3537,
       "with_signal": 217
     },
     "Maven": {
-      "spearman_rho": 0.3976111360369721,
+      "spearman_rho": 0.4052213573788122,
       "top_20_precision": 1.0,
-      "total": 771,
-      "with_signal": 72
+      "total": 802,
+      "with_signal": 75
     },
     "NuGet": {
       "spearman_rho": 0.696920442030891,
@@ -25,42 +25,42 @@
       "with_signal": 7
     },
     "Packagist": {
-      "spearman_rho": 0.4539144842424848,
-      "top_20_precision": 0.65,
-      "total": 375,
-      "with_signal": 74
+      "spearman_rho": 0.46566449218479417,
+      "top_20_precision": 0.6,
+      "total": 415,
+      "with_signal": 82
     },
     "PyPI": {
-      "spearman_rho": 0.6149273567907677,
-      "top_20_precision": 0.9,
-      "total": 397,
-      "with_signal": 70
+      "spearman_rho": 0.6366129380772835,
+      "top_20_precision": 0.95,
+      "total": 404,
+      "with_signal": 74
     },
     "RubyGems": {
-      "spearman_rho": 0.4327195530787832,
+      "spearman_rho": 0.4871067862413865,
       "top_20_precision": 1.0,
       "total": 730,
       "with_signal": 70
     },
     "npm": {
-      "spearman_rho": 0.7100289458586605,
+      "spearman_rho": 0.7273447297051142,
       "top_20_precision": 1.0,
-      "total": 3277,
-      "with_signal": 1250
+      "total": 3396,
+      "with_signal": 1367
     }
   },
   "corpus_provenance": {
-    "epss_signals.json": "2026-08-28T20:29:56Z",
-    "exploitdb_signals.json": "2026-08-28T20:29:43Z",
-    "kev_signals.json": "2026-08-28T20:29:42Z",
-    "metasploit_signals.json": "2026-08-28T20:29:42Z"
+    "epss_signals.json": "2026-08-25T06:27:53Z",
+    "exploitdb_signals.json": "2026-08-25T06:27:37Z",
+    "kev_signals.json": "2026-08-25T06:27:37Z",
+    "metasploit_signals.json": "2026-08-25T06:27:38Z"
   },
-  "findings_total": 9365,
-  "findings_with_score": 9365,
-  "findings_with_signal": 1799,
+  "findings_total": 9630,
+  "findings_with_score": 9630,
+  "findings_with_signal": 1931,
   "notes": [],
   "snapshot_date": "2026-08-28",
-  "spearman_rho": 0.5191720912989658,
+  "spearman_rho": 0.5364866852856294,
   "threshold_spearman": 0.4,
   "threshold_top_20": 0.5,
   "top_20_precision": 1.0,

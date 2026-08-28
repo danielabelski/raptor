@@ -485,7 +485,7 @@ class TestSerialization:
 # ---------------------------------------------------------------------------
 
 
-def _deeply_nested_c(n: int = 20000) -> tuple[str, int]:
+def _deeply_nested_c(n: int = 4000) -> tuple[str, int]:
     """(source, 1-based sink line) — a sink under *n* nested ifs."""
     lines = ["void f(void) {"]
     lines.extend(["if (x) {"] * n)
@@ -494,15 +494,30 @@ def _deeply_nested_c(n: int = 20000) -> tuple[str, int]:
     return "\n".join(lines) + "\n", n + 2
 
 
-@pytest.mark.slow
 class TestDeepNesting:
     """CST depth tracks source nesting depth — the line/call/sink
-    walkers must not recurse per level (regression: 20k-deep nesting
+    walkers must not recurse per level (regression: deep nesting
     raised RecursionError in all three).
 
-    slow: parsing a 20k-deep CST costs ~15-25s per test — genuine
-    tree-sitter work, over the default tier's 10s budget. The nightly
-    slow tier (`pytest -m slow`) keeps the regression pinned."""
+    4000 levels (~8000 CST nodes deep) with the recursion limit pinned
+    to the 1000 default means a walker that recursed per level fails
+    loudly regardless of what any third-party import did to the
+    process-global limit, while the parse stays around a second —
+    parse cost grows superlinearly with depth (20k-deep cost 15-25s),
+    and the extra depth bought no extra proof. At this size the pin
+    runs in the default tier on every PR instead of waiting for the
+    nightly."""
+
+    @pytest.fixture(autouse=True)
+    @staticmethod
+    def _default_recursion_limit():
+        import sys
+        prior = sys.getrecursionlimit()
+        sys.setrecursionlimit(1000)
+        try:
+            yield
+        finally:
+            sys.setrecursionlimit(prior)
 
     def test_sink_names_mode_survives(self):
         src, sink_line = _deeply_nested_c()

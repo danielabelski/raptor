@@ -921,7 +921,14 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                  being run — unioned with readable_paths into the
                  Landlock read allowlist and the mount-ns read-only
                  bind set, so a tool installed outside the system dirs
-                 is visible and executable inside the sandbox.
+                 is visible and executable inside the sandbox. PATH
+                 entries under a declared dir also survive the child
+                 env's home-scrub (home-rooted PATH entries are
+                 otherwise dropped), so a $HOME-resident toolchain
+                 declared here resolves by name. A multi-dir toolchain
+                 needs EVERY dir it execs through declared — rustup's
+                 ~/.cargo/bin proxies re-exec ~/.rustup/toolchains/*,
+                 so both dirs belong in the list.
                  Extended by the --sandbox-tool-path CLI flag. Callers
                  spawning user-local toolchains under strict/
                  restrict_reads need this (see
@@ -2663,8 +2670,16 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                 # operator's home (~/.local/bin, ~/bin) leak the home
                 # path while pointing at directories that are invisible
                 # (mount-ns) or read-restricted (Landlock) inside the
-                # sandbox anyway. Caller-supplied env= dicts stay
-                # verbatim, as documented below.
+                # sandbox anyway. Exception: entries under a DECLARED
+                # tool_paths dir stay — the caller explicitly named that
+                # toolchain dir, the same declaration already binds it
+                # read-only into the mount view and grants it in the
+                # Landlock read allowlist, and dropping it from PATH
+                # made the declared tool unresolvable (execvp ENOENT,
+                # exit 127) on hosts whose toolchains live under $HOME
+                # (rustup's ~/.cargo/bin being the canonical case).
+                # Caller-supplied env= dicts stay verbatim, as
+                # documented below.
                 _scrubbed = dict(kwargs["env"])
                 _scrubbed.pop("PWD", None)
                 _scrubbed.pop("OLDPWD", None)  # belt-and-braces (allowlist already drops it)
@@ -2680,12 +2695,34 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                 _home_prefix = os.path.expanduser("~")
                 _path_val = _scrubbed.get("PATH")
                 if _path_val:
+                    # Both spellings of each declared tool dir: the
+                    # literal (what a PATH entry usually matches) and
+                    # the resolved one (covers a symlinked declaration
+                    # meeting a resolved PATH entry, and vice versa).
+                    _declared_tool_dirs: list[str] = []
+                    for _tp in (tool_paths or []):
+                        if not _tp:
+                            continue
+                        for _cand in (os.path.normpath(_tp),
+                                      os.path.realpath(_tp)):
+                            if _cand not in _declared_tool_dirs:
+                                _declared_tool_dirs.append(_cand)
+
+                    def _under_declared_tool_dir(entry: str) -> bool:
+                        for _e in (os.path.normpath(entry),
+                                   os.path.realpath(entry)):
+                            for _d in _declared_tool_dirs:
+                                if _e == _d or _e.startswith(_d + os.sep):
+                                    return True
+                        return False
+
                     _kept = [
                         c for c in _path_val.split(os.pathsep)
                         if c
-                        and not c.startswith("/home/")
-                        and not (c == _home_prefix
-                                 or c.startswith(_home_prefix + os.sep))
+                        and (not (c.startswith("/home/")
+                                  or c == _home_prefix
+                                  or c.startswith(_home_prefix + os.sep))
+                             or _under_declared_tool_dir(c))
                     ]
                     if _kept:
                         _scrubbed["PATH"] = os.pathsep.join(_kept)

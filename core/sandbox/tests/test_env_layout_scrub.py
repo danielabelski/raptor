@@ -93,6 +93,36 @@ class TestSandboxedChildLayoutScrub(unittest.TestCase):
                 f"{comp!r}",
             )
 
+    def test_declared_tool_path_survives_home_scrub(self):
+        """A home-rooted PATH entry under a DECLARED tool_paths dir must
+        stay in the child PATH: the same declaration binds the dir into
+        the mount view and grants it to Landlock, and dropping the PATH
+        entry left the declared tool unresolvable by name (execvp
+        ENOENT, exit 127 — the rustup ~/.cargo/bin failure shape).
+        Undeclared home-rooted entries keep getting scrubbed."""
+        home = os.path.expanduser("~")
+        try:
+            holder = tempfile.TemporaryDirectory(
+                prefix=".toolseam-", dir=home)
+        except OSError:
+            self.skipTest("home directory not writable")
+        self.addCleanup(holder.cleanup)
+        tooldir = os.path.join(holder.name, "bin")
+        os.makedirs(tooldir)
+        old_path = os.environ.get("PATH", "")
+        os.environ["PATH"] = tooldir + os.pathsep + old_path
+        self.addCleanup(os.environ.__setitem__, "PATH", old_path)
+
+        env = self._dump()["env"]
+        self.assertNotIn(
+            tooldir, env.get("PATH", "").split(os.pathsep),
+            "undeclared home-rooted PATH entry survived the scrub")
+
+        env = self._dump(tool_paths=[tooldir])["env"]
+        self.assertIn(
+            tooldir, env.get("PATH", "").split(os.pathsep),
+            "declared tool_paths dir was scrubbed out of the child PATH")
+
     def test_default_cwd_is_output_dir(self):
         dump = self._dump()
         self.assertEqual(

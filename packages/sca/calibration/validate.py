@@ -153,13 +153,21 @@ def validate_corpus(
         notes=notes,
     )
 
+    prune_dir: Path | None = None
     if out_path is None:
         validation_dir = corpus_dir / "validation"
         validation_dir.mkdir(parents=True, exist_ok=True)
         out_path = validation_dir / f"{snapshot}.json"
+        prune_dir = validation_dir
     else:
         out_path.parent.mkdir(parents=True, exist_ok=True)
     save_json(out_path, report.to_dict(), sort_keys=True)
+    if prune_dir is not None:
+        # Retention: the dated snapshots accumulate one file per run
+        # with no other pruning mechanism; keep the consumer-visible
+        # window (~6 months of weekly history) bounded.
+        from ._snapshots import VALIDATION_KEEP, prune_dated_snapshots
+        prune_dated_snapshots(prune_dir, keep=VALIDATION_KEEP)
     return report
 
 

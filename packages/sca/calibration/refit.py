@@ -826,13 +826,18 @@ def _emit_joint_report(
     """Mirror of ``_emit_report`` for the joint variant. Writes to
     ``<corpus_dir>/refit/<date>.joint.json`` by default so a joint
     refit doesn't overwrite a same-day single-pass refit."""
+    prune_dir: Path | None = None
     if out_path is None:
         refit_dir = corpus_dir / "refit"
         refit_dir.mkdir(parents=True, exist_ok=True)
         out_path = refit_dir / f"{report.snapshot_date}.joint.json"
+        prune_dir = refit_dir
     else:
         out_path.parent.mkdir(parents=True, exist_ok=True)
     save_json(out_path, report.to_dict(), sort_keys=True)
+    if prune_dir is not None:
+        from ._snapshots import REFIT_KEEP, prune_dated_snapshots
+        prune_dated_snapshots(prune_dir, keep=REFIT_KEEP)
     return report
 
 
@@ -842,13 +847,20 @@ def _emit_report(
     """Write the report to disk + return it. The CLI gates on
     return-value status; tests bypass the write by stubbing
     out_path to a tmp file."""
+    prune_dir: Path | None = None
     if out_path is None:
         refit_dir = corpus_dir / "refit"
         refit_dir.mkdir(parents=True, exist_ok=True)
         out_path = refit_dir / f"{report.snapshot_date}.json"
+        prune_dir = refit_dir
     else:
         out_path.parent.mkdir(parents=True, exist_ok=True)
     save_json(out_path, report.to_dict(), sort_keys=True)
+    if prune_dir is not None:
+        # Retention: dated refit reports accumulate one per run with
+        # no other pruning mechanism.
+        from ._snapshots import REFIT_KEEP, prune_dated_snapshots
+        prune_dated_snapshots(prune_dir, keep=REFIT_KEEP)
     return report
 
 

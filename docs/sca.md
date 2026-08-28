@@ -110,6 +110,12 @@ Registries supported: PyPI, npm, crates.io, RubyGems,
 Go (proxy.golang.org), Maven Central, Packagist, NuGet, Debian Sources,
 Homebrew. Run `raptor-sca health` to probe all ten in one shot.
 
+Bundled data (the popular-package lists behind the typosquat
+heuristics, the KEV/EPSS calibration corpus, and the calibration
+project samples) is kept fresh by scheduled repository workflows —
+see [CI controls](ci-controls.md) for the refresh cadence and the
+matching manual scripts under `packages/sca/scripts/`.
+
 ### Scan Flags
 
 ```
@@ -119,6 +125,16 @@ Homebrew. Run `raptor-sca health` to probe all ten in one shot.
 --no-reachability         skip module-level reachability scan
 --no-kev / --no-epss      skip the named enrichment
 --offline                 skip network; cache-only
+--use-offline-db          route OSV lookups through a local sqlite copy of
+                          the OSV daily dumps (air-gapped environments;
+                          --offline-db-path overrides its location)
+--baseline <findings.json> additionally write baseline-delta.json/.md with
+                          only NEW / CLEARED findings since a previous run
+--pr-comment              with --baseline, also write pr-comment.md for
+                          `gh pr comment --body-file` (--pr-comment-label
+                          sets the header label)
+--html                    write a self-contained report.html alongside
+                          report.md
 --skip-triage             skip LLM triage pass
 --trust-repo              honour repo-shipped policy files this run
 --no-trust-repo           keep strict checks, overriding --trust-repo
@@ -334,10 +350,19 @@ The diff command's exit code is 0 = no regression at threshold,
 
 | Flag | Purpose |
 |------|---------|
-| `--fail-on-severity <level>` | Exit non-zero if any finding meets or exceeds this severity (low / medium / high / critical) |
-| `--fail-on-kev` | Exit non-zero if any finding is in the CISA Known Exploited Vulnerabilities catalogue |
+| `--fail-on-severity <level>` | Exit non-zero if any vulnerable-dependency finding meets or exceeds this severity (info / low / medium / high / critical) |
+| `--fail-on-kev` | Exit non-zero if any finding is in the CISA Known Exploited Vulnerabilities catalogue, even below `--fail-on-severity` |
+| `--fail-on-supply-chain <level>` | Exit non-zero if any supply-chain finding meets or exceeds this severity |
+| `--fail-on-hygiene <level>` | Exit non-zero if any hygiene finding meets or exceeds this severity |
+| `--fail-on-license <level>` | Exit non-zero if any license finding meets or exceeds this severity |
+| `--fail-on-capability-drift` | Exit non-zero on any image capability-drift finding, regardless of severity |
+| `--max-added-capability-buckets <N>` | Exit non-zero when a capability-drift finding adds more than N capability buckets (0 = any new bucket fails) |
+| `--include-suppressed` | Evaluate findings marked suppressed in `.raptor-sca-suppress.yml` (default: skip them) |
 | `--skip-review` | Skip LLM review pass (faster, CI-appropriate) |
 | `--skip-triage` | Skip LLM triage pass |
+
+The same `--fail-on-*` flags work on `render findings.json`, so a CI
+job can scan once and gate on the persisted findings.
 
 ---
 

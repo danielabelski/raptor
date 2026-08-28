@@ -110,6 +110,7 @@ libexec/raptor-sca-run /path/to/project --offline
 | File | Shape | Consumer |
 |---|---|---|
 | `findings.json` | List of findings (canonical schema) | other RAPTOR tools, CI |
+| `findings.sarif` | Same findings, SARIF 2.1.0 | code-scanning upload, IDEs |
 | `report.md` | Severity-sorted markdown | humans |
 | `sbom.cdx.json` | CycloneDX 1.5 + VEX | Dependency-Track, CycloneDX CLI |
 | `coverage-sca.json` | Files examined | RAPTOR coverage layer |
@@ -122,7 +123,7 @@ libexec/raptor-sca-run /path/to/project --offline
 - ~30 manifest/lockfile parsers, including `pom.xml`, `build.gradle`, `gradle.lockfile`, `package.json`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `requirements*.txt`, `pyproject.toml`, `Pipfile.lock`, `poetry.lock`, `uv.lock`, `Cargo.lock`, `go.mod`, `Gemfile.lock`, `composer.lock`, `vcpkg.json`, `conanfile.*`, Helm charts, `.gitmodules`, and CMake FetchContent.
 - 12 ecosystems queried via OSV, including Maven / npm / PyPI / Cargo / Go / RubyGems / NuGet / Packagist / vcpkg / ConanCenter / OSS-Fuzz / GitHub Actions.
 - KEV (CISA known-exploited) and EPSS (FIRST.org probability) are always checked when network is available; both degrade gracefully on outage.
-- Reachability is **module-level** (Python AST + npm import sweep) — flags whether the dep is imported in non-test code, not whether the vulnerable function is called.
+- Reachability is **two-tier**: module-level import evidence (Python AST, npm import sweep, per-ecosystem scanners) plus function-level checks when the advisory names affected functions (`likely_called` / `not_function_reachable` verdicts). See `docs/sca.md` for the verdict table.
 - All optional dependencies (`defusedxml`, `packaging`, `tomli` on 3.10-, `PyYAML`) degrade gracefully — missing one only narrows ecosystem coverage.
 - **LLM auto-detection:** When an LLM provider is configured, `fix --allow-major` automatically analyses major-version-bump CVEs against your project's actual call sites. Safe bumps are included; breaking changes show migration guidance. Use `--no-llm` to force mechanical-only mode.
 

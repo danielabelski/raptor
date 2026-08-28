@@ -403,8 +403,25 @@ def _projects_registry_in_tmp(monkeypatch):
 # ---------------------------------------------------------------------------
 #
 # When RAPTOR_RANDOMISE_TESTS is set (to any value, or a numeric seed),
-# shuffle the collected test items so order-dependent failures surface
-# early.  No external plugin required.
+# randomise the collected test order so order-dependent failures
+# surface early.  No external plugin required.
+#
+# Scope-grouped: the MODULE order is shuffled, then the class-bucket
+# order within each module, then the test order within each bucket.  A
+# flat item shuffle scattered every module across the session, so
+# pytest re-ran module- and class-scoped fixtures once per contiguous
+# fragment — observed as 4-6 re-runs of the multi-second audit-prep
+# module fixtures per shuffled session (and the same fragmentation for
+# expensive class fixtures within their module), a pure fixture-cost
+# multiplier on the single-process nightly tier.  Grouping bounds every
+# module and class fixture to one setup per session while keeping the
+# order-dependence classes the tier has actually caught: cross-module
+# state leaks (module order still random), cross-class coupling (class
+# order within the module still random), and intra-class coupling
+# (item order still random).  What it no longer exercises is one
+# scope's test running in the MIDDLE of another scope's fragment —
+# pairs of that shape are covered per-worker in the xdist PR tier,
+# where distribution interleaves scopes anyway.
 #
 # Deterministic: same seed → same order.  The seed is printed in the
 # terminal header so a failure can be reproduced.
@@ -422,7 +439,34 @@ def pytest_collection_modifyitems(items):
         seed = int.from_bytes(
             _RANDOMISE_SEED_RAW.encode()[:8], "little"
         ) % 2**31
-    _random.Random(seed).shuffle(items)
+    rng = _random.Random(seed)
+
+    # module path → ordered class-buckets → items.  The bucket key is
+    # the nodeid minus its final component: module-level functions
+    # bucket per module, class methods per class (parametrised ids
+    # keep their function's bucket).
+    module_order: list[str] = []
+    module_buckets: dict[str, dict[str, list]] = {}
+    for item in items:
+        parts = item.nodeid.split("::")
+        module_key = parts[0]
+        bucket_key = "::".join(parts[:-1]) or module_key
+        buckets = module_buckets.get(module_key)
+        if buckets is None:
+            module_buckets[module_key] = buckets = {}
+            module_order.append(module_key)
+        buckets.setdefault(bucket_key, []).append(item)
+    rng.shuffle(module_order)
+    reordered = []
+    for module_key in module_order:
+        buckets = module_buckets[module_key]
+        bucket_order = list(buckets)
+        rng.shuffle(bucket_order)
+        for bucket_key in bucket_order:
+            bucket = buckets[bucket_key]
+            rng.shuffle(bucket)
+            reordered.extend(bucket)
+    items[:] = reordered
 
 
 def pytest_report_header():

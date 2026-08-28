@@ -25,6 +25,7 @@ assessment work.
 | `--findings <file>` | Validate pre-existing findings from a SARIF or JSON file instead of scanning first |
 | `--binary <path>` | Provide a compiled binary for Stage E feasibility analysis |
 | `--skip-feasibility` | Skip Stage E entirely (useful when no binary is available) |
+| `--dynamic` / `--no-dynamic` | Grant/deny dynamic execution (Stage E auto sink-watch, witness execution); explicit flag wins, else the project's `dynamic` trust marker, else off |
 | `--rank` | Stage 0: LLM re-rank of the bridge's priority targets most-promising-first before persistence (ordering only; head- and budget-capped) |
 | `--out <dir>` | Write output to a specific directory instead of the default |
 
@@ -263,6 +264,21 @@ feasibility dimension.  Env-built binaries carry
 `feasibility.binary_provenance: "env-built"`; every failure degrades
 to the skip with the reason printed.
 
+**Auto sink-watch** (dynamic trust required): when attack paths name
+watchable sink functions and findings carry a matched compiled binary,
+the prep spawns the binary under a [Frida](frida.md) sink watch
+rendered from `attack-paths.json` and folds the runtime evidence back
+into the paths (`runtime_evidence`, `callsite_match`, proximity
+floor). A finding's string `poc.payload` is delivered on stdin so
+input-gated sinks earn evidence too. Promote-only: a sink firing earns
+evidence, silence changes nothing. Evidence is scoped per binary, and
+launch freshness lives in a helper-owned ledger
+(`auto-sink-watch.json`) outside the watched process's write grant, so
+a hostile target cannot forge run metadata. Gated on the same operator
+grant as witness execution (`--dynamic` / `--no-dynamic` / project
+`dynamic` trust marker); skipped with an explanatory line when not
+granted.
+
 **Mitigation matrix** (`--mitigation-matrix`, same build gate): the
 target is rebuilt as the two canonical posture variants (hardened /
 soft) and re-analysed alongside the as-built artifact, producing
@@ -412,9 +428,14 @@ automatically.
 
 ### Frida bridge
 
-When [Frida](frida.md) runtime evidence is collected during Stage B, it
-annotates attack-path steps with `runtime_evidence.function_observed: true` and
-observed call counts.  This evidence:
+[Frida](frida.md) runtime evidence -- collected manually during
+analysis or auto-launched by Stage E's sink watch -- annotates
+attack-path steps with `runtime_evidence.function_observed: true` and
+observed call counts.  On debug-built targets the bridge additionally
+resolves target-binary call sites to source (`observed_callsites`) and
+marks `callsite_match: true` when an observed call lands on the
+finding's own location -- site-level proof, not just function-level.
+This evidence:
 
 - Provides empirical proof of code reachability (Stage C).
 - Floors PROXIMITY at 6 (Stage B).

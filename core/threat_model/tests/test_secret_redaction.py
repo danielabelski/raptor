@@ -218,7 +218,7 @@ def test_improvised_secret_value_keys_dropped_but_label_keys_kept(tmp_path):
     """Keys mentioning the material (``secret_value``, camel-case
     variants) are dropped wholesale even when the value is too short
     for the shape heuristics; label-ish keys (``secret_type``) stay."""
-    from core.threat_model import _redact_secret_entry
+    from core.threat_model import _sanitise_hardcoded_literal_entry
 
     entry = {
         "name": "db password",
@@ -228,7 +228,7 @@ def test_improvised_secret_value_keys_dropped_but_label_keys_kept(tmp_path):
         "file": "db.py",
         "line": 5,
     }
-    redacted = _redact_secret_entry(entry)
+    redacted = _sanitise_hardcoded_literal_entry(entry)
     assert redacted["secret_value"] == "[REDACTED]"
     assert redacted["secretValue"] == "[REDACTED]"
     assert redacted["secret_type"] == "postgres-dsn-password"

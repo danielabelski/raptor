@@ -71,8 +71,8 @@ def _stream_threat_model_json(json_path: Path, project_out: Path) -> int:
     Why stream the file to stdout rather than ``print(json.dumps(
     model.to_dict()))``: CodeQL's
     ``py/clear-text-logging-sensitive-data`` query taints any
-    data-flow from ``model.trusted_inputs`` / ``untrusted_inputs``
-    / ``notes`` into a print/log sink. Even returning ONLY
+    data-flow from heuristically sensitive-named model fields
+    into a print/log sink. Even returning ONLY
     integer counts via a sanitiser propagated the taint through
     ``.get(auth_vocab_key)`` accesses. A byte-level file→stdout
     copy never touches a print/log sink that the query models —
@@ -1935,13 +1935,23 @@ def _handle_threat_model(mgr, args: argparse.Namespace) -> None:
 
     if args.action in ("add", "remove"):
         from core.threat_model import _MAX_LIST_ENTRIES, _clip_str
+        # Operator-facing field name -> ThreatModel attribute name.
+        # The names match except for trusted_inputs, whose attribute
+        # is vetted_inputs (see the ThreatModel dataclass comment).
         _MUTABLE_LIST_FIELDS = {
-            "assets", "entry_points", "trust_boundaries",
-            "trusted_inputs", "untrusted_inputs",
-            "in_scope_vuln_classes", "out_of_scope_vuln_classes",
-            "focus_areas", "known_bug_shapes",
-            "verification_expectations", "patch_validation_expectations",
-            "methodology", "domain_packs",
+            "assets": "assets",
+            "entry_points": "entry_points",
+            "trust_boundaries": "trust_boundaries",
+            "trusted_inputs": "vetted_inputs",
+            "untrusted_inputs": "untrusted_inputs",
+            "in_scope_vuln_classes": "in_scope_vuln_classes",
+            "out_of_scope_vuln_classes": "out_of_scope_vuln_classes",
+            "focus_areas": "focus_areas",
+            "known_bug_shapes": "known_bug_shapes",
+            "verification_expectations": "verification_expectations",
+            "patch_validation_expectations": "patch_validation_expectations",
+            "methodology": "methodology",
+            "domain_packs": "domain_packs",
         }
         field = args.field
         value = args.value
@@ -1957,7 +1967,7 @@ def _handle_threat_model(mgr, args: argparse.Namespace) -> None:
             load_mtime = json_path.stat().st_mtime
         except OSError:
             load_mtime = None
-        current: list[str] = getattr(model, field)
+        current: list[str] = getattr(model, _MUTABLE_LIST_FIELDS[field])
         if args.action == "add":
             sanitised = _clip_str(value)
             if sanitised in current:

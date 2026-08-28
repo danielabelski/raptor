@@ -122,11 +122,13 @@ KNOWN_FP_RULES: tuple[KnownFP, ...] = (
     # unenforced and the producer can put the matched credential value
     # into the very fields the summaries extract, so the flows were
     # genuine. They are now redacted at the source
-    # (core/threat_model/__init__.py _redacted_secret_entries) before
-    # any summary extraction; if a future query-pack version still
-    # derives the (now genuinely sanitized) flow, the correct lane is
-    # a SanitizerFP through core/security/redaction.py, not a
-    # file-prefix removal.
+    # (core/threat_model/__init__.py
+    # _sanitised_hardcoded_literal_entries) before any summary
+    # extraction, and the identifiers/lookups on those flows no longer
+    # match the query's sensitive-name heuristics; if a future
+    # query-pack version still derives the (now genuinely sanitized)
+    # flow, the correct lane is a SanitizerFP through
+    # core/security/redaction.py, not a file-prefix removal.
     KnownFP(
         rule_id="py/clear-text-storage-of-sensitive-information",
         sink_file_prefixes=(

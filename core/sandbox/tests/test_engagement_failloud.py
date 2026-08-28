@@ -283,6 +283,68 @@ class TestExecStatusPipe:
             run(["/bin/echo", "x"], capture_output=True, text=True)
         assert "Landlock" in str(ei.value)
 
+    def test_drain_status_pipe_keeps_bytes_and_warns_on_read_error(
+            self, caplog):
+        # An unreadable status pipe is not EOF: the drain must keep any
+        # bytes it read before the error (the category byte comes
+        # first, so a truncated payload still names the failed step)
+        # and warn — silently mapping the error to None made a
+        # reported setup failure indistinguishable from a clean exec.
+        import logging
+        import os
+        from unittest import mock
+
+        from core.sandbox._spawn import _drain_status_pipe
+
+        r, w = os.pipe()
+        os.set_blocking(r, False)
+        os.write(w, b"X:exec: permission denied")
+        os.close(w)
+        real_read = os.read
+        calls = {"n": 0}
+
+        def flaky_read(fd, size):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return real_read(fd, 4)  # partial: category + "exe"
+            raise OSError(5, "Input/output error")
+
+        parent_fds = {r}
+        with mock.patch.object(os, "read", side_effect=flaky_read), \
+                caplog.at_level(logging.WARNING,
+                                logger="core.sandbox._spawn"):
+            status = _drain_status_pipe(r, parent_fds)
+        assert status is not None
+        assert status[0] == "X"
+        assert r not in parent_fds
+        assert any("exec-status pipe drain failed" in rec.message
+                   for rec in caplog.records)
+
+    def test_drain_status_pipe_read_error_with_no_bytes_warns_unknown(
+            self, caplog):
+        # Nothing read at all before the error: the status is unknown
+        # (still returned as None — the caller cannot invent a
+        # category) but the condition is named out loud instead of
+        # masquerading as a clean EOF.
+        import logging
+        import os
+        from unittest import mock
+
+        from core.sandbox._spawn import _drain_status_pipe
+
+        r, w = os.pipe()
+        os.set_blocking(r, False)
+        os.close(w)
+        with mock.patch.object(
+                os, "read",
+                side_effect=OSError(9, "Bad file descriptor")), \
+                caplog.at_level(logging.WARNING,
+                                logger="core.sandbox._spawn"):
+            status = _drain_status_pipe(r, {r})
+        assert status is None
+        assert any("status unknown" in rec.message
+                   for rec in caplog.records)
+
     def test_status_pipe_unspoofable_invariant(self):
         # The status pipe's unspoofability rests on os.pipe() returning
         # close-on-exec (non-inheritable) fds (PEP 446) — so status_w is

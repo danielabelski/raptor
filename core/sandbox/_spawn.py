@@ -225,8 +225,23 @@ def _drain_status_pipe(status_r: int, parent_fds: set):
             if not chunk:
                 break
             raw += chunk
-    except OSError:
-        raw = b""
+    except OSError as e:
+        # An unreadable status pipe is NOT the same thing as EOF: EOF
+        # means the write end closed cleanly (normally: the target
+        # exec'd and CLOEXEC reaped status_w), while a read error means
+        # we simply cannot know what the child reported. Keep whatever
+        # bytes arrived before the error (a complete category byte is
+        # the first byte, so a partial read still names the failed
+        # step) and say so out loud — a silently-swallowed drain error
+        # used to make a reported setup failure indistinguishable from
+        # a clean exec, and consumers treated the resulting None as
+        # proof the target ran.
+        logger.warning(
+            "sandbox: exec-status pipe drain failed (%s) — setup "
+            "status %s for this run",
+            e,
+            "truncated" if raw else "unknown",
+        )
     finally:
         try:
             os.close(status_r)

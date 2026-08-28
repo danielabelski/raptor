@@ -286,3 +286,29 @@ def test_default_samples_only_permissive_or_dual():
             f"{s.name} license {s.license_spdx!r} has no permissive "
             f"choice; expand the policy or remove from PROJECT_SAMPLES"
         )
+
+
+# ---------------------------------------------------------------------------
+# fetched_at-masked write skipping
+# ---------------------------------------------------------------------------
+
+def test_same_modulo_fetched_at() -> None:
+    from packages.sca.calibration.project_samples import (
+        _same_modulo_fetched_at,
+    )
+    old = {
+        "_source": {"fetched_at": "2026-01-01T00:00:00Z", "url": "x"},
+        "findings": [{"finding_id": "a"}],
+    }
+    new_ts_only = {
+        "_source": {"fetched_at": "2026-02-02T00:00:00Z", "url": "x"},
+        "findings": [{"finding_id": "a"}],
+    }
+    new_data = {
+        "_source": {"fetched_at": "2026-02-02T00:00:00Z", "url": "x"},
+        "findings": [{"finding_id": "b"}],
+    }
+    assert _same_modulo_fetched_at(old, new_ts_only)
+    assert not _same_modulo_fetched_at(old, new_data)
+    assert not _same_modulo_fetched_at(None, new_ts_only)
+    assert not _same_modulo_fetched_at([], new_ts_only)

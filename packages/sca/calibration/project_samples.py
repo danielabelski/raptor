@@ -919,12 +919,42 @@ def _collect_one(
         },
         "findings": sanitised,
     }
+    # Skip the write when nothing but the run timestamp changed.
+    # Without the mask every collection run rewrote all sample files
+    # (``fetched_at`` always differs), so the monthly refresh always
+    # produced a 51-file diff and always opened a PR — even when no
+    # advisory data moved. Same convention as the corpus builder's
+    # ``_write_if_changed``.
+    if out_path.exists():
+        existing = load_json(out_path, max_bytes=_MAX_FINDINGS_BYTES)
+        if _same_modulo_fetched_at(existing, output):
+            return CollectResult(
+                project=sample.name, ecosystem=sample.ecosystem,
+                written=False, error=None,
+                finding_count=len(sanitised),
+            )
     save_json(out_path, output, sort_keys=True)
     return CollectResult(
         project=sample.name, ecosystem=sample.ecosystem,
         written=True, error=None,
         finding_count=len(sanitised),
     )
+
+
+def _same_modulo_fetched_at(existing: Any, new: dict[str, Any]) -> bool:
+    """Content equality ignoring ``_source.fetched_at``."""
+    if not isinstance(existing, dict):
+        return False
+
+    def _masked(d: dict[str, Any]) -> dict[str, Any]:
+        src = d.get("_source")
+        if not isinstance(src, dict):
+            return d
+        return {
+            **d,
+            "_source": {k: v for k, v in src.items() if k != "fetched_at"},
+        }
+    return _masked(existing) == _masked(new)
 
 
 def _sanitise_findings(

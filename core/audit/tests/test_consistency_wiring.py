@@ -53,7 +53,17 @@ def _prep_for(tmp_path_factory, *, wur: bool):
     if wur:
         (target / "api.h").write_text(_WUR_HEADER)
 
-    out = tmp_path_factory.mktemp("consistency_out")
+    # The run dir is NESTED one level below its mktemp allocation so
+    # its parent is a private empty dir, not the session-shared pytest
+    # tmp root: prep's cross-run readers (sibling_run_dirs and the
+    # domain-model/coverage lookups) scan out_dir.parent, and against
+    # the shared root that scan walks every tmp dir the whole session
+    # has created so far — tens of thousands of stat calls late in a
+    # full run (observed as 8-13s fixture setups on CI). Nesting also
+    # makes hermeticity structural: no other test's run dir can ever
+    # be a sibling.
+    out = tmp_path_factory.mktemp("consistency_out") / "run"
+    out.mkdir()
     env = dict(
         os.environ,
         CLAUDECODE="1",

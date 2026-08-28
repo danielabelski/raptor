@@ -292,7 +292,15 @@ def prep_with_generated_asm(tmp_path_factory):
     (target / "app.py").write_text(
         "def entry(data):\n    return data.strip()\n"
     )
-    out = tmp_path_factory.mktemp("perlasm_out")
+    # Nested below the mktemp allocation so out_dir.parent is a
+    # private empty dir: prep's cross-run readers (sibling_run_dirs,
+    # domain-model/coverage lookups) scan the parent, and the
+    # session-shared pytest tmp root grows by one dir per test —
+    # tens of thousands of stat calls late in a full run (observed
+    # as 9-12s fixture setups on CI). Also makes hermeticity
+    # structural: no other test's run dir can be a sibling.
+    out = tmp_path_factory.mktemp("perlasm_out") / "run"
+    out.mkdir()
     env = dict(
         os.environ,
         CLAUDECODE="1",

@@ -479,6 +479,20 @@ _MAX_TEST_SECONDS = os.environ.get("RAPTOR_MAX_TEST_SECONDS")
 _slow_test_threshold = float(_MAX_TEST_SECONDS) if _MAX_TEST_SECONDS else None
 _slow_test_overruns: "list[tuple[str, float]]" = []
 
+# Per-TIER wallclock tripwire, companion to the per-test guard above:
+# RAPTOR_MAX_TEST_SECONDS catches one slow test; this catches the
+# aggregate drift no single test explains (suite growth, a fixture
+# cost multiplied across thousands of tests). Activated only when the
+# workflow sets RAPTOR_MAX_SESSION_SECONDS to that tier's measured
+# baseline plus headroom; flags at session end (never kills), so the
+# failure names the budget instead of dying as an opaque runner-level
+# job timeout. Local runs are unaffected.
+
+_MAX_SESSION_SECONDS = os.environ.get("RAPTOR_MAX_SESSION_SECONDS")
+_session_budget = float(_MAX_SESSION_SECONDS) if _MAX_SESSION_SECONDS else None
+_session_started_at: "float | None" = None
+_session_overrun: "float | None" = None
+
 
 def pytest_runtest_logreport(report):
     """Record any test whose CALL phase exceeds the threshold."""
@@ -490,14 +504,53 @@ def pytest_runtest_logreport(report):
 
 def pytest_sessionfinish(session, exitstatus):
     """Fail an otherwise-green session if any test overran the threshold,
-    mutated the ambient checkout's repo-level git config, or leaked the
-    LLM-egress proxy env past the end of the session."""
+    the session overran its tier wallclock budget, mutated the ambient
+    checkout's repo-level git config, or leaked the LLM-egress proxy
+    env past the end of the session."""
     _check_git_config_drift(session)
     _check_egress_leak(session)
+    _check_session_budget(session)
     if _slow_test_threshold is None or not _slow_test_overruns:
         return
     if session.exitstatus == 0:
         session.exitstatus = 1
+
+
+def _check_session_budget(session):
+    global _session_overrun
+    if _session_budget is None or _session_started_at is None:
+        return
+    # Workers under xdist are partial views; the controller session
+    # spans the whole tier run and is the one that enforces.
+    if getattr(session.config, "workerinput", None) is not None:
+        return
+    import time as _time
+    elapsed = _time.monotonic() - _session_started_at
+    if elapsed <= _session_budget:
+        return
+    _session_overrun = elapsed
+    if session.exitstatus == 0:
+        session.exitstatus = 1
+
+
+def _session_budget_summary(terminalreporter):
+    if _session_overrun is None:
+        return
+    tr = terminalreporter
+    tr.section("tier wallclock budget FAILED", red=True, bold=True)
+    tr.write_line(
+        f"This session took {_session_overrun:.0f}s against a "
+        f"RAPTOR_MAX_SESSION_SECONDS budget of {_session_budget:.0f}s."
+    )
+    tr.write_line(
+        "The budget is the tier's measured baseline plus headroom (set "
+        "in the calling workflow). No single test need be slow for this "
+        "to fire — look for suite-wide drift: a fixture cost multiplied "
+        "across thousands of tests, heavyweight tests landing in bulk, "
+        "or a starved runner. Compare --durations output against the "
+        "baseline table in the workflow file, then either fix the drift "
+        "or consciously raise the budget alongside the new baseline."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -622,6 +675,7 @@ def pytest_terminal_summary(terminalreporter):
     _tree_drift_summary(terminalreporter)
     _git_config_drift_summary(terminalreporter)
     _egress_leak_summary(terminalreporter)
+    _session_budget_summary(terminalreporter)
     if _slow_test_threshold is None or not _slow_test_overruns:
         return
     tr = terminalreporter
@@ -680,7 +734,9 @@ def _tree_fingerprint():
 
 
 def pytest_sessionstart(session):
-    global _tree_state_at_start, _git_config_at_start
+    global _tree_state_at_start, _git_config_at_start, _session_started_at
+    import time as _time
+    _session_started_at = _time.monotonic()
     _tree_state_at_start = _tree_fingerprint()
     if getattr(session.config, "workerinput", None) is None:
         _git_config_at_start = _git_hermeticity.config_fingerprint(

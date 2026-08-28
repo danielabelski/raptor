@@ -47,8 +47,9 @@ This page is split into:
 
 | Workflow | Purpose | Cadence | Output / evidence |
 |---|---|---|---|
-| [`nightly.yml`](../.github/workflows/nightly.yml) | Runs slow and live integration tests that are intentionally excluded from the PR gate | Daily | Workflow logs and test reports |
-| [`nightly_shuffled.yml`](../.github/workflows/nightly_shuffled.yml) | Re-runs fast-tier tests with distinct random seeds to flush out order-dependent failures | Daily | A failing seed is identified by its matrix job's `seed=` line |
+| [`nightly.yml`](../.github/workflows/nightly.yml) | Runs slow and live integration tests that are intentionally excluded from the PR gate | Daily | Workflow logs and test reports; slow step carries a `RAPTOR_MAX_SESSION_SECONDS` wallclock budget (tripwire summary on drift) |
+| [`nightly_shuffled.yml`](../.github/workflows/nightly_shuffled.yml) | Re-runs fast-tier tests with distinct random seeds to flush out order-dependent failures (module-grouped shuffle: module order, then intra-module order) | Daily | A failing seed is identified by its matrix job's `seed=` line; each iteration carries a `RAPTOR_MAX_SESSION_SECONDS` wallclock budget |
+| [`weekly_corpus.yml`](../.github/workflows/weekly_corpus.yml) | Corpus-scale binary-oracle precision drivers (`-m corpus`): clone + build + coverage over real third-party projects to re-derive the published precision numbers | Weekly (and on demand via dispatch) | Workflow logs and junit artifact |
 | [`tests.yml`](../.github/workflows/tests.yml) (cron) | Full test suite, including tiers excluded from the PR gate | Twice weekly | Workflow logs |
 | [`miswiring-scan.yml`](../.github/workflows/miswiring-scan.yml) `miswiring` | Dead-code / wrong-call / swallowed-exception sweep via AST analysis ([`check_miswiring.py`](../.github/scripts/check_miswiring.py)) | Daily | New findings fail the job; baseline in `miswiring_baseline.json` |
 | [`miswiring-scan.yml`](../.github/workflows/miswiring-scan.yml) `env-docs` | Extracts every env var the tree reads/writes and compares against documentation ([`check_env_docs.py`](../.github/scripts/check_env_docs.py)); undocumented operator-facing variables and stale doc entries fail | Daily | Baseline in `env_docs_baseline.json` |

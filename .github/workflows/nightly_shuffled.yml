@@ -70,12 +70,21 @@ jobs:
           # at volume, and without the wheels they all skip.
           uv pip install -r requirements-grammars.txt
 
+      # Tier wallclock tripwire (root conftest): flags the session —
+      # with a named summary instead of an opaque runner kill — when a
+      # single-process shuffled iteration exceeds the budget. Baseline
+      # at the time this was set: ~28 min per iteration on ubuntu-latest
+      # (42k tests); the budget carries ~60% headroom. If it fires
+      # without a starved runner, the tier has structurally drifted:
+      # re-measure, fix the drift or consciously raise the budget with
+      # the new baseline.
       - name: Shuffled default-tier tests (seed ${{ matrix.iteration }})
         run: |
           source $VENV_PATH/bin/activate
           seed="${{ github.run_id }}-${{ matrix.iteration }}"
           echo "seed=${seed}"
           RAPTOR_RANDOMISE_TESTS="$seed" \
+          RAPTOR_MAX_SESSION_SECONDS=2700 \
             python -m pytest core packages \
             -q --durations=25 --tb=short \
             --junitxml="$RUNNER_TEMP/fast-iter-${{ matrix.iteration }}.xml"

@@ -112,9 +112,19 @@ jobs:
           /usr/lib/llvm-21/bin/llvm-cov --version || true
           /usr/lib/llvm-21/bin/llvm-profdata --version || true
 
+      # RAPTOR_MAX_SESSION_SECONDS: tier wallclock tripwire (root
+      # conftest) — flags the session with a named summary when the
+      # slow tier exceeds its budget, instead of drifting silently
+      # toward the job timeout. Baseline at the time this was set:
+      # ~10-15 min on ubuntu-latest with the corpus-scale drivers in
+      # their own weekly tier; the budget carries the remaining
+      # headroom to the 45-min job timeout's slow-step share. If it
+      # fires without a starved runner, re-measure and either fix the
+      # drift or consciously raise the budget with the new baseline.
       - name: Run slow tests
         env:
           RAPTOR_RANDOMISE_TESTS: ${{ github.run_id }}
+          RAPTOR_MAX_SESSION_SECONDS: '1800'
         run: |
           source $VENV_PATH/bin/activate
           # .github test dirs included for their slow-marked

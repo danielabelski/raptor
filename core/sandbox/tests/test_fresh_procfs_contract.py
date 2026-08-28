@@ -341,6 +341,13 @@ def test_fresh_procfs_failure_aborts_untrusted_run(tmp_path):
             r = run_untrusted(["true"], target=%r, output=%r, cwd=%r,
                               timeout=90, capture_output=True, text=True)
             print("NO-RAISE rc=%%d" %% r.returncode)
+            if r.returncode != 0:
+                # A degraded run that then FAILS is otherwise a bare
+                # returncode: every sandbox fail-closed site writes a
+                # one-line reason to the child's stderr — surface it so
+                # a runner-only failure is diagnosable from the CI log.
+                print("CHILD-STDERR:",
+                      (r.stderr or "")[-400:].replace("\\n", " | "))
         except SandboxSetupError as e:
             print("RAISED:", str(e)[:120].replace("\\n", " "))
     """) % (str(tmp_path), str(tmp_path), str(tmp_path))

@@ -671,7 +671,16 @@ class TestE2ELibexecScript(unittest.TestCase):
             capture_output=True, text=True, timeout=10, env=self._env,
             check=False,
         )
-        self.assertEqual(result.returncode, 0)
+        # Carry the child's channels into the failure message: the
+        # script forwards the sandboxed child's stderr (where every
+        # sandbox fail-closed site writes its one-line reason), and a
+        # bare returncode assert made runner-only failures of this
+        # test undiagnosable from the CI log.
+        self.assertEqual(
+            result.returncode, 0,
+            f"raptor-run-sandboxed failed: "
+            f"stdout={result.stdout[-300:]!r} "
+            f"stderr={result.stderr[-500:]!r}")
         self.assertIn("hello", result.stdout)
 
     def test_network_blocked(self):

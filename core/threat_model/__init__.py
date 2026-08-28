@@ -14,10 +14,16 @@ import hashlib
 import heapq
 import logging
 from pathlib import Path
+import re
 from typing import Any, TYPE_CHECKING
 
 from core.json import load_json, save_json
 from core.security.log_sanitisation import escape_nonprintable
+from core.security.redaction import (
+    is_secret_field_name,
+    redact_secrets,
+    redact_url_secrets_only,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -132,6 +138,147 @@ def _clip_str_list(values: Any) -> list[str]:
     or single entries 100 MB long."""
     raw = _coerce_str_list(values)
     return [_clip_str(v) for v in raw[:_MAX_LIST_ENTRIES]]
+
+
+# ---------------------------------------------------------------------
+# hardcoded_secrets entry redaction.
+#
+# ``hardcoded_secrets`` entries in a context-map are produced by an LLM
+# against an UNENFORCED schema: nothing stops the producer from writing
+# the literal matched credential value into ``name`` / ``id`` /
+# ``entry`` (or a dedicated value field) instead of the variable name it
+# was found in. Every string derived from these entries flows into
+# operator-facing persistence surfaces — threat-model.json +
+# THREAT_MODEL.md (save_model, the project threat-model sync action) and
+# the threat-model export stdout — so the entry is redacted BEFORE any
+# summary/threat extraction. Invariant: no string sourced from a
+# hardcoded_secrets entry reaches render_markdown / save / sync / export
+# unredacted. Labels (variable names such as MASTER_PASSWORD, file
+# paths, line numbers) stay readable so the operator can still locate
+# the finding.
+
+_REDACTED_MARKER = "[REDACTED]"
+
+# Field names whose value is, by the producer's own vocabulary, the
+# matched secret material itself rather than a label. Dropped wholesale
+# — pattern matching would miss generic high-entropy values.
+_SECRET_VALUE_FIELD_NAMES = frozenset({
+    "value", "secret", "credential", "match", "matched", "matched_text",
+    "matched_string", "matched_value", "snippet", "evidence", "raw",
+    "literal", "content", "plaintext",
+})
+
+# Location-designating fields keep the operator's ability to find the
+# finding. They get URL-credential redaction only: a filesystem path is
+# not itself a credential, and the free-text credential-shape heuristic
+# would mangle legitimate mixed-case path segments.
+_LOCATION_FIELD_NAMES = frozenset({"file", "path", "location"})
+
+# Key suffixes that designate a LABEL about the secret rather than the
+# secret itself (``secret_type``, ``password_name``, ...). Exempt from
+# the substring-based wholesale redaction below; their values still go
+# through the free-text lane.
+_LABEL_KEY_SUFFIXES = (
+    "_type", "_kind", "_name", "_label", "_id",
+    "_file", "_path", "_line", "_location",
+)
+
+
+def _is_secret_value_key(key: str) -> bool:
+    """Whether a (lower-cased) entry field name designates the secret
+    material itself, so its value must be dropped wholesale."""
+    if key in _SECRET_VALUE_FIELD_NAMES or is_secret_field_name(key):
+        return True
+    # Producers improvise key names (``secret_value``, ``secretValue``,
+    # ``password_literal``); any key mentioning the material is treated
+    # as carrying it unless the suffix says it's a label about it.
+    return any(
+        t in key for t in ("secret", "credential", "password", "passwd")
+    ) and not key.endswith(_LABEL_KEY_SUFFIXES)
+
+_CANDIDATE_TOKEN_RE = re.compile(r"[A-Za-z0-9+/=_.\-]{20,}")
+_HEX_TOKEN_RE = re.compile(r"[0-9a-fA-F]{32,}")
+
+
+def _looks_like_credential_value(token: str) -> bool:
+    """Heuristic: does a whitespace-free token look like secret
+    material rather than an identifier or prose word?
+
+    Benign labels are identifiers (``MASTER_PASSWORD``,
+    ``getApiKey``), dotted names, and prose — at >=20 chars they
+    essentially never mix upper + lower case AND carry multiple
+    digits. Credential values (API keys, base64 blobs) almost always
+    do; long pure-hex runs are digests or hex-encoded keys.
+    False-positive redaction of an exotic label is acceptable —
+    file:line survives for triage; a leaked value cannot be unleaked.
+    """
+    if len(token) < 20:
+        return False
+    if _HEX_TOKEN_RE.fullmatch(token):
+        return True
+    digits = sum(c.isdigit() for c in token)
+    return (
+        digits >= 2
+        and any(c.islower() for c in token)
+        and any(c.isupper() for c in token)
+    )
+
+
+def _redact_free_text(value: str) -> str:
+    """Redact credential material from a free-text field value.
+
+    Two lanes: ``redact_secrets`` catches vendor-published shapes
+    (PEM blocks, cloud keys, JWTs, URL-embedded credentials);
+    the token pass catches generic high-entropy values that carry no
+    vendor prefix.
+    """
+    text = redact_secrets(value)
+    return _CANDIDATE_TOKEN_RE.sub(
+        lambda m: (
+            _REDACTED_MARKER
+            if _looks_like_credential_value(m.group(0))
+            else m.group(0)
+        ),
+        text,
+    )
+
+
+def _redact_secret_entry(value: Any) -> Any:
+    """Return a redacted deep copy of a hardcoded_secrets entry.
+
+    Values of secret-carrying field names are dropped wholesale;
+    location fields keep the path readable; every other string is
+    passed through the free-text credential redaction. Recursion
+    covers producers that nest lists/dicts inside an entry.
+    """
+    if isinstance(value, str):
+        return _redact_free_text(value)
+    if isinstance(value, list):
+        return [_redact_secret_entry(v) for v in value[:_MAX_LIST_ENTRIES]]
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for k, v in value.items():
+            key = str(k).strip().lower()
+            if _is_secret_value_key(key):
+                out[k] = _REDACTED_MARKER if v else v
+            elif key in _LOCATION_FIELD_NAMES and isinstance(v, str):
+                out[k] = redact_url_secrets_only(v)
+            else:
+                out[k] = _redact_secret_entry(v)
+        return out
+    return value
+
+
+def _redacted_secret_entries(entries: Any) -> list[Any]:
+    """Redacted copies of the context-map ``hardcoded_secrets`` list.
+
+    The ONLY sanctioned accessor for that key: consumers must never
+    read the raw entries directly, or the redaction invariant above
+    breaks.
+    """
+    if not isinstance(entries, list):
+        return []
+    return [_redact_secret_entry(e) for e in entries[:_MAX_LIST_ENTRIES]]
 
 
 def _resolve_inside(path: Path, project_out: Path) -> Path | None:
@@ -452,14 +599,21 @@ def from_context_map(project: Any, context_map: dict[str, Any]) -> ThreatModel:
         context_map.get("entry_points") or [],
         context_map.get("sink_details") or [],
     )
-    secrets = _summaries_from_entries(
-        context_map.get("hardcoded_secrets") or [],
+    # Redacted-at-source: the summaries below carry only finding
+    # labels (variable name, file:line, trust tag) — credential-shaped
+    # material was stripped by ``_redacted_secret_entries`` before
+    # extraction, so persisting/printing them is safe by construction.
+    redacted_secret_labels = _summaries_from_entries(
+        _redacted_secret_entries(context_map.get("hardcoded_secrets")),
         default_label="secret",
     )
-    model.focus_areas = _dedup(unchecked_flows + model.focus_areas + secrets)
+    model.focus_areas = _dedup(
+        unchecked_flows + model.focus_areas + redacted_secret_labels
+    )
     model.known_bug_shapes.extend(unchecked_flows)
     model.known_bug_shapes.extend(
-        f"Hardcoded secret or backdoor credential: {s}" for s in secrets
+        f"Hardcoded secret or backdoor credential: {s}"
+        for s in redacted_secret_labels
     )
     if sinks:
         model.known_bug_shapes.extend(
@@ -1233,12 +1387,19 @@ def _threats_from_context_map(
             "source": "context-map.unchecked_flows",
         })
     offset = len(threats)
-    for j, secret in enumerate((context_map.get("hardcoded_secrets") or [])[:_MAX_LIST_ENTRIES]):
-        if not isinstance(secret, dict):
+    # Iterate the redacted copies only — the threat title feeds
+    # render_markdown / save / export like every other model field.
+    for j, redacted_entry in enumerate(
+        _redacted_secret_entries(context_map.get("hardcoded_secrets"))
+    ):
+        if not isinstance(redacted_entry, dict):
             continue
         threats.append({
             "id": f"T-{offset + j + 1:03d}",
-            "title": f"Hardcoded secret or backdoor credential: {_entry_title(secret, 'secret')}",
+            "title": (
+                "Hardcoded secret or backdoor credential: "
+                f"{_entry_title(redacted_entry, 'secret')}"
+            ),
             "category": "secret_exposure",
             "stride": ["information_disclosure", "elevation_of_privilege"],
             "status": "needs_evidence",

@@ -166,7 +166,7 @@
   "core/audit/defassign.py::_CTRL_ESCAPE": {
     "count": 17,
     "kind": "literal",
-    "note": "C control-transfer keywords plus the setjmp family (ISO/POSIX language constants): any of these inside a macro expansion refuses the definite-assignment proof — additions widen refusal, never a proof"
+    "note": "C control-transfer keywords plus the setjmp family (ISO/POSIX language constants): any of these inside a macro expansion refuses the definite-assignment proof \u2014 additions widen refusal, never a proof"
   },
   "core/audit/defassign.py::_ALLOWED_STATEMENTS": {
     "count": 12,
@@ -240,7 +240,7 @@
   "core/audit/caller_lock.py::_C_CALL_KEYWORDS": {
     "count": 12,
     "kind": "literal",
-    "note": "C keywords plus preprocessor/GNU forms (sizeof, typeof, __typeof__, defined, ...) that look call-shaped to the caller-lock witness's call-identifier scan — a closed language enumeration, like the callsite-consistency keyword entries; not a learnable function-name vocabulary"
+    "note": "C keywords plus preprocessor/GNU forms (sizeof, typeof, __typeof__, defined, ...) that look call-shaped to the caller-lock witness's call-identifier scan \u2014 a closed language enumeration, like the callsite-consistency keyword entries; not a learnable function-name vocabulary"
   },
   "core/audit/callsite_consistency.py::_CONDITION_FIELDS": {
     "count": 14,
@@ -509,7 +509,7 @@
   "core/audit/goconc.py::_GO_BUILTIN_TYPES": {
     "count": 21,
     "kind": "literal",
-    "note": "Go predeclared type identifiers (bool, byte, ... uintptr, comparable) — a closed language-spec enumeration the goroutine-isolation walk treats as freely mentionable, like the callsite-consistency keyword entries; not a learnable function-name vocabulary"
+    "note": "Go predeclared type identifiers (bool, byte, ... uintptr, comparable) \u2014 a closed language-spec enumeration the goroutine-isolation walk treats as freely mentionable, like the callsite-consistency keyword entries; not a learnable function-name vocabulary"
   },
   "core/audit/invariant_gate.py::_ANCHOR_STOPWORDS": {
     "count": 109,
@@ -1378,7 +1378,7 @@
   "core/sandbox/fingerprint.py::_DMI_STORY": {
     "count": 17,
     "kind": "literal",
-    "note": "DMI sysfs field names under /sys/class/dmi/id (bios_date, sys_vendor, ...) — a closed OS-defined kernel ABI enumeration whose values compose the fingerprint story, like the escalation-signatures syscall entry; not a learnable function-name vocabulary"
+    "note": "kernel-defined /sys/class/dmi/id file names (fixed external contract, one entry per world-readable DMI identity file the persona masks) - not a learnable vocabulary"
   },
   "core/sandbox/profiles.py::_SANDBOX_KWARGS": {
     "count": 23,
@@ -2497,14 +2497,21 @@
     "kind": "literal",
     "note": "result-dict field names of the web scanner's evidence/summary records (schema keys), not a name vocabulary"
   },
-  "core/sandbox/fingerprint.py::_DMI_STORY": {
-    "count": 17,
-    "kind": "literal",
-    "note": "kernel-defined /sys/class/dmi/id file names (fixed external contract, one entry per world-readable DMI identity file the persona masks) - not a learnable vocabulary"
-  },
   "core/sandbox/fingerprint.py::_si_names": {
     "count": 10,
     "kind": "literal",
     "note": "kernel-defined /proc/softirqs row names (fixed external contract mirrored verbatim for the persona stub) - not a learnable vocabulary"
+  },
+  "core/audit/lifetime_witness.py::_C_KEYWORDS": {
+    "note": "Closed C-language keyword enumeration (34 names per the C standard) used to separate keywords from identifiers in the lifetime witness's token scan; not a learnable API vocabulary. Same class as caller_lock.py::_C_CALL_KEYWORDS.",
+    "reviewed": "2026-08-28"
+  },
+  "core/audit/lifetime_witness.py::_ALLOWED_STMTS": {
+    "note": "Closed tree-sitter C grammar node-type enumeration (statement kinds the CFG builder models); grammar-defined, not learnable. Same class as goconc.py::_GO_BUILTIN_TYPES.",
+    "reviewed": "2026-08-28"
+  },
+  "core/audit/lifetime_witness.py::_classify_occurrence": {
+    "note": "Closed tree-sitter C grammar node-type enumeration (ancestor kinds the occurrence classifier walks); grammar-defined, not learnable.",
+    "reviewed": "2026-08-28"
   }
 }

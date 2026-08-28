@@ -114,11 +114,13 @@ class TestLandlockReadGatePlumbing:
         original = landlock._make_landlock_preexec
 
         def spy(writable_paths, allowed_tcp_ports=None,
-                readable_paths=None, deny_all_tcp_connect=False):
+                readable_paths=None, deny_all_tcp_connect=False,
+                fail_raise=False):
             captured.append(readable_paths)
             return original(writable_paths, allowed_tcp_ports,
                             readable_paths=readable_paths,
-                            deny_all_tcp_connect=deny_all_tcp_connect)
+                            deny_all_tcp_connect=deny_all_tcp_connect,
+                            fail_raise=fail_raise)
         monkeypatch.setattr(
             "core.sandbox._spawn._make_landlock_preexec", spy)
         try:

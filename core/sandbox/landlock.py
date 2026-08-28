@@ -350,9 +350,23 @@ def _warn_truncate_unavailable_once(abi: int) -> None:
     )
 
 
+class LandlockInstallError(RuntimeError):
+    """A requested Landlock policy could not be installed in the child.
+
+    Raised (instead of the async-signal-safe ``os._exit(126)``) when the
+    closure is built with ``fail_raise=True`` — the mount-ns spawn
+    grandchild's lane, where an ordinary exception reaches the setup-
+    status pipe ('L' + reason) and the parent fails LOUD with a typed
+    SandboxSetupError. The silent-exit form is kept for the preexec_fn
+    lane, where the fork context forbids anything beyond os.write +
+    os._exit and the 126 convention is documented in exit_codes.py.
+    """
+
+
 def _make_landlock_preexec(writable_paths: list, allowed_tcp_ports: list | None = None,
                            readable_paths: list | None = None,
-                           deny_all_tcp_connect: bool = False):
+                           deny_all_tcp_connect: bool = False,
+                           fail_raise: bool = False):
     """Create a preexec_fn that applies Landlock restrictions.
 
     Filesystem:
@@ -382,6 +396,15 @@ def _make_landlock_preexec(writable_paths: list, allowed_tcp_ports: list | None 
     Scoping (ABI v6+): signal delivery and abstract Unix socket connections
     restricted to processes within the same Landlock domain. Always-on
     when the kernel supports it.
+
+    fail_raise: fail-closed reporting mode. False (default, preexec_fn
+    lane) keeps the async-signal-safe ``os.write(2) + os._exit(126)``
+    aborts. True (mount-ns spawn grandchild) raises
+    ``LandlockInstallError`` after the stderr line instead, so the
+    spawn chain's setup-status pipe reports 'L' + the reason and the
+    parent raises a typed SandboxSetupError — pre-fix these aborts
+    bypassed the status pipe and surfaced as an unattributed child
+    exit 126, indistinguishable from a target that chose that code.
     """
     SYS_create = _SYS_LANDLOCK_CREATE
     SYS_add_rule = _SYS_LANDLOCK_ADD_RULE
@@ -592,6 +615,11 @@ def _make_landlock_preexec(writable_paths: list, allowed_tcp_ports: list | None 
                 # restrictions. Fail-closed: the parent expected an enforced
                 # sandbox, so silently downgrading is a contract violation.
                 _os_write(2, b"sandbox: landlock: SYS_landlock_create_ruleset failed post-fork\n")
+                if fail_raise:
+                    msg = ("Landlock ruleset creation failed post-fork "
+                           "(SYS_landlock_create_ruleset returned an error "
+                           "for a kernel whose probe succeeded)")
+                    raise LandlockInstallError(msg)
                 os._exit(SANDBOX_EXIT_LANDLOCK_DOWNGRADE)
 
             try:
@@ -775,6 +803,9 @@ def _make_landlock_preexec(writable_paths: list, allowed_tcp_ports: list | None 
                 prctl_ret = libc.prctl(_PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)
                 if prctl_ret < 0:
                     _os_write(2, b"sandbox: prctl(PR_SET_NO_NEW_PRIVS) failed -- aborting sandboxed exec\n")
+                    if fail_raise:
+                        msg = "prctl(PR_SET_NO_NEW_PRIVS) failed"
+                        raise LandlockInstallError(msg)
                     os._exit(126)
                 result = libc.syscall(SYS_restrict, fd, 0)
                 if result < 0:
@@ -784,6 +815,9 @@ def _make_landlock_preexec(writable_paths: list, allowed_tcp_ports: list | None 
                     # safe; Python logging is NOT safe here because a
                     # parent thread may hold logging locks at fork time.
                     _os_write(2, b"sandbox: Landlock restrict_self failed -- aborting sandboxed exec\n")
+                    if fail_raise:
+                        msg = "Landlock restrict_self failed"
+                        raise LandlockInstallError(msg)
                     os._exit(126)
             finally:
                 # os._exit skips finally, so this only runs on the
@@ -794,6 +828,8 @@ def _make_landlock_preexec(writable_paths: list, allowed_tcp_ports: list | None 
             # means the caller's isolation guarantee is broken; abort
             # rather than run without Landlock.
             _os_write(2, b"sandbox: Landlock enforcement failed -- aborting sandboxed exec\n")
+            if fail_raise:
+                raise
             os._exit(126)
 
     return _apply_landlock

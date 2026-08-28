@@ -1630,6 +1630,14 @@ def run_sandboxed(
                 readable_paths=(list(readable_paths)
                                 if (readable_paths and restrict_reads)
                                 else None),
+                # Spawn lane: fail-closed aborts RAISE so the grandchild
+                # catch-all reports them on the setup-status pipe ('L' +
+                # reason) and the parent fails loud with a typed
+                # SandboxSetupError. The silent os._exit(126) form is
+                # for the preexec_fn lane only — there it is the only
+                # fork-safe option, and here it made a Landlock install
+                # failure indistinguishable from a target exiting 126.
+                fail_raise=True,
             )
         # AF_UNIX is safe to allow exactly when this child gets the
         # mount-ns (fresh tmpfs masks /run's pathname sockets; the rest

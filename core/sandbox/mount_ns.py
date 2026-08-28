@@ -23,7 +23,13 @@ matches the inline step comments in the function body):
     2. Creates a fresh tmpfs at /tmp/.raptor-sbx-<pid> to become the new root.
     3. Creates the standard-dir mount points inside the new root.
     4. Bind-mounts system dirs (/usr, /lib, /lib64, /etc, /bin, /sbin)
-       read-only into the new root.
+       read-only into the new root. When an etc_overlay targets paths
+       missing on the host, /etc becomes a tmpfs populated by a
+       breadth-first, budgeted copy of host /etc — /etc/skel (new-user
+       home templates; CI runner images stuff whole toolchains into
+       it) is never copied, and the copy stops at a total
+       bytes/entry budget rather than crawling a pathological host
+       /etc (see _copy_etc_tree).
     5. rbind-mounts /dev and /sys from the host.
     6. Bind-mounts host /proc (a fresh procfs would need a pid-ns first).
     7. Mounts fresh tmpfs at /run and /tmp for per-sandbox isolation
@@ -319,8 +325,35 @@ def _refuse_image_symlink_components(root: str, abs_path: str) -> None:
 
 _PHASE_TRACE_ENV = "RAPTOR_SANDBOX_PHASE_TRACE"
 # Per-entry copy markers are capped so a pathological host /etc can't
-# grow the trace file without bound.
+# grow the trace file without bound. This caps TRACE LINES only — the
+# copy itself is bounded separately by the _ETC_COPY_MAX_* budget
+# below (which is deliberately larger: entries past the trace cap
+# still copy, silently; a one-line marker records that the cap
+# tripped so a trace reader knows why per-entry markers stopped).
 _PHASE_TRACE_MAX_ENTRIES = 4096
+
+# Top-level host-/etc directories the overlay copy never descends
+# into. /etc/skel is the new-user home-directory TEMPLATE tree — no
+# sandboxed target consumes it, and CI runner images stuff whole
+# toolchains into it (rustup under .cargo/bin, nvm test corpora,
+# dotnet tool stores: tens of thousands of entries, hundreds of MB)
+# which the pre-fix linear copy crawled until the caller's timeout.
+# Each skip emits a loud named phase-trace marker.
+_ETC_COPY_SKIP_TOP_DIRS = frozenset({"skel"})
+
+# Total copy budget (belt-and-braces behind the skel skip). The copy
+# exists to carry config files — passwd, group, hosts, resolv.conf,
+# nsswitch.conf, ssl/, ld.so.* — into the sandbox's private /etc; a
+# host /etc large enough to trip these bounds is carrying non-config
+# payload the sandbox doesn't need. Hitting the ENTRY budget stops
+# the copy (loud marker + post-fork warning) and setup continues with
+# what was copied; a file larger than the remaining BYTE budget is
+# skipped individually (loud marker) while smaller entries keep
+# copying. Breadth-first ordering guarantees root-level files and
+# shallow config trees are copied long before either bound can trip,
+# so passwd/hosts/ssl are never the casualties.
+_ETC_COPY_MAX_BYTES = 64 * 1024 * 1024
+_ETC_COPY_MAX_ENTRIES = 8192
 
 
 def _phase_trace(marker: bytes) -> None:
@@ -361,12 +394,28 @@ def _phase_trace(marker: bytes) -> None:
 
 
 def _copy_etc_tree(src: str, dst: str) -> None:
-    """Recursively copy *src* into *dst*, preserving directory
-    structure and permission MODE BITS.
+    """Copy *src* into *dst* breadth-first, preserving directory
+    structure and permission MODE BITS, under a total copy budget.
 
-    (Renamed from ``_copy_dir_shallow`` — the old name claimed a
-    shallow copy while the implementation always walked the whole
-    tree.)
+    Ordering is breadth-first — every file at depth k is copied before
+    any directory at depth k+1 is entered — so the root-level config
+    files the sandbox actually needs (passwd, group, hosts,
+    resolv.conf, nsswitch.conf) and shallow trees (ssl/) land first
+    and can never be starved by a deep payload subtree.
+
+    Bounds (all loud, named in the phase trace; none may wedge or fail
+    the setup):
+
+    * ``/etc/skel`` (any name in ``_ETC_COPY_SKIP_TOP_DIRS`` at the
+      TOP level of *src*) is never copied — new-user home templates
+      that no sandboxed target consumes; CI runner images stuff whole
+      toolchains into it (100k+ entries, hundreds of MB).
+    * ``_ETC_COPY_MAX_ENTRIES`` total entries (files, dirs, symlinks,
+      FIFOs): reaching it stops the copy with a marker + post-fork
+      warning; the sandbox proceeds with what was copied.
+    * ``_ETC_COPY_MAX_BYTES`` total bytes byte-copied: a file larger
+      than the remaining byte budget is skipped individually (marker)
+      while smaller entries keep copying.
 
     Files are hard-linked when possible (same filesystem — preserves
     the source inode's mode/owner exactly), otherwise copied
@@ -386,37 +435,66 @@ def _copy_etc_tree(src: str, dst: str) -> None:
     only by host-root (shadow, gshadow).
     """
     _traced = 0
-    for dirpath, dirnames, filenames in os.walk(src):
-        rel = os.path.relpath(dirpath, src)
-        dst_dir = os.path.join(dst, rel) if rel != "." else dst
-        for dn in dirnames:
-            src_sub = os.path.join(dirpath, dn)
+    _trace_capped = False
+    entries = 0
+    copied_bytes = 0
+    # BFS queue of (src_dir, dst_dir); list-with-cursor instead of
+    # collections.deque to keep the post-fork path on plain builtins.
+    queue: list[tuple[str, str]] = [(src, dst)]
+    qi = 0
+    while qi < len(queue):
+        dirpath, dst_dir = queue[qi]
+        qi += 1
+        try:
+            names = sorted(os.listdir(dirpath))
+        except OSError:
+            continue
+        subdirs: list[str] = []
+        for name in names:
+            src_entry = os.path.join(dirpath, name)
             try:
-                mode = stat_module.S_IMODE(os.lstat(src_sub).st_mode)
+                st = os.lstat(src_entry)
             except OSError:
-                mode = 0o755
-            try:
-                dst_sub = os.path.join(dst_dir, dn)
-                os.makedirs(dst_sub, mode, exist_ok=True)
-                # makedirs' mode argument is masked by the process
-                # umask; re-apply the exact source mode the same way
-                # the byte-copy path below does (chmod is not
-                # umask-masked).
-                os.chmod(dst_sub, mode)
-            except OSError:
-                pass
-        for fn in filenames:
-            src_file = os.path.join(dirpath, fn)
-            dst_file = os.path.join(dst_dir, fn)
+                continue
+            if stat_module.S_ISDIR(st.st_mode):
+                if dirpath == src and name in _ETC_COPY_SKIP_TOP_DIRS:
+                    # Loud named skip — always emitted, never counted
+                    # against the per-entry trace cap.
+                    _phase_trace(
+                        b"etc copy skip: " + os.fsencode(src_entry)
+                        + b" (new-user home templates; never copied)"
+                    )
+                    continue
+                subdirs.append(name)
+                continue
+            if entries >= _ETC_COPY_MAX_ENTRIES:
+                _phase_trace(
+                    b"etc copy budget exceeded (entries=%d): skipping "
+                    b"remaining entries" % entries
+                )
+                warn_post_fork(
+                    b"sandbox: mount_ns: /etc overlay copy stopped at "
+                    b"the entry budget -- host /etc is pathologically "
+                    b"large; the sandbox keeps the entries copied so "
+                    b"far (root-level config files copy first)\n"
+                )
+                return
+            entries += 1
+            dst_file = os.path.join(dst_dir, name)
             if _traced < _PHASE_TRACE_MAX_ENTRIES:
                 # Marker BEFORE the entry is touched: on a wedge the
                 # last line of the trace names the offending entry.
                 _traced += 1
-                _phase_trace(b"etc copy entry: " + os.fsencode(src_file))
+                _phase_trace(b"etc copy entry: " + os.fsencode(src_entry))
+            elif not _trace_capped:
+                _trace_capped = True
+                _phase_trace(
+                    b"etc copy trace: per-entry markers capped at %d "
+                    b"(copy continues)" % _PHASE_TRACE_MAX_ENTRIES
+                )
             try:
-                st = os.lstat(src_file)
                 if stat_module.S_ISLNK(st.st_mode):
-                    link_target = os.readlink(src_file)
+                    link_target = os.readlink(src_entry)
                     os.symlink(link_target, dst_file)
                     continue
                 if stat_module.S_ISFIFO(st.st_mode):
@@ -439,17 +517,29 @@ def _copy_etc_tree(src: str, dst: str) -> None:
                 # Try hard-link first (fast, no copy; shares the
                 # source inode so mode/owner carry over exactly).
                 try:
-                    os.link(src_file, dst_file)
+                    os.link(src_entry, dst_file)
                     continue
                 except OSError:
                     pass
+                # Byte-budget check applies to the byte-copy path only
+                # (a successful hard link above shares the inode and
+                # copies nothing).
+                if copied_bytes + st.st_size > _ETC_COPY_MAX_BYTES:
+                    _phase_trace(
+                        b"etc copy skip (size budget): "
+                        + os.fsencode(src_entry)
+                        + b" (%dB > %dB remaining)"
+                        % (st.st_size,
+                           _ETC_COPY_MAX_BYTES - copied_bytes)
+                    )
+                    continue
                 # Byte copy, then re-apply the source's mode bits.
                 # O_NOFOLLOW + O_NONBLOCK + fstat S_ISREG re-check:
                 # the lstat above is advisory — an entry swapped for
                 # a FIFO/device between lstat and open must fail or
                 # be skipped, never block this pre-exec child.
                 sfd = os.open(
-                    src_file,
+                    src_entry,
                     os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
                 )
                 try:
@@ -461,11 +551,44 @@ def _copy_etc_tree(src: str, dst: str) -> None:
                             if not chunk:
                                 break
                             df.write(chunk)
+                            copied_bytes += len(chunk)
                 finally:
                     os.close(sfd)
                 os.chmod(dst_file, stat_module.S_IMODE(st.st_mode))
             except OSError:
                 pass  # skip unreadable entries (shadow, etc.)
+        # Enqueue subdirectories AFTER this directory's files so the
+        # walk stays breadth-first; the dst dir is created at enqueue
+        # time so deeper levels always have their parent.
+        for dn in subdirs:
+            if entries >= _ETC_COPY_MAX_ENTRIES:
+                _phase_trace(
+                    b"etc copy budget exceeded (entries=%d): skipping "
+                    b"remaining entries" % entries
+                )
+                warn_post_fork(
+                    b"sandbox: mount_ns: /etc overlay copy stopped at "
+                    b"the entry budget -- host /etc is pathologically "
+                    b"large; the sandbox keeps the entries copied so "
+                    b"far (root-level config files copy first)\n"
+                )
+                return
+            entries += 1
+            src_sub = os.path.join(dirpath, dn)
+            dst_sub = os.path.join(dst_dir, dn)
+            try:
+                mode = stat_module.S_IMODE(os.lstat(src_sub).st_mode)
+            except OSError:
+                mode = 0o755
+            try:
+                os.makedirs(dst_sub, mode, exist_ok=True)
+                # makedirs' mode argument is masked by the process
+                # umask; re-apply the exact source mode the same way
+                # the byte-copy path does (chmod is not umask-masked).
+                os.chmod(dst_sub, mode)
+            except OSError:
+                continue
+            queue.append((src_sub, dst_sub))
 
 
 def _ro_remount_flags(path: str) -> int:

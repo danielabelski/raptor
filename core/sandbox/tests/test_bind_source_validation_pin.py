@@ -60,8 +60,25 @@ def _mount_ns_usable() -> bool:
     return True
 
 
-def _open_fd_count() -> int:
-    return len(os.listdir("/proc/self/fd"))
+def _fds_into(prefix: str) -> set[int]:
+    """fds whose /proc readlink target lives under *prefix*.
+
+    Leak assertions attribute by TARGET, never by table size: a
+    process-global fd count is shifted by any concurrent churn in a
+    shared test process (GC finalising a prior test's socket, a lazy
+    import opening a resource) — observed as a once-per-42k-tests
+    flake. Only this test opens fds into its private tmp base, so a
+    surviving fd under it is attributably ours.
+    """
+    fds: set[int] = set()
+    for name in os.listdir("/proc/self/fd"):
+        try:
+            target = os.readlink(f"/proc/self/fd/{name}")
+        except OSError:
+            continue  # closed between listdir and readlink
+        if target == prefix or target.startswith(prefix + os.sep):
+            fds.add(int(name))
+    return fds
 
 
 def _close_all(fds: dict[str, int]) -> None:
@@ -152,10 +169,9 @@ class TestPinBindSources(unittest.TestCase):
         from core.sandbox._spawn import _pin_bind_sources
         tgt = str(self.base / "tgt")
         ghost_out = str(self.base / "no-such-out")
-        before = _open_fd_count()
         with self.assertRaises(FileNotFoundError):
             _pin_bind_sources(tgt, ghost_out, None, None)
-        self.assertEqual(_open_fd_count(), before,
+        self.assertEqual(_fds_into(os.path.realpath(self.base)), set(),
                          "fd leaked on the pin-failure path")
 
     def test_no_leak_across_many_pin_cycles(self) -> None:
@@ -164,10 +180,10 @@ class TestPinBindSources(unittest.TestCase):
         from core.sandbox._spawn import _pin_bind_sources
         tgt = str(self.base / "tgt")
         out = str(self.base / "out")
-        before = _open_fd_count()
         for _ in range(64):
             _close_all(_pin_bind_sources(tgt, out, None, [out]))
-        self.assertEqual(_open_fd_count(), before)
+        self.assertEqual(_fds_into(os.path.realpath(self.base)), set(),
+                         "pin cycles left fds open into the test base")
 
 
 class TestBindPinnedSourceIdentityRefusal(unittest.TestCase):

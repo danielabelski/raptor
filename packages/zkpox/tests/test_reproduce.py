@@ -337,6 +337,254 @@ def test_replay_per_run_errors_stay_best_effort(tmp_path, monkeypatch):
 
 
 # ----------------------------------------------------------------------
+# Spawn failures are not outcomes — a run whose child never exec'd the
+# target is recorded with provenance spawn_failure, retried once, and
+# excluded from the reproduced/deterministic verdict.
+# ----------------------------------------------------------------------
+
+
+def _crash_result():
+    """A genuine SIGSEGV replay result (waitstatus provenance)."""
+    return types.SimpleNamespace(
+        sandbox_info={"signal": "SIGSEGV", "signal_num": 11,
+                      "crashed": True,
+                      "signal_provenance": "waitstatus"},
+        returncode=-11, stdout=b"", stderr=b"",
+    )
+
+
+def _exec_failed_result(*, precise: bool, returncode: int = 126,
+                        stdout: bytes = b"", stderr: bytes = b""):
+    """A run-1-style exec failure. ``precise=True`` models the
+    exec-status-pipe lane (``_setup_status`` category tuple);
+    ``precise=False`` models the lanes that re-encode exec failure as
+    a bare 125/126/127 exit."""
+    r = types.SimpleNamespace(
+        sandbox_info={"crashed": False, "resource_exceeded": False},
+        returncode=returncode, stdout=stdout, stderr=stderr,
+    )
+    if precise:
+        r._setup_status = ("X", "exec: [ETXTBSY] Text file busy")
+    return r
+
+
+@pytest.mark.parametrize("precise", [True, False])
+def test_replay_spawn_failure_retried_and_verdict_unaffected(
+        tmp_path, monkeypatch, precise):
+    """Run 1's exec fails (ETXTBSY shape); the retry and runs 2-3
+    crash as recorded. The verdict must be reproduced=True — the
+    pre-fix code counted the exec failure as no_obvious_effect and
+    flipped the verdict to non-deterministic."""
+    bundle, data, fake_bin = _replay_fixture(tmp_path)
+    seq = [_exec_failed_result(precise=precise),
+           _crash_result(), _crash_result(), _crash_result()]
+    calls = iter(seq)
+    count = {"n": 0}
+
+    def fake_run_untrusted(cmd, **kwargs):
+        count["n"] += 1
+        return next(calls)
+
+    monkeypatch.setattr(core.sandbox, "run_untrusted", fake_run_untrusted)
+    result = reproduce_witness(bundle, data, binary_path=fake_bin, n=3)
+    assert count["n"] == 4  # 3 runs + exactly one bounded retry
+    assert result.observed_outcomes == ["exit_signal"] * 3
+    assert result.reproduced is True
+    assert result.deterministic is True
+    assert "non-deterministic" not in result.reason
+    assert result.spawn_failures == 1
+    assert "spawn-failure" in result.reason
+    sf = [d for d in result.run_details
+          if d.get("outcome") == "spawn_failure"]
+    assert len(sf) == 1
+    assert sf[0]["run"] == 1
+    assert sf[0]["attempt"] == 1
+    assert result.as_dict()["spawn_failures"] == 1
+
+
+def test_replay_target_exit_126_on_status_lane_is_an_outcome(
+        tmp_path, monkeypatch):
+    """The precise signal wins over the exit code: a result whose
+    ``_setup_status`` is None (exec-status pipe EOF — the target DID
+    exec) counts as a genuine outcome even at returncode 126, with no
+    retry."""
+    bundle, data, fake_bin = _replay_fixture(tmp_path)
+    count = {"n": 0}
+
+    def fake_run_untrusted(cmd, **kwargs):
+        count["n"] += 1
+        r = types.SimpleNamespace(
+            sandbox_info={"crashed": False}, returncode=126,
+            stdout=b"", stderr=b"",
+        )
+        r._setup_status = None  # attribute present, pipe said EOF
+        return r
+
+    monkeypatch.setattr(core.sandbox, "run_untrusted", fake_run_untrusted)
+    result = reproduce_witness(bundle, data, binary_path=fake_bin, n=2)
+    assert count["n"] == 2  # no retries
+    assert result.spawn_failures == 0
+    assert result.observed_outcomes == ["no_obvious_effect"] * 2
+
+
+def test_replay_exit_126_with_output_is_an_outcome(tmp_path, monkeypatch):
+    """The bounded heuristic never reclassifies a run that produced
+    target output — exec failure happens before the target's first
+    instruction."""
+    bundle, data, fake_bin = _replay_fixture(tmp_path)
+    count = {"n": 0}
+
+    def fake_run_untrusted(cmd, **kwargs):
+        count["n"] += 1
+        return _exec_failed_result(precise=False, stdout=b"ran fine\n")
+
+    monkeypatch.setattr(core.sandbox, "run_untrusted", fake_run_untrusted)
+    result = reproduce_witness(bundle, data, binary_path=fake_bin, n=1)
+    assert count["n"] == 1
+    assert result.spawn_failures == 0
+    assert result.observed_outcomes == ["no_obvious_effect"]
+
+
+def test_replay_sandbox_prefixed_stderr_stays_in_heuristic_window(
+        tmp_path, monkeypatch):
+    """The sandbox layer's own pre-exec diagnostics (``sandbox:``-
+    prefixed stderr, e.g. the pid1-shim's exec-failure line) do not
+    disqualify the spawn-failure classification."""
+    bundle, data, fake_bin = _replay_fixture(tmp_path)
+    seq = [
+        _exec_failed_result(
+            precise=False, returncode=125,
+            stderr=(b"sandbox: pid1-shim: exec of target failed "
+                    b"(ETXTBSY): Text file busy\n")),
+        _crash_result(),
+    ]
+    calls = iter(seq)
+    monkeypatch.setattr(core.sandbox, "run_untrusted",
+                        lambda cmd, **k: next(calls))
+    result = reproduce_witness(bundle, data, binary_path=fake_bin, n=1)
+    assert result.spawn_failures == 1
+    assert result.observed_outcomes == ["exit_signal"]
+    assert result.reproduced is True
+
+
+def test_replay_persistent_spawn_failure_excluded_not_nondeterministic(
+        tmp_path, monkeypatch):
+    """Every attempt fails to spawn: nothing observed, verdict is an
+    honest 'no run executed' — never 'non-deterministic', never
+    reproduced."""
+    bundle, data, fake_bin = _replay_fixture(tmp_path)
+    count = {"n": 0}
+
+    def fake_run_untrusted(cmd, **kwargs):
+        count["n"] += 1
+        return _exec_failed_result(precise=False)
+
+    monkeypatch.setattr(core.sandbox, "run_untrusted", fake_run_untrusted)
+    result = reproduce_witness(bundle, data, binary_path=fake_bin, n=2)
+    assert count["n"] == 4  # 2 runs x (attempt + one bounded retry)
+    assert result.attempted is True
+    assert result.reproduced is False
+    assert result.observed_outcomes == []
+    assert result.spawn_failures == 4
+    assert "no run executed" in result.reason
+    assert "non-deterministic" not in result.reason
+
+
+def test_replay_setup_error_x_category_retried_once(tmp_path, monkeypatch):
+    """A SandboxSetupError carrying setup_category='X' (the sandbox
+    engaged; the target's own exec failed inside it) is a spawn
+    failure: one bounded retry at full isolation."""
+    bundle, data, fake_bin = _replay_fixture(tmp_path)
+    seq: list = [
+        SandboxSetupError("sandbox mount-ns setup or exec failed "
+                          "(X: exec: [ETXTBSY] Text file busy)",
+                          setup_category="X"),
+        _crash_result(),
+    ]
+    calls = iter(seq)
+
+    def fake_run_untrusted(cmd, **kwargs):
+        item = next(calls)
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+    monkeypatch.setattr(core.sandbox, "run_untrusted", fake_run_untrusted)
+    result = reproduce_witness(bundle, data, binary_path=fake_bin, n=1)
+    assert result.reproduced is True
+    assert result.spawn_failures == 1
+    sf = [d for d in result.run_details
+          if d.get("outcome") == "spawn_failure"]
+    assert len(sf) == 1
+    assert "ETXTBSY" in sf[0]["spawn_failure"]
+
+
+def test_replay_setup_error_x_category_persistent_reraises(
+        tmp_path, monkeypatch):
+    """The bounded retry does not soften fail-loud: a SECOND exec
+    failure on the same run re-raises."""
+    bundle, data, fake_bin = _replay_fixture(tmp_path)
+    count = {"n": 0}
+
+    def always_x(cmd, **kwargs):
+        count["n"] += 1
+        raise SandboxSetupError("exec failed again", setup_category="X")
+
+    monkeypatch.setattr(core.sandbox, "run_untrusted", always_x)
+    with pytest.raises(SandboxSetupError):
+        reproduce_witness(bundle, data, binary_path=fake_bin, n=3)
+    assert count["n"] == 2  # attempt + one retry, then loud
+
+
+def test_replay_setup_error_engagement_category_fails_loud_immediately(
+        tmp_path, monkeypatch):
+    """Non-exec categories (isolation could not engage — L/S/U/M/...)
+    keep the fail-loud contract with no retry at all."""
+    bundle, data, fake_bin = _replay_fixture(tmp_path)
+    count = {"n": 0}
+
+    def landlock_fail(cmd, **kwargs):
+        count["n"] += 1
+        raise SandboxSetupError("sandbox Landlock setup failed",
+                                setup_category="L")
+
+    monkeypatch.setattr(core.sandbox, "run_untrusted", landlock_fail)
+    with pytest.raises(SandboxSetupError):
+        reproduce_witness(bundle, data, binary_path=fake_bin, n=3)
+    assert count["n"] == 1
+
+
+def test_source_lane_spawn_failed_supervisor_record_retried(
+        tmp_path, monkeypatch):
+    """LLM_EMIT_RUN lane: the in-sandbox supervisor's precise
+    exit_kind='spawn_failed' record (its Popen of the compiled exploit
+    raised) is a spawn failure — retried once, excluded from the
+    verdict."""
+    bundle, data = _bundle(
+        tmp_path, source=WitnessSource.LLM_EMIT_RUN,
+        outcome=WitnessOutcome.EXIT_SIGNAL, data=b"// poc",
+    )
+    import packages.llm_analysis.exploit_verify as ev
+    seq = [
+        (True, [], WitnessOutcome.NO_OBVIOUS_EFFECT,
+         {"exec_oracle": {"exit_kind": "spawn_failed",
+                          "error": "OSError"}}),
+        (True, [], WitnessOutcome.EXIT_SIGNAL, {}),
+        (True, [], WitnessOutcome.EXIT_SIGNAL, {}),
+    ]
+    calls = iter(seq)
+    monkeypatch.setattr(ev, "compile_and_execute",
+                        lambda *a, **k: next(calls))
+    result = reproduce_witness(bundle, data, n=2)
+    assert result.observed_outcomes == ["exit_signal"] * 2
+    assert result.reproduced is True
+    assert result.spawn_failures == 1
+    sf = [d for d in result.run_details
+          if d.get("outcome") == "spawn_failure"]
+    assert len(sf) == 1 and sf[0]["run"] == 1
+
+
+# ----------------------------------------------------------------------
 # n < 1 guard — refuses instead of misreporting "non-deterministic"
 # over an empty outcome list
 # ----------------------------------------------------------------------
@@ -537,3 +785,93 @@ def test_real_fuzz_replay_reproduces(tmp_path):
         f"({result.reason})"
     )
     assert result.observed_outcomes == ["exit_signal"] * 3
+
+
+def _mount_ns_spawn_lane_usable() -> bool:
+    """The ETXTBSY integration test needs the mount-ns spawn lane: on
+    the plain-subprocess fallback lanes Popen surfaces ETXTBSY as an
+    in-parent OSError (recorded 'error', a different contract)."""
+    if sys.platform != "linux":
+        return False
+    from core.sandbox._spawn import mount_ns_available
+    return mount_ns_available()
+
+
+@pytest.mark.slow  # compile + up to four real sandboxed replays
+@pytest.mark.skipif(shutil.which("gcc") is None and
+                    shutil.which("cc") is None,
+                    reason="no C compiler")
+@pytest.mark.skipif(not _untrusted_contract_available(),
+                    reason="no unprivileged userns and no degraded opt-in")
+def test_real_replay_first_run_etxtbsy_is_spawn_failure_not_outcome(
+        tmp_path, monkeypatch):
+    """End-to-end through the REAL spawn plumbing: run 1 execs the
+    target while a writer fd is still open on it (the CI flake's
+    mechanism — exec fails ETXTBSY before the target's first
+    instruction), the fd is gone by the retry. The run must be
+    recorded as a spawn failure and retried; the verdict must be
+    reproduced=True, never 'non-deterministic'."""
+    if not _mount_ns_spawn_lane_usable():
+        pytest.skip("mount-ns spawn lane unavailable "
+                    "(needs uidmap + userns)")
+    import os as os_mod
+
+    monkeypatch.delenv("RAPTOR_ALLOW_DEGRADED_UNTRUSTED", raising=False)
+
+    cc = shutil.which("cc") or shutil.which("gcc")
+    src = tmp_path / "crasher.c"
+    src.write_text(_CRASHER_SRC)
+    binary = tmp_path / "crasher"
+    subprocess.run(
+        [cc, "-O0", "-g", "-o", str(binary), str(src)],
+        check=True, timeout=30,
+    )
+
+    crash_input = b"B" + b"\x00" * 8
+    bundle, data = _bundle(
+        tmp_path, source=WitnessSource.FUZZ,
+        outcome=WitnessOutcome.EXIT_SIGNAL,
+        data=crash_input,
+        target_binary_hash=sha256_file(binary),
+    )
+
+    # Hold a writer fd across the FIRST sandbox call only: the
+    # sandbox child's execve of the binary then fails ETXTBSY (the
+    # kernel refuses to exec a file open for writing anywhere), and
+    # the fd is closed before control returns — the bounded retry
+    # runs clean.
+    real_run_untrusted = core.sandbox.run_untrusted
+    state = {"wfd": os_mod.open(str(binary),
+                                os_mod.O_WRONLY | os_mod.O_APPEND)}
+
+    def first_call_holds_writer(cmd, **kwargs):
+        try:
+            return real_run_untrusted(cmd, **kwargs)
+        finally:
+            if state["wfd"] is not None:
+                os_mod.close(state["wfd"])
+                state["wfd"] = None
+
+    monkeypatch.setattr(core.sandbox, "run_untrusted",
+                        first_call_holds_writer)
+    try:
+        result = reproduce_witness(
+            bundle, data, binary_path=binary, n=3, sandbox_timeout=10,
+        )
+    finally:
+        if state["wfd"] is not None:
+            os_mod.close(state["wfd"])
+
+    assert result.spawn_failures >= 1, (
+        f"expected run 1 to be a spawn failure; got "
+        f"{result.observed_outcomes} ({result.reason}) "
+        f"details={result.run_details}"
+    )
+    assert result.observed_outcomes == ["exit_signal"] * 3, (
+        f"verdict polluted: {result.observed_outcomes} ({result.reason})"
+    )
+    assert result.reproduced is True
+    assert "non-deterministic" not in result.reason
+    sf = [d for d in result.run_details
+          if d.get("outcome") == "spawn_failure"]
+    assert sf and sf[0]["run"] == 1

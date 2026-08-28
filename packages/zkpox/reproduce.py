@@ -28,6 +28,17 @@ means different things depending on what the witness *is*:
     hash); we verify the supplied binary's sha256 matches the
     bundle's ``target_binary_hash`` before trusting the result.
 
+**Spawn failures are not outcomes.** A run whose child never
+successfully exec'd the target (exec-status category from the sandbox,
+the supervisor's ``spawn_failed`` record on the recompile lane, or the
+bounded 125/126/127-with-no-output shape on lanes that re-encode exec
+errors as exit codes) is recorded in ``run_details`` with provenance
+``spawn_failure``, retried once, and excluded from the
+reproduced/deterministic verdict — counting it would let a transient
+ETXTBSY read as "non-deterministic witness". See
+:func:`_spawn_failure_reason` for the precise-vs-heuristic split and
+its bounds.
+
 The full tier model lives in the package docstring
 (``packages/zkpox/__init__.py``).
 """
@@ -60,6 +71,88 @@ _SANITIZER_FLAG = {
     "tsan": "thread",
 }
 
+# Exit codes the spawn layers re-encode a failed exec of the TARGET as
+# (shell/util-linux convention, shared by the pid1-shim and the spawn
+# grandchild): 127 file not found, 126 found but not executable, 125
+# the pid1-shim's catch-all exec errno (ETXTBSY, ENOEXEC, ELOOP, ...).
+# A run that exits with one of these MAY still be a genuine target
+# outcome — see _spawn_failure_reason for how the ambiguity is bounded.
+_EXEC_FAILURE_RETURNCODES = frozenset({125, 126, 127})
+
+# Sentinel distinguishing "result has no _setup_status attribute at all"
+# (lane without the exec-status pipe) from "_setup_status is None"
+# (exec-status lane, and the pipe's EOF proved the target exec'd).
+_NO_SETUP_STATUS = object()
+
+
+def _stderr_is_sandbox_diagnostic_only(stderr: object) -> bool:
+    """True iff ``stderr`` is empty or carries only the sandbox layer's
+    own pre-exec diagnostics (lines prefixed ``sandbox:`` — the
+    convention of ``warn_post_fork``, the seccomp preexec, and the
+    pid1-shim's exec-failure line)."""
+    if not stderr:
+        return True
+    text = (stderr.decode("utf-8", errors="replace")
+            if isinstance(stderr, bytes) else str(stderr))
+    return all(
+        line.startswith("sandbox:")
+        for line in text.splitlines() if line.strip()
+    )
+
+
+def _spawn_failure_reason(result: Any) -> str | None:
+    """Classify a completed replay run as a spawn failure — the child
+    never successfully exec'd the target — or ``None`` (genuine
+    outcome).
+
+    Precise signal first: results from the exec-status-pipe lanes
+    (mount-ns spawn path, macOS seatbelt shim) carry ``_setup_status``.
+    ``None`` there is pipe-EOF kernel truth that the target DID exec —
+    a target that then legitimately exits 126 counts as an outcome and
+    is never reclassified. Any category tuple means setup or exec
+    failed before the target ran.
+
+    Lanes without the attribute (pid1-shim subprocess lane, the
+    Landlock-only retry, plain subprocess fallbacks) re-encode exec
+    failure as exit 125/126/127 with no side channel, which is
+    ambiguous with a target that chooses those codes. The heuristic is
+    therefore bounded to the pre-first-output window: a failed exec
+    happens before the target's first instruction, so the child writes
+    NOTHING except (possibly) the sandbox layer's own ``sandbox:``-
+    prefixed diagnostics; any signal/sanitizer evidence or any target
+    output disqualifies the reclassification. The residual ambiguity —
+    a target that exits 125-127 without ever producing output — costs
+    one bounded retry and, when persistent, an honest "runs did not
+    execute" non-reproduction, never a false "reproduced". No new
+    forgery power either: a target that wants to dodge reproduction
+    can already just exit 0.
+    """
+    status: Any = getattr(result, "_setup_status", _NO_SETUP_STATUS)
+    if status is not _NO_SETUP_STATUS:
+        if status is None:
+            return None  # exec-status lane: the target exec'd
+        try:
+            cat, why = status[0], status[1]
+        except (TypeError, IndexError, KeyError):
+            cat, why = "?", str(status)
+        return f"sandbox setup/exec failure ({cat}: {why})"
+    rc = getattr(result, "returncode", None)
+    if rc not in _EXEC_FAILURE_RETURNCODES:
+        return None
+    info = getattr(result, "sandbox_info", None) or {}
+    if info.get("signal") or info.get("sanitizer") or info.get("crashed"):
+        return None  # it demonstrably ran/died — a genuine outcome
+    if getattr(result, "stdout", None):
+        return None  # produced output — it ran
+    if not _stderr_is_sandbox_diagnostic_only(
+            getattr(result, "stderr", None)):
+        return None
+    return (
+        f"exit code {rc} with no output and no signal — exec-failure "
+        f"shape (spawn layers re-encode a failed target exec as "
+        f"125/126/127)"
+    )
+
 
 @dataclass
 class ReproductionResult:
@@ -86,6 +179,15 @@ class ReproductionResult:
     # consumers must not read tier 1.5 as mechanical proof unless this
     # field says so.
     evidence_grade: str = ""
+    # Count of spawn-failure ATTEMPTS: executions whose child never
+    # successfully exec'd the target (exec-status category, or the
+    # bounded 125/126/127-with-no-output shape — see
+    # _spawn_failure_reason). Spawn failures are NOT observed outcomes:
+    # they never enter observed_outcomes or the reproduced/deterministic
+    # verdict; each planned run gets one bounded retry. Provenance for
+    # every such attempt is recorded in run_details with
+    # outcome="spawn_failure".
+    spawn_failures: int = 0
     # Per-run diagnostics: returncode plus a bounded extract of
     # sandbox_info (signal, crashed, blocked, isolation degradation).
     # Outcome strings alone cannot distinguish "the witness genuinely
@@ -104,6 +206,7 @@ class ReproductionResult:
             "deterministic": self.deterministic,
             "reason": self.reason,
             "evidence_grade": self.evidence_grade,
+            "spawn_failures": self.spawn_failures,
             "run_details": [dict(d) for d in self.run_details],
         }
 
@@ -116,13 +219,36 @@ def _finalize(
     reason: str = "",
     grades: list[str] | None = None,
     details: list[dict] | None = None,
+    spawn_failures: int = 0,
 ) -> ReproductionResult:
-    """Build the result from the per-run observed outcomes."""
-    reproduced = bool(observed) and all(o == expected for o in observed)
+    """Build the result from the per-run observed outcomes.
+
+    ``observed`` carries only runs whose child actually exec'd the
+    target; spawn-failure attempts (counted by ``spawn_failures``,
+    detailed in ``details``) are excluded from the verdict entirely.
+    ``reproduced`` requires all ``n`` planned runs to have executed AND
+    matched — a run whose bounded retry also failed to spawn leaves
+    ``observed`` short, which reads as "cannot claim reproduction",
+    never as non-determinism.
+    """
+    executed = len(observed)
+    reproduced = (executed == n and executed > 0
+                  and all(o == expected for o in observed))
     deterministic = bool(observed) and len(set(observed)) == 1
     if not reason:
         if reproduced:
-            reason = f"all {len(observed)} runs reproduced {expected!r}"
+            reason = f"all {executed} runs reproduced {expected!r}"
+        elif executed == 0 and spawn_failures:
+            reason = (
+                f"no run executed: every attempt was a spawn failure "
+                f"(the target never exec'd; see run_details)"
+            )
+        elif executed < n and spawn_failures:
+            reason = (
+                f"only {executed}/{n} runs executed "
+                f"({spawn_failures} spawn-failure attempt(s) excluded "
+                f"from the verdict); observed {observed}"
+            )
         elif deterministic:
             reason = (
                 f"deterministic but off-target: all runs produced "
@@ -132,6 +258,11 @@ def _finalize(
             reason = (
                 f"non-deterministic: outcomes varied across runs "
                 f"({observed})"
+            )
+        if spawn_failures and executed == n:
+            reason += (
+                f" ({spawn_failures} spawn-failure attempt(s) retried "
+                f"and excluded from the verdict)"
             )
     # Weakest-wins: one heuristic (or ungraded) run demotes the whole
     # reproduction — the honest reading of mixed evidence.
@@ -151,6 +282,7 @@ def _finalize(
         deterministic=deterministic,
         reason=reason,
         evidence_grade=grade,
+        spawn_failures=spawn_failures,
         run_details=list(details or []),
     )
 
@@ -266,28 +398,63 @@ def _reproduce_source(
 
     observed: list[str] = []
     grades: list[str] = []
+    details: list[dict] = []
+    spawn_failures = 0
     for i in range(n):
-        compiled, errors, outcome, detail = compile_and_execute(
-            exploit_code,
-            None,  # no target source path → attempt gcc unconditionally
-            f"{bundle.witness_hash[:12]}-rep{i}",
-            timeout=sandbox_timeout,
-            logger=log,
-            sanitizers=sanitizers,
-        )
-        if not compiled:
-            return ReproductionResult(
-                attempted=True, runs=n, expected_outcome=expected,
-                observed_outcomes=observed,
-                reason=(
-                    f"run {i + 1}/{n}: recompile failed "
-                    f"({len(errors)} error(s)) — cannot reproduce"
-                ),
+        for _attempt in (1, 2):
+            compiled, errors, outcome, detail = compile_and_execute(
+                exploit_code,
+                None,  # no target source path → attempt gcc unconditionally
+                f"{bundle.witness_hash[:12]}-rep{i}",
+                timeout=sandbox_timeout,
+                logger=log,
+                sanitizers=sanitizers,
             )
-        observed.append(outcome.value if outcome is not None else "none")
-        grades.append(str((detail or {}).get("evidence_grade") or ""))
+            if not compiled:
+                return ReproductionResult(
+                    attempted=True, runs=n, expected_outcome=expected,
+                    observed_outcomes=observed,
+                    reason=(
+                        f"run {i + 1}/{n}: recompile failed "
+                        f"({len(errors)} error(s)) — cannot reproduce"
+                    ),
+                )
+            # Spawn failure, precise: the in-sandbox waitstatus
+            # supervisor reports exit_kind="spawn_failed" when its own
+            # Popen of the compiled exploit raised (ETXTBSY, ENOEXEC,
+            # ...) — the exploit never ran, so this is not an observed
+            # outcome. One bounded retry per planned run.
+            oracle = (detail or {}).get("exec_oracle") or {}
+            if oracle.get("exit_kind") == "spawn_failed":
+                spawn_failures += 1
+                details.append({
+                    "run": i + 1, "attempt": _attempt,
+                    "outcome": "spawn_failure",
+                    "spawn_failure": (
+                        f"supervisor reported spawn_failed "
+                        f"({oracle.get('error') or 'OSError'})"
+                    ),
+                })
+                if _attempt == 1:
+                    log.info(
+                        "reproduce run %d/%d: exploit spawn failed "
+                        "(%s) — retrying once",
+                        i + 1, n, oracle.get("error") or "OSError",
+                    )
+                    continue
+                log.warning(
+                    "reproduce run %d/%d: exploit spawn failed on the "
+                    "retry as well — excluding the run from the verdict",
+                    i + 1, n,
+                )
+                break
+            observed.append(
+                outcome.value if outcome is not None else "none")
+            grades.append(str((detail or {}).get("evidence_grade") or ""))
+            break
 
-    return _finalize(expected, observed, n, grades=grades)
+    return _finalize(expected, observed, n, grades=grades,
+                     details=details, spawn_failures=spawn_failures)
 
 
 def _reproduce_replay(
@@ -346,63 +513,123 @@ def _reproduce_replay(
     observed: list[str] = []
     grades: list[str] = []
     details: list[dict] = []
+    spawn_failures = 0
     for _i in range(n):
-        try:
-            # run_untrusted, not run: the target binary is untrusted
-            # and the witness is attacker data, so reads must be
-            # pinned to system dirs + the binary's own dir
-            # (restrict_reads) with a credential-free fake $HOME —
-            # a compromised target can't read ~/.ssh or ~/.aws.
-            # block_network + strict_env are forced by the helper.
-            result = sandbox_run_untrusted(
-                [str(binary_path)],
-                target=str(binary_path.parent),
-                output=str(binary_path.parent),
-                capture_output=True,
-                text=False,
-                input=witness_bytes,
-                timeout=sandbox_timeout,
-                env=RaptorConfig.get_safe_env(),
+        for _attempt in (1, 2):
+            try:
+                # run_untrusted, not run: the target binary is untrusted
+                # and the witness is attacker data, so reads must be
+                # pinned to system dirs + the binary's own dir
+                # (restrict_reads) with a credential-free fake $HOME —
+                # a compromised target can't read ~/.ssh or ~/.aws.
+                # block_network + strict_env are forced by the helper.
+                result = sandbox_run_untrusted(
+                    [str(binary_path)],
+                    target=str(binary_path.parent),
+                    output=str(binary_path.parent),
+                    capture_output=True,
+                    text=False,
+                    input=witness_bytes,
+                    timeout=sandbox_timeout,
+                    env=RaptorConfig.get_safe_env(),
+                )
+            except SandboxSetupError as e:
+                # setup_category "X" = every isolation layer engaged
+                # and the TARGET's own exec failed inside the sandbox
+                # (ETXTBSY from a still-open writer fd, and kin) — a
+                # per-invocation spawn failure, not an isolation
+                # refusal. One bounded retry at FULL isolation (no
+                # degrade involved). Anything else keeps the fail-loud
+                # contract: isolation could not engage, never mask as
+                # a benign result.
+                if (getattr(e, "setup_category", None) != "X"
+                        or _attempt == 2):
+                    raise
+                spawn_failures += 1
+                details.append({
+                    "run": _i + 1,
+                    "attempt": _attempt,
+                    "outcome": "spawn_failure",
+                    "spawn_failure": str(
+                        getattr(e, "reason", None) or e)[:200],
+                })
+                log.info(
+                    "reproduce replay run %d/%d: target exec failed "
+                    "inside the sandbox (%s) — retrying once",
+                    _i + 1, n,
+                    str(getattr(e, "reason", None) or e)[:120],
+                )
+                continue
+            except Exception as e:  # noqa: BLE001 — best-effort per run
+                observed.append("error")
+                grades.append("")
+                details.append({
+                    "run": _i + 1,
+                    "outcome": "error",
+                    "error": str(e)[:200],
+                })
+                log.debug("reproduce replay run raised: %s", e)
+                break
+            # Spawn failure: the child never successfully exec'd the
+            # target, so this is NOT an observed outcome — the pre-fix
+            # code counted the re-encoded exit (126/127) as
+            # no_obvious_effect and flipped the verdict to
+            # "non-deterministic". Precise signal preferred, bounded
+            # heuristic otherwise; see _spawn_failure_reason.
+            _sf_reason = _spawn_failure_reason(result)
+            if _sf_reason is not None:
+                spawn_failures += 1
+                details.append({
+                    "run": _i + 1,
+                    "attempt": _attempt,
+                    "outcome": "spawn_failure",
+                    "returncode": getattr(result, "returncode", None),
+                    "spawn_failure": _sf_reason,
+                })
+                if _attempt == 1:
+                    log.info(
+                        "reproduce replay run %d/%d: spawn failure "
+                        "(%s) — retrying once", _i + 1, n, _sf_reason,
+                    )
+                    continue
+                log.warning(
+                    "reproduce replay run %d/%d: spawn failure on the "
+                    "retry as well — excluding the run from the "
+                    "verdict", _i + 1, n,
+                )
+                break
+            sandbox_info = getattr(result, "sandbox_info", None)
+            returncode = getattr(result, "returncode", None)
+            outcome, _detail = outcome_from_sandbox_info(
+                sandbox_info, returncode=returncode,
             )
-        except SandboxSetupError:
-            raise  # sandbox isolation could not engage — fail loud, never mask as a benign result
-        except Exception as e:  # noqa: BLE001 — best-effort per run
-            observed.append("error")
-            grades.append("")
-            details.append({
+            observed.append(outcome.value)
+            grades.append(str(_detail.get("evidence_grade") or ""))
+            rec: dict[str, Any] = {
                 "run": _i + 1,
-                "outcome": "error",
-                "error": str(e)[:200],
-            })
-            log.debug("reproduce replay run raised: %s", e)
-            continue
-        sandbox_info = getattr(result, "sandbox_info", None)
-        returncode = getattr(result, "returncode", None)
-        outcome, _detail = outcome_from_sandbox_info(
-            sandbox_info, returncode=returncode,
-        )
-        observed.append(outcome.value)
-        grades.append(str(_detail.get("evidence_grade") or ""))
-        rec: dict[str, Any] = {
-            "run": _i + 1,
-            "outcome": outcome.value,
-            "returncode": returncode,
-        }
-        if isinstance(sandbox_info, dict):
-            for key in ("signal", "signal_provenance", "crashed",
-                        "seccomp_killed", "resource_exceeded",
-                        "sanitizer", "mount_ns_degraded",
-                        "sandbox_disabled"):
-                value = sandbox_info.get(key)
-                if value not in (None, False):
-                    rec[key] = (value if isinstance(value, (bool, int))
-                                else str(value)[:200])
-            blocked = sandbox_info.get("blocked")
-            if blocked:
-                rec["blocked"] = [str(b)[:120] for b in list(blocked)[:5]]
-        details.append(rec)
+                "outcome": outcome.value,
+                "returncode": returncode,
+            }
+            if _attempt > 1:
+                rec["attempt"] = _attempt
+            if isinstance(sandbox_info, dict):
+                for key in ("signal", "signal_provenance", "crashed",
+                            "seccomp_killed", "resource_exceeded",
+                            "sanitizer", "mount_ns_degraded",
+                            "sandbox_disabled"):
+                    value = sandbox_info.get(key)
+                    if value not in (None, False):
+                        rec[key] = (value if isinstance(value, (bool, int))
+                                    else str(value)[:200])
+                blocked = sandbox_info.get("blocked")
+                if blocked:
+                    rec["blocked"] = [str(b)[:120]
+                                      for b in list(blocked)[:5]]
+            details.append(rec)
+            break
 
-    return _finalize(expected, observed, n, grades=grades, details=details)
+    return _finalize(expected, observed, n, grades=grades,
+                     details=details, spawn_failures=spawn_failures)
 
 
 def attach_reproduction(

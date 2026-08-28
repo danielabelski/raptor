@@ -2513,5 +2513,17 @@
   "core/audit/lifetime_witness.py::_classify_occurrence": {
     "note": "Closed tree-sitter C grammar node-type enumeration (ancestor kinds the occurrence classifier walks); grammar-defined, not learnable.",
     "reviewed": "2026-08-28"
+  },
+  "core/threat_model/__init__.py::_SECRET_VALUE_FIELD_NAMES": {
+    "count": 14,
+    "kind": "literal",
+    "note": "Security denylist of context-map entry field names whose values are the matched secret material itself (the redaction pass drops them wholesale) — same class as the baselined cc_trust env-var denylist, not target-API vocabulary. Additions that are API-shaped should route through the learned-vocab path.",
+    "reviewed": "2026-08-28"
+  },
+  "packages/zkpox/reproduce.py::as_dict": {
+    "count": 10,
+    "kind": "literal",
+    "note": "Serialization schema keys of the reproduction-result dataclass record (report JSON field names), not a name vocabulary — same class as project.py::to_dict.",
+    "reviewed": "2026-08-28"
   }
 }

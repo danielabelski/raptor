@@ -114,41 +114,19 @@ KNOWN_FP_RULES: tuple[KnownFP, ...] = (
             "(core/threat_model/__init__.py:732). Triaged FP."
         ),
     ),
-    KnownFP(
-        rule_id="py/clear-text-storage-of-sensitive-information",
-        sink_file_prefixes=(
-            "core/threat_model/__init__.py",
-            "core/project/cli.py",
-        ),
-        justification=(
-            "Threat-model markdown persistence (save_model and the "
-            "project threat-model sync action render THREAT_MODEL.md "
-            "via render_markdown). Source is the heuristically-named "
-            "local `secrets` in core/threat_model/__init__.py "
-            "from_context_map: _summaries_from_entries builds finding "
-            "LABELS from context-map hardcoded_secrets entries — "
-            "name/id plus file:line location and trust tag — never "
-            "the credential value itself. The threat model is the "
-            "operator-facing review document; persisting those labels "
-            "is its purpose. Triaged FP."
-        ),
-    ),
-    KnownFP(
-        rule_id="py/clear-text-logging-sensitive-data",
-        sink_file_prefixes=(
-            "core/project/cli.py",
-        ),
-        justification=(
-            "`project threat-model export` prints render_markdown() "
-            "of the threat model to stdout on explicit operator "
-            "request. Same flow class as the storage entry above: "
-            "the taint source is the heuristically-named `secrets` "
-            "local in core/threat_model/__init__.py whose values are "
-            "finding labels (name + file:line + trust tag) derived "
-            "from context-map hardcoded_secrets summaries, not "
-            "secret material. Triaged FP."
-        ),
-    ),
+    # NOTE: no entries for the threat-model persistence flows
+    # (core/threat_model/__init__.py save_model, core/project/cli.py
+    # threat-model sync/export). Earlier entries triaged them as FPs
+    # on the claim that hardcoded_secrets summaries carry only finding
+    # labels — but the context-map hardcoded_secrets schema is
+    # unenforced and the producer can put the matched credential value
+    # into the very fields the summaries extract, so the flows were
+    # genuine. They are now redacted at the source
+    # (core/threat_model/__init__.py _redacted_secret_entries) before
+    # any summary extraction; if a future query-pack version still
+    # derives the (now genuinely sanitized) flow, the correct lane is
+    # a SanitizerFP through core/security/redaction.py, not a
+    # file-prefix removal.
     KnownFP(
         rule_id="py/clear-text-storage-of-sensitive-information",
         sink_file_prefixes=(

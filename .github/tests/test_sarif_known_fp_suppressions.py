@@ -116,6 +116,30 @@ class MatchKnownFPTests(unittest.TestCase):
         del result["ruleId"]
         self.assertIsNone(mod._matches_known_fp(result))
 
+    def test_threat_model_storage_sink_not_suppressed(self):
+        """The threat-model persistence flows are redacted at the
+        source, not suppressed: hardcoded_secrets entries can carry
+        real credential values (the schema is unenforced), so a
+        clear-text-storage result at these sinks must reach the
+        upload for review."""
+        for uri in (
+            "core/threat_model/__init__.py",
+            "core/project/cli.py",
+        ):
+            result = _make_result(
+                "py/clear-text-storage-of-sensitive-information", uri
+            )
+            self.assertIsNone(mod._matches_known_fp(result))
+
+    def test_threat_model_export_logging_sink_not_suppressed(self):
+        """Same flow class as the storage sinks above: the export
+        print must not be file-prefix-suppressed."""
+        result = _make_result(
+            "py/clear-text-logging-sensitive-data",
+            "core/project/cli.py",
+        )
+        self.assertIsNone(mod._matches_known_fp(result))
+
     def test_matches_raptor_audit_logging_sink(self):
         """libexec/raptor-audit is covered by a KnownFP entry because
         CodeQL intermittently omits flow steps through redact_secrets."""
@@ -392,7 +416,7 @@ class TableShapeTests(unittest.TestCase):
         """Adding a KnownFP entry requires updating this count.
         If this test fails, you added a suppression — update the
         expected count after confirming the new entry is justified."""
-        self.assertEqual(len(mod.KNOWN_FP_RULES), 6)
+        self.assertEqual(len(mod.KNOWN_FP_RULES), 4)
 
     def test_sanitizer_fp_count_pinned(self):
         """Adding a SanitizerFP entry requires updating this count."""

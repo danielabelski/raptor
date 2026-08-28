@@ -337,6 +337,46 @@ def _sessions_registry_in_tmp(monkeypatch):
     _pin._frozen_pins.clear()
 
 
+@pytest.fixture(autouse=True)
+def _projects_registry_in_tmp(monkeypatch):
+    """Pin the RAPTOR projects registry (~/.raptor/projects) to a
+    fresh per-test path.
+
+    Two-sided, same doctrine as the sessions-registry redirect above:
+    the operator's REAL project store must never steer tests (an
+    active project or a project whose output_path matches a test dir
+    changes resolution behaviour — the static-analysis suite already
+    carried this fixture locally after exactly that incident), and a
+    test that creates projects must never write into the operator's
+    store. It is also a measured perf chokepoint: ``resolve_run_pin``
+    consults ``is_project_output_dir`` per walk level, each of which
+    ``list_projects()``-loads EVERY json in the store — against a
+    populated operator store (hundreds of projects) that is tens of
+    milliseconds per resolve, times 8+ resolves per audit-prep
+    fixture, across thousands of tests. ``ProjectManager`` reads the module global at call time and
+    creates the dir on demand, so a never-created unique path is
+    sufficient. Suites that need a populated registry pass their own
+    ``projects_dir`` / patch (monkeypatch wins over this default).
+    """
+    unique = (
+        Path(_tempfile.gettempdir())
+        / f"raptor-test-projects-{os.getpid()}-{next(_SESSIONS_DIR_SEQ)}"
+    )
+    monkeypatch.setattr(
+        "core.project.project.PROJECTS_DIR", unique / "projects",
+    )
+    # core.startup keeps its own import-time copies (PROJECTS_DIR and
+    # the derived ACTIVE_LINK) for the light no-ProjectManager readers
+    # (get_active_name and the expiry probe) — patch both so the light
+    # path resolves the same isolated store as the manager path.
+    monkeypatch.setattr(
+        "core.startup.PROJECTS_DIR", unique / "projects",
+    )
+    monkeypatch.setattr(
+        "core.startup.ACTIVE_LINK", unique / "projects" / ".active",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Default-tier slow-test guard
 # ---------------------------------------------------------------------------

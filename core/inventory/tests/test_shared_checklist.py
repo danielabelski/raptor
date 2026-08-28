@@ -173,53 +173,35 @@ class TestSetupChecklistSymlink(unittest.TestCase):
             project_dir.mkdir()
             run_dir.mkdir()
 
-            # Create project JSON and .active symlink
-            projects_dir = Path.home() / ".raptor" / "projects"
+            # Create the project JSON and .active symlink in the
+            # PER-TEST registry (root conftest redirects the module
+            # global) — never the operator's real ~/.raptor store,
+            # which this test used to mutate and restore.
+            from core.project import project as project_mod
+            projects_dir = project_mod.PROJECTS_DIR
             projects_dir.mkdir(parents=True, exist_ok=True)
             active_link = projects_dir / ".active"
-
-            # Save/restore state
-            old_link = os.readlink(active_link) if active_link.is_symlink() else None
 
             save_json(projects_dir / "_test_shared.json", {
                 "name": "_test_shared",
                 "target": "./target",
                 "output_dir": str(project_dir),
             })
-            if active_link.is_symlink() or active_link.exists():
-                active_link.unlink()
             active_link.symlink_to("_test_shared.json")
 
-            try:
-                _setup_checklist_symlink(run_dir)
-                self.assertTrue((run_dir / "checklist.json").is_symlink())
-                target = os.readlink(run_dir / "checklist.json")
-                self.assertEqual(target, "../checklist.json")
-            finally:
-                (projects_dir / "_test_shared.json").unlink(missing_ok=True)
-                if active_link.is_symlink():
-                    active_link.unlink()
-                if old_link:
-                    active_link.symlink_to(old_link)
+            _setup_checklist_symlink(run_dir)
+            self.assertTrue((run_dir / "checklist.json").is_symlink())
+            target = os.readlink(run_dir / "checklist.json")
+            self.assertEqual(target, "../checklist.json")
 
     def test_no_symlink_in_standalone_mode(self):
         with TemporaryDirectory() as d:
             run_dir = Path(d) / "run-001"
             run_dir.mkdir()
 
-            # Ensure no active project
-            projects_dir = Path.home() / ".raptor" / "projects"
-            active_link = projects_dir / ".active"
-            old_link = os.readlink(active_link) if active_link.is_symlink() else None
-            if active_link.is_symlink():
-                active_link.unlink()
-
-            try:
-                _setup_checklist_symlink(run_dir)
-                self.assertFalse((run_dir / "checklist.json").exists())
-            finally:
-                if old_link:
-                    active_link.symlink_to(old_link)
+            # The per-test registry starts empty — no active project.
+            _setup_checklist_symlink(run_dir)
+            self.assertFalse((run_dir / "checklist.json").exists())
 
     def test_skips_existing_real_file(self):
         with TemporaryDirectory() as d:

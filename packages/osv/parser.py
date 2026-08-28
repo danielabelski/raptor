@@ -118,8 +118,20 @@ def _parse_ranges(ranges_raw: list[Any]) -> tuple[OsvRange, ...]:
         # `introduced` counterpart). The matcher assumes
         # introduced precedes the upper bound; reordering here
         # at parse time avoids matcher bugs downstream.
-        # Empty events list short-circuits.
-        if events:
+        #
+        # ONLY for single-interval ranges (exactly one
+        # ``introduced``). A multi-interval range like
+        # ``[i 1.1, f 1.1.4, i 1.2, f 1.2.5]`` is already paired;
+        # a type-keyed sort would regroup it to
+        # ``[i 1.1, i 1.2, f 1.1.4, f 1.2.5]``, and the interval
+        # walk then treats the doubled ``introduced`` as an
+        # open-ended interval — silently widening the vulnerable
+        # range to everything ≥ 1.1. Version-aware sorting is not
+        # possible here (ecosystem comparators live above this
+        # wire-format layer), so multi-interval events pass
+        # through in feed order.
+        n_introduced = sum(1 for ev in events if "introduced" in ev)
+        if events and n_introduced <= 1:
             _ORDER = {"introduced": 0, "fixed": 1, "last_affected": 1, "limit": 2}
             events.sort(key=lambda ev: _ORDER.get(
                 next(iter(ev.keys()), ""), 99,

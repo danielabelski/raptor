@@ -200,3 +200,38 @@ def test_record_is_immutable() -> None:
     rec = parse_record({"id": "OSV-8"})
     with pytest.raises(Exception):  # FrozenInstanceError subclasses AttributeError
         rec.id = "different"        # type: ignore[misc]
+
+
+def test_event_reorder_only_for_single_interval_ranges() -> None:
+    """A backwards-authored single pair is normalised; a multi-interval
+    range keeps its pairing (a type-keyed sort would regroup it into a
+    doubled ``introduced`` that matchers widen to an open-ended
+    interval)."""
+    record = {
+        "id": "OSV-EVT",
+        "affected": [
+            {
+                "package": {"ecosystem": "PyPI", "name": "x"},
+                "ranges": [
+                    {  # authored backwards — normalised
+                        "type": "ECOSYSTEM",
+                        "events": [{"fixed": "2.0"}, {"introduced": "1.0"}],
+                    },
+                    {  # multi-interval — preserved verbatim
+                        "type": "ECOSYSTEM",
+                        "events": [
+                            {"introduced": "1.1"}, {"fixed": "1.1.4"},
+                            {"introduced": "1.2"}, {"fixed": "1.2.5"},
+                        ],
+                    },
+                ],
+            },
+        ],
+    }
+    rec = parse_record(record)
+    single, multi = rec.affected[0].ranges
+    assert single.events == ({"introduced": "1.0"}, {"fixed": "2.0"})
+    assert multi.events == (
+        {"introduced": "1.1"}, {"fixed": "1.1.4"},
+        {"introduced": "1.2"}, {"fixed": "1.2.5"},
+    )

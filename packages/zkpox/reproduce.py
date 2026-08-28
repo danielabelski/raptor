@@ -35,6 +35,10 @@ bounded 125/126/127-with-no-output shape) is recorded in
 ``run_details`` with provenance ``spawn_failure``, retried once, and
 excluded from the reproduced/deterministic verdict — counting it would
 let a transient ETXTBSY read as "non-deterministic witness". The
+verdict is judged over the EXECUTED runs (all must match, at least one
+must execute): a run excluded after its retry cannot veto what every
+executed run demonstrated, and the k-of-n execution count stays in the
+result. The
 bounded shape applies on EVERY lane, including the exec-status-pipe
 one: the pipe reports failure best-effort only, so its silence never
 vetoes the heuristic. See :func:`_spawn_failure_reason` for the
@@ -179,8 +183,10 @@ class ReproductionResult:
     runs: int
     expected_outcome: str
     observed_outcomes: list[str] = field(default_factory=list)
-    reproduced: bool = False        # every run matched expected
-    deterministic: bool = False     # every run produced the SAME outcome
+    # Every EXECUTED run matched the recorded outcome (>= 1 executed).
+    # Spawn-failure exclusions never block or fake this — see _finalize.
+    reproduced: bool = False
+    deterministic: bool = False     # executed runs all produced the SAME outcome
     reason: str = ""
     # Weakest evidence grade across the runs: "mechanical" only when
     # EVERY run graded mechanical. What "mechanical" means differs by
@@ -244,38 +250,48 @@ def _finalize(
     ``observed`` carries only runs whose child actually exec'd the
     target; spawn-failure attempts (counted by ``spawn_failures``,
     detailed in ``details``) are excluded from the verdict entirely.
-    ``reproduced`` requires all ``n`` planned runs to have executed AND
-    matched — a run whose bounded retry also failed to spawn leaves
-    ``observed`` short, which reads as "cannot claim reproduction",
-    never as non-determinism.
+    ``reproduced`` is judged over the EXECUTED runs: every executed
+    run matched the recorded outcome, with at least one executed. A
+    run whose bounded retry also failed to spawn is an infrastructure
+    exclusion, not evidence about the witness — it never blocks the
+    verdict the executed runs earned, and it never reads as
+    non-determinism (that word is reserved for executed runs that
+    DISAGREE). The exclusion stays honestly in the record: ``runs``
+    keeps the planned count, ``observed_outcomes`` carries only the
+    executed ones, and the reason names "k of n executed" whenever
+    they differ. Zero executed runs can confirm nothing:
+    ``reproduced`` stays False with a "no run executed" reason.
     """
     executed = len(observed)
-    reproduced = (executed == n and executed > 0
-                  and all(o == expected for o in observed))
+    reproduced = executed > 0 and all(o == expected for o in observed)
     deterministic = bool(observed) and len(set(observed)) == 1
+    excluded_note = (
+        f" ({executed}/{n} planned runs executed; the rest were "
+        f"spawn-failure exclusions — infrastructure, not outcome "
+        f"variance; see run_details)"
+        if executed < n and spawn_failures else ""
+    )
     if not reason:
-        if reproduced:
-            reason = f"all {executed} runs reproduced {expected!r}"
-        elif executed == 0 and spawn_failures:
+        if executed == 0 and spawn_failures:
             reason = (
                 f"no run executed: every attempt was a spawn failure "
                 f"(the target never exec'd; see run_details)"
             )
-        elif executed < n and spawn_failures:
+        elif reproduced:
             reason = (
-                f"only {executed}/{n} runs executed "
-                f"({spawn_failures} spawn-failure attempt(s) excluded "
-                f"from the verdict); observed {observed}"
+                f"all {executed} executed runs reproduced {expected!r}"
+                + excluded_note
             )
         elif deterministic:
             reason = (
-                f"deterministic but off-target: all runs produced "
-                f"{observed[0]!r}, expected {expected!r}"
+                f"deterministic but off-target: all executed runs "
+                f"produced {observed[0]!r}, expected {expected!r}"
+                + excluded_note
             )
         else:
             reason = (
-                f"non-deterministic: outcomes varied across runs "
-                f"({observed})"
+                f"non-deterministic: outcomes varied across executed "
+                f"runs ({observed})" + excluded_note
             )
         if spawn_failures and executed == n:
             reason += (
@@ -327,8 +343,11 @@ def reproduce_witness(
             verified against ``bundle.target_binary_hash`` before
             use. Ignored for LLM_EMIT_RUN (recompile) sources.
         n: number of consecutive runs (default 3, must be >= 1).
-            The recorded outcome must reproduce in ALL of them for
-            ``reproduced=True``.
+            The recorded outcome must reproduce in every run that
+            EXECUTES for ``reproduced=True`` (at least one must);
+            spawn-failure attempts are retried once and excluded
+            from the verdict, with the k-of-n execution count kept
+            in the result.
         sandbox_timeout: per-run timeout in seconds.
         logger_: optional logger.
 
@@ -657,6 +676,15 @@ def attach_reproduction(
     """Fold a reproduction result into a bundle: store it under
     ``bundle.reproduction`` and, when the witness reproduced, bump
     the tier label to ``"1.5"``.
+
+    Tier decision: ``"1.5"`` claims "every run that EXECUTED exhibited
+    the recorded outcome" — k of n planned runs with k >= 1, where the
+    n - k exclusions are spawn failures (infrastructure), not outcome
+    evidence. The full honesty trail rides in the persisted
+    ``reproduction`` block (``runs``, ``observed_outcomes``,
+    ``spawn_failures``, ``run_details``, and a reason naming k of n),
+    so no consumer has to infer it from the tier label; nothing
+    downstream reads the label as an n-of-n claim.
 
     Mutates and returns the bundle (callers typically re-persist it
     with ``write_bundle``).

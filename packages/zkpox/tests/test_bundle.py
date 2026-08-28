@@ -159,6 +159,22 @@ def test_render_bundle_shows_reproduction_when_present(tmp_path):
     bundle.reproduction = {"reproduced": True, "runs": 3}
     out = render_bundle(bundle)
     assert "reproduced: True" in out
+    assert "(3 runs)" in out  # no outcome list → plain planned count
+
+
+def test_render_bundle_names_k_of_n_when_runs_were_excluded(tmp_path):
+    """When spawn-failure exclusions left fewer executed runs than
+    planned, the render says "k/n runs executed" instead of a bare
+    "(n runs)" that would overstate the verdict's base."""
+    store, w = _store_with_witness(tmp_path)
+    bundle = assemble_bundle(w, store)
+    bundle.reproduction = {
+        "reproduced": True, "runs": 3,
+        "observed_outcomes": ["exit_signal", "exit_signal"],
+        "spawn_failures": 2,
+    }
+    out = render_bundle(bundle)
+    assert "reproduced: True (2/3 runs executed)" in out
 
 
 # ----------------------------------------------------------------------

@@ -546,6 +546,82 @@ def test_replay_persistent_spawn_failure_excluded_not_nondeterministic(
     assert "non-deterministic" not in result.reason
 
 
+def test_replay_run_excluded_after_retry_verdict_over_executed_runs(
+        tmp_path, monkeypatch):
+    """One run's attempt AND retry both fail to spawn; every run that
+    executed exhibits the recorded outcome. The verdict is judged over
+    the EXECUTED runs: reproduced=True, with the exclusion named
+    honestly as k-of-n in the reason — an infrastructure exclusion
+    must never veto what the executed runs demonstrated, and must
+    never read as non-determinism."""
+    bundle, data, fake_bin = _replay_fixture(tmp_path)
+    seq = [_exec_failed_result(precise=False),   # run 1, attempt 1
+           _exec_failed_result(precise=False),   # run 1, retry
+           _crash_result(), _crash_result()]     # runs 2-3
+    calls = iter(seq)
+    count = {"n": 0}
+
+    def fake_run_untrusted(cmd, **kwargs):
+        count["n"] += 1
+        return next(calls)
+
+    monkeypatch.setattr(core.sandbox, "run_untrusted", fake_run_untrusted)
+    result = reproduce_witness(bundle, data, binary_path=fake_bin, n=3)
+    assert count["n"] == 4
+    assert result.observed_outcomes == ["exit_signal"] * 2
+    assert result.reproduced is True
+    assert result.deterministic is True
+    assert result.spawn_failures == 2
+    assert result.runs == 3
+    assert "2/3" in result.reason
+    assert "non-deterministic" not in result.reason
+
+
+def test_replay_single_executed_run_still_carries_the_verdict(
+        tmp_path, monkeypatch):
+    """The floor is one executed run: with every other run excluded as
+    spawn failures, a single executed run exhibiting the recorded
+    outcome yields reproduced=True (1/3 named in the reason)."""
+    bundle, data, fake_bin = _replay_fixture(tmp_path)
+    seq = [_exec_failed_result(precise=False),   # run 1, attempt 1
+           _exec_failed_result(precise=False),   # run 1, retry
+           _exec_failed_result(precise=False),   # run 2, attempt 1
+           _exec_failed_result(precise=False),   # run 2, retry
+           _crash_result()]                      # run 3
+    calls = iter(seq)
+    monkeypatch.setattr(core.sandbox, "run_untrusted",
+                        lambda cmd, **k: next(calls))
+    result = reproduce_witness(bundle, data, binary_path=fake_bin, n=3)
+    assert result.observed_outcomes == ["exit_signal"]
+    assert result.reproduced is True
+    assert result.spawn_failures == 4
+    assert "1/3" in result.reason
+
+
+def test_replay_executed_runs_disagreeing_is_still_nondeterministic(
+        tmp_path, monkeypatch):
+    """Exclusions never soften a real disagreement: when the executed
+    runs themselves diverge, the verdict stays non-deterministic and
+    not reproduced — with the exclusion still named."""
+    bundle, data, fake_bin = _replay_fixture(tmp_path)
+    clean_exit = types.SimpleNamespace(
+        sandbox_info={"crashed": False}, returncode=0,
+        stdout=b"", stderr=b"",
+    )
+    seq = [_exec_failed_result(precise=False),   # run 1, attempt 1
+           _exec_failed_result(precise=False),   # run 1, retry
+           _crash_result(),                      # run 2
+           clean_exit]                           # run 3 disagrees
+    calls = iter(seq)
+    monkeypatch.setattr(core.sandbox, "run_untrusted",
+                        lambda cmd, **k: next(calls))
+    result = reproduce_witness(bundle, data, binary_path=fake_bin, n=3)
+    assert result.reproduced is False
+    assert result.deterministic is False
+    assert "non-deterministic" in result.reason
+    assert "2/3" in result.reason
+
+
 def test_replay_setup_error_x_category_retried_once(tmp_path, monkeypatch):
     """A SandboxSetupError carrying setup_category='X' (the sandbox
     engaged; the target's own exec failed inside it) is a spawn
@@ -696,6 +772,34 @@ def test_attach_reproduction_bumps_tier_when_reproduced(tmp_path):
     attach_reproduction(bundle, result)
     assert bundle.tier == "1.5"
     assert bundle.reproduction["reproduced"] is True
+
+
+def test_attach_reproduction_bumps_tier_on_k_of_n_executed(tmp_path):
+    """Tier 1.5 claims "every EXECUTED run exhibited the outcome":
+    a verdict earned on k of n planned runs (the rest spawn-failure
+    exclusions) bumps the tier, with the k-of-n honesty trail kept in
+    the persisted reproduction block."""
+    bundle, _ = _bundle(
+        tmp_path, source=WitnessSource.LLM_EMIT_RUN,
+        outcome=WitnessOutcome.EXIT_SIGNAL, data=b"// poc",
+    )
+    result = ReproductionResult(
+        attempted=True, runs=3, expected_outcome="exit_signal",
+        observed_outcomes=["exit_signal"] * 2, reproduced=True,
+        deterministic=True, spawn_failures=2,
+        reason="all 2 executed runs reproduced 'exit_signal' "
+               "(2/3 planned runs executed; the rest were "
+               "spawn-failure exclusions — infrastructure, not "
+               "outcome variance; see run_details)",
+    )
+    attach_reproduction(bundle, result)
+    assert bundle.tier == "1.5"
+    rep = bundle.reproduction
+    assert rep["reproduced"] is True
+    assert rep["runs"] == 3
+    assert len(rep["observed_outcomes"]) == 2
+    assert rep["spawn_failures"] == 2
+    assert "2/3" in rep["reason"]
 
 
 def test_attach_reproduction_keeps_tier_when_not_reproduced(tmp_path):

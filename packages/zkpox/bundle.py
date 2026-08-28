@@ -222,8 +222,19 @@ def render_bundle(bundle: ZKPoXBundle) -> str:
     ]
     if bundle.reproduction is not None:
         rep = bundle.reproduction
+        # The verdict is judged over EXECUTED runs; when spawn-failure
+        # exclusions left fewer than planned, say "k/n runs executed"
+        # instead of a bare "(n runs)" that would overstate the base.
+        # Blocks without an observed_outcomes list (hand-rolled or
+        # pre-diagnostics manifests) keep the plain "(n runs)" form.
+        outcomes = rep.get("observed_outcomes")
+        executed = len(outcomes) if isinstance(outcomes, list) else None
+        runs = rep.get("runs")
+        count = (f"{executed}/{runs} runs executed"
+                 if isinstance(runs, int) and executed is not None
+                 and executed != runs
+                 else f"{runs} runs")
         lines.append(
-            f"   reproduced: {rep.get('reproduced')} "
-            f"({rep.get('runs')} runs)"
+            f"   reproduced: {rep.get('reproduced')} ({count})"
         )
     return "\n".join(lines)

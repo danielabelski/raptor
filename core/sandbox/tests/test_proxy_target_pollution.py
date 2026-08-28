@@ -60,6 +60,27 @@ class TestProxyEventsTargetPollution(unittest.TestCase):
         from core.sandbox.proxy import _reset_for_tests
         _reset_for_tests()
 
+    @staticmethod
+    def _attempt_diag(r) -> str:
+        """One-line per-attempt evidence for the zero-events skip path.
+
+        The skip message used to assert 'host load' without evidence;
+        the curl exit code separates the two mechanisms this class has
+        been starved by in the field: 28 (curl burned --max-time — the
+        CONNECT genuinely never completed, load-consistent) vs 7/5/56
+        (curl could not reach or speak to the proxy at all — a broken
+        netns bridge / forwarder, which is a bug, not load). Enforcement
+        tier and stderr ride along so the CI log names the failing leg
+        without a reproduction."""
+        info = getattr(r, "sandbox_info", {}) or {}
+        stderr = (r.stderr or "").strip().replace("\n", " | ")[-300:]
+        return (
+            f"curl rc={r.returncode} "
+            f"enforcement={info.get('proxy_enforcement')!r} "
+            f"mount_ns={info.get('mount_ns_active')!r} "
+            f"stderr={stderr!r}"
+        )
+
     def test_target_equals_output_does_not_write_jsonl(self):
         """sandbox(target=X, output=X) MUST NOT create X/proxy-events.jsonl.
 
@@ -71,6 +92,7 @@ class TestProxyEventsTargetPollution(unittest.TestCase):
         with TemporaryDirectory() as d:
             jsonl = Path(d) / "proxy-events.jsonl"
             events = []
+            diags = []
             # Under a loaded parallel battery curl can burn its whole
             # --max-time before the CONNECT reaches the proxy — no
             # event exists and the run proves nothing about the
@@ -91,15 +113,18 @@ class TestProxyEventsTargetPollution(unittest.TestCase):
                     f"{jsonl.read_text() if jsonl.exists() else ''!r})"
                 )
                 events = r.sandbox_info.get("proxy_events", [])
+                diags.append(self._attempt_diag(r))
                 if events:
                     break
             if not events:
                 # Starvation, not a wrong buffer: the on-disk
                 # non-pollution claim above held on every attempt.
                 self.skipTest(
-                    "no proxy events after 3 attempts — CONNECT never "
-                    "reached the proxy under host load; the in-memory "
-                    "event claim was not exercised")
+                    "no proxy events after 3 attempts — the in-memory "
+                    "event claim was not exercised. Per-attempt "
+                    "evidence (curl 28 = load starvation; 7/5/56 = "
+                    "proxy unreachable, a bridge bug): "
+                    + "; ".join(diags))
 
             # In-memory events MUST still be populated — the fix only
             # suppresses on-disk persistence, not the proxy_events
@@ -126,6 +151,7 @@ class TestProxyEventsTargetPollution(unittest.TestCase):
             tgt_jsonl = Path(tgt) / "proxy-events.jsonl"
             out_jsonl = Path(out) / "proxy-events.jsonl"
             events = []
+            diags = []
             # Same starvation guard as the target==output test: under
             # a loaded parallel battery curl can burn its --max-time
             # before the CONNECT reaches the proxy — no event exists,
@@ -145,6 +171,7 @@ class TestProxyEventsTargetPollution(unittest.TestCase):
                     f"target dir polluted with {tgt_jsonl}"
                 )
                 events = r.sandbox_info.get("proxy_events", [])
+                diags.append(self._attempt_diag(r))
                 if events:
                     break
             if not events:
@@ -152,9 +179,11 @@ class TestProxyEventsTargetPollution(unittest.TestCase):
                 # recorded, so nothing was due on disk; the
                 # non-pollution claim above held on every attempt.
                 self.skipTest(
-                    "no proxy events after 3 attempts — CONNECT never "
-                    "reached the proxy under host load; the output-dir "
-                    "write claim was not exercised")
+                    "no proxy events after 3 attempts — the output-dir "
+                    "write claim was not exercised. Per-attempt "
+                    "evidence (curl 28 = load starvation; 7/5/56 = "
+                    "proxy unreachable, a bridge bug): "
+                    + "; ".join(diags))
             self.assertTrue(
                 out_jsonl.exists(),
                 f"output dir missing expected {out_jsonl} — the "
@@ -168,6 +197,7 @@ class TestProxyEventsTargetPollution(unittest.TestCase):
             sub = Path(d) / "sub"
             sub.mkdir()
             events = []
+            diags = []
             # Bounded retries for the in-memory claim, pollution
             # asserted on every attempt — same starvation guard as
             # the sibling tests.
@@ -188,13 +218,16 @@ class TestProxyEventsTargetPollution(unittest.TestCase):
                     "target itself was polluted"
                 )
                 events = r.sandbox_info.get("proxy_events", [])
+                diags.append(self._attempt_diag(r))
                 if events:
                     break
             if not events:
                 self.skipTest(
-                    "no proxy events after 3 attempts — CONNECT never "
-                    "reached the proxy under host load; the in-memory "
-                    "event claim was not exercised")
+                    "no proxy events after 3 attempts — the in-memory "
+                    "event claim was not exercised. Per-attempt "
+                    "evidence (curl 28 = load starvation; 7/5/56 = "
+                    "proxy unreachable, a bridge bug): "
+                    + "; ".join(diags))
 
             # In-memory events still populated.
             self.assertGreaterEqual(

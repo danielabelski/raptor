@@ -38,8 +38,11 @@ class DynamicSweepResult:
     ``evidence_strength`` vocabulary (verdict-integrity contract):
 
     * ``"sanitizer"`` — a sanitizer report on STDERR anchored by a
-      signal-grade death (``abort_on_error=1`` makes genuine reports
-      abort). Confirms.
+      signal-grade death (``abort_on_error=1`` + ``handle_segv=0``
+      make a genuine report terminate in a force-delivered fault even
+      though the harness runs as the sandbox pid-namespace init, where
+      ``raise(SIGABRT)`` self-signals are discarded — see
+      ``_get_safe_env``). Confirms.
     * ``"crash"`` — the harness died by a REAL signal: the parent's own
       waitpid saw WIFSIGNALED (``signal_provenance == "waitstatus"``,
       see core/sandbox/observe.py). Confirms.
@@ -342,6 +345,10 @@ def _run_c_harness(
                 duration_s=time.monotonic() - start,
             )
 
+        spawn_failure = _spawn_failure_reason(run_result)
+        if spawn_failure is not None:
+            return _spawn_failure_result(spawn_failure, run_result, start)
+
         combined_output = run_result.stdout + run_result.stderr
         crashed = run_result.returncode != 0
         # Sanitizer scan reads STDERR ONLY: sanitizers write their
@@ -352,11 +359,12 @@ def _run_c_harness(
         signal_grade = _signal_grade_death(run_result)
 
         # Confirming strengths require a signal-grade death: the env
-        # sets abort_on_error=1 for BOTH sanitizer families (see
-        # _get_safe_env — halt_on_error alone merely exits 1), so a
-        # GENUINE report is followed by SIGABRT; a printed fake from
-        # a cleanly-exiting (or exit(1)-ing) process is not. Bare
-        # nonzero exits — previously "crash" — are exception-grade.
+        # sets abort_on_error=1 + handle_segv=0 for BOTH sanitizer
+        # families (see _get_safe_env — halt_on_error alone merely
+        # exits 1), so a GENUINE report is followed by a force-
+        # delivered fatal signal; a printed fake from a cleanly-
+        # exiting (or exit(1)-ing) process is not. Bare nonzero
+        # exits — previously "crash" — are exception-grade.
         if sanitizer_hit and signal_grade:
             strength = "sanitizer"
         elif signal_grade:
@@ -435,6 +443,10 @@ def _run_python_harness(
                 duration_s=time.monotonic() - start,
             )
 
+        spawn_failure = _spawn_failure_reason(run_result)
+        if spawn_failure is not None:
+            return _spawn_failure_result(spawn_failure, run_result, start)
+
         combined_output = run_result.stdout + run_result.stderr
         crashed = run_result.returncode != 0
 
@@ -473,6 +485,95 @@ def _run_python_harness(
             evidence_strength=strength,
             duration_s=time.monotonic() - start,
         )
+
+
+# Exit codes the spawn layers re-encode a failed exec of the target as
+# (shell/util-linux convention, shared by the sandbox's pid1-shim, the
+# in-sandbox exec lane and the Landlock-only retry): 127 file not
+# found, 126 found but not executable, 125 catch-all exec errno.
+_EXEC_FAILURE_RETURNCODES = frozenset({125, 126, 127})
+
+
+def _stderr_is_sandbox_diagnostic_only(stderr: object) -> bool:
+    """True iff *stderr* is empty or carries only the sandbox layer's
+    own pre-exec diagnostics: lines prefixed ``sandbox:`` or the spawn
+    child's ``sandbox child failure:`` block — both written before the
+    target's first instruction."""
+    if not stderr:
+        return True
+    text = (stderr.decode("utf-8", errors="replace")
+            if isinstance(stderr, bytes) else str(stderr))
+    lines = [line for line in text.splitlines() if line.strip()]
+    if lines and lines[0].startswith("sandbox child failure:"):
+        return True
+    return all(line.startswith("sandbox:") for line in lines)
+
+
+def _spawn_failure_reason(run_result: Any) -> str | None:
+    """Classify a harness run as a spawn failure — the child never
+    successfully exec'd the harness — or ``None`` (genuine outcome).
+
+    A spawn failure is not a dynamic observation: the call sites route
+    it to ``"inconclusive"``, never ``"exception"`` — the exception
+    stamp demotes a finding to suspicious, and a harness that never
+    executed must carry no evidence weight in either direction.
+
+    Precise signal first: a ``_setup_status`` category tuple from the
+    exec-status pipe means setup or exec failed before the target ran.
+    Otherwise the bounded heuristic: the spawn lanes re-encode a
+    failed exec as a bare 125/126/127 exit, which is ambiguous with
+    target code choosing those codes, so reclassification is limited
+    to the pre-first-output window — any signal/sanitizer evidence or
+    any output beyond the sandbox layer's own diagnostics disqualifies
+    it (a failed exec happens before the target's first instruction).
+    ``_setup_status is None`` (pipe EOF) does not veto the heuristic:
+    the pipe reports failure best-effort only. Residual: a hostile
+    target exiting 125-127 with no output reads inconclusive — no new
+    forgery power (it can already exit 0) and no demotion power.
+    """
+    status = getattr(run_result, "_setup_status", None)
+    if status is not None:
+        try:
+            cat, why = status[0], status[1]
+        except (TypeError, IndexError, KeyError):
+            cat, why = "?", str(status)
+        return f"sandbox setup/exec failure ({cat}: {why})"
+    rc = getattr(run_result, "returncode", None)
+    if rc not in _EXEC_FAILURE_RETURNCODES:
+        return None
+    info = getattr(run_result, "sandbox_info", None) or {}
+    if info.get("signal") or info.get("sanitizer") or info.get("crashed"):
+        return None  # it demonstrably ran/died — a genuine outcome
+    if getattr(run_result, "stdout", None):
+        return None  # produced output — it ran
+    if not _stderr_is_sandbox_diagnostic_only(
+            getattr(run_result, "stderr", None)):
+        return None
+    return (
+        f"exit code {rc} with no output and no signal — exec-failure "
+        f"shape (spawn layers re-encode a failed exec as 125/126/127)"
+    )
+
+
+def _spawn_failure_result(
+    reason: str, run_result: Any, start: float,
+) -> DynamicSweepResult:
+    """Inconclusive result for a harness whose exec never happened."""
+    logger.warning(
+        "dynamic_sweep: harness did not execute — dynamic validation "
+        "is inconclusive for this finding: %s", reason,
+    )
+    rc = run_result.returncode
+    return DynamicSweepResult(
+        compiled=True, ran=False, crashed=False,
+        sanitizer_output=f"harness did not execute: {reason}"[:500],
+        # Keep the int contract: on the precise _setup_status branch
+        # the returncode is not load-bearing and may in principle be
+        # unset.
+        exit_code=rc if isinstance(rc, int) else -1,
+        evidence_strength="inconclusive",
+        duration_s=time.monotonic() - start,
+    )
 
 
 _IDENT_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
@@ -675,12 +776,34 @@ def _get_safe_env() -> dict[str, str]:
         env = dict(os.environ)
         for key in ("TERMINAL", "EDITOR", "VISUAL", "BROWSER", "PAGER"):
             env.pop(key, None)
-    env["ASAN_OPTIONS"] = "detect_leaks=1:abort_on_error=1"
+    env["ASAN_OPTIONS"] = "detect_leaks=1:abort_on_error=1:handle_segv=0"
     # abort_on_error=1 is load-bearing for the signal-grade sanitizer
     # classification: halt_on_error alone makes UBSan STOP (exit 1,
-    # unsignaled) — only abort_on_error raises the SIGABRT that
-    # _signal_grade_death accepts. Without it a genuine UBSan-only hit
-    # (the CWE-190 class this sweep targets) would demote to
-    # exception-grade.
-    env["UBSAN_OPTIONS"] = "print_stacktrace=1:halt_on_error=1:abort_on_error=1"
+    # unsignaled) — abort_on_error makes a genuine report die trying
+    # to deliver a signal.
+    #
+    # handle_segv=0 is load-bearing for HOW that death reaches the
+    # parent's waitpid. The harness runs as the init process of the
+    # sandbox's pid namespace, and the kernel discards default-action
+    # self-signals sent to a namespace init — abort()'s raise(SIGABRT)
+    # never delivers. glibc's abort() then escalates to its trap
+    # instruction, a hardware fault the kernel force-delivers even to
+    # pid 1: SIGSEGV, waitstatus-visible, signal-grade. With ASan's
+    # default handle_segv=1 that escalation fault is INTERCEPTED
+    # in-process instead: ASan prints a "SEGV" report, its own die
+    # path re-enters abort(), and glibc's staged abort falls through
+    # to its terminal _exit(127) — an exit-code death the signal-grade
+    # bar rightly refuses (observed: genuine UBSan CWE-190 hits
+    # classifying "exception" with exit 127 on glibc 2.39, where the
+    # trap stage runs with signals deliverable; glibc >= 2.40 blocks
+    # all signals before the trap, so the same interception never
+    # happens and the fault force-kills either way). Disabling the
+    # sanitizer's SEGV interception makes the escalation fault the
+    # deterministic terminator on every glibc: report on stderr +
+    # WIFSIGNALED at the parent = "sanitizer". Cost: a wild SIGSEGV
+    # in target code loses ASan's decoded SEGV report and classifies
+    # signal-only "crash" — the stronger, still-confirming stamp.
+    env["UBSAN_OPTIONS"] = (
+        "print_stacktrace=1:halt_on_error=1:abort_on_error=1:handle_segv=0"
+    )
     return env

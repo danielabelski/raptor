@@ -220,6 +220,110 @@ class TestCLaneClassification:
         assert out.evidence_tool == "dynamic:sanitizer"
 
 
+class TestSpawnFailureShape:
+    """A harness whose exec never happened must read inconclusive —
+    never exception (the exception stamp demotes a finding to
+    suspicious, and a run that never executed carries no evidence
+    weight in either direction). Bounded to the pre-first-output
+    window: any output or crash evidence keeps the genuine-outcome
+    lanes."""
+
+    def _sweep_c(self, monkeypatch, tmp_path, harness_result):
+        import core.sandbox as sandbox_mod
+
+        (tmp_path / "parser.c").write_text(
+            'void parse_record(const char *p) {}\n'
+        )
+        calls = iter([_fake_result(0), harness_result])
+        monkeypatch.setattr(
+            sandbox_mod, "run_untrusted",
+            lambda *a, **k: next(calls),
+        )
+        out = _outcome("parser.c", "parse_record", "heap buffer overflow")
+        ctx = {"source": (tmp_path / "parser.c").read_text()}
+        config = types.SimpleNamespace(
+            target_path=str(tmp_path), dynamic_validation=True,
+        )
+        return run_dynamic_sweep(out, ctx, config), out
+
+    def test_bare_127_no_output_is_inconclusive(
+            self, monkeypatch, tmp_path):
+        dyn, out = self._sweep_c(monkeypatch, tmp_path, _fake_result(127))
+        assert dyn.evidence_strength == "inconclusive"
+        assert dyn.ran is False
+        _apply_orchestrator_stamp(out, dyn.evidence_strength)
+        assert out.status == "finding"  # no demotion
+
+    def test_126_with_sandbox_diagnostic_only_is_inconclusive(
+            self, monkeypatch, tmp_path):
+        dyn, _ = self._sweep_c(monkeypatch, tmp_path, _fake_result(
+            126, stderr="sandbox: cwd unusable inside sandbox\n",
+        ))
+        assert dyn.evidence_strength == "inconclusive"
+
+    def test_setup_status_tuple_is_inconclusive(
+            self, monkeypatch, tmp_path):
+        r = _fake_result(1)
+        r._setup_status = ("X", "exec: [ETXTBSY] Text file busy")
+        dyn, _ = self._sweep_c(monkeypatch, tmp_path, r)
+        assert dyn.evidence_strength == "inconclusive"
+        assert "ETXTBSY" in (dyn.sanitizer_output or "")
+
+    def test_127_with_target_output_stays_exception(
+            self, monkeypatch, tmp_path):
+        # Output disqualifies the exec-failure shape: the target ran.
+        # (This is also the glibc-abort-fallback shape — a genuine
+        # sanitizer report followed by _exit(127) — which the death-
+        # shape fix in _get_safe_env prevents at the source; if it
+        # still arrives, an exit code confirms nothing.)
+        dyn, out = self._sweep_c(monkeypatch, tmp_path, _fake_result(
+            127, stderr="==1==ERROR: AddressSanitizer: SEGV on unknown "
+                        "address\n",
+        ))
+        assert dyn.evidence_strength == "exception"
+        _apply_orchestrator_stamp(out, dyn.evidence_strength)
+        assert out.compute_tier() != "confirmed"
+
+    def test_127_python_lane_no_output_is_inconclusive(
+            self, monkeypatch, tmp_path):
+        import core.sandbox as sandbox_mod
+
+        (tmp_path / "cryptoutil.py").write_text(
+            "def check_mac(data):\n    return data\n"
+        )
+        monkeypatch.setattr(
+            sandbox_mod, "run_untrusted",
+            lambda *a, **k: _fake_result(127),
+        )
+        out = _outcome("cryptoutil.py", "check_mac", "buffer overflow")
+        ctx = {"source": (tmp_path / "cryptoutil.py").read_text()}
+        config = types.SimpleNamespace(
+            target_path=str(tmp_path), dynamic_validation=True,
+        )
+        dyn = run_dynamic_sweep(out, ctx, config)
+        assert dyn.evidence_strength == "inconclusive"
+        assert dyn.ran is False
+
+
+class TestSanitizerDeathShapeEnv:
+    """The two env flags the signal-grade sanitizer lane stands on
+    (see _get_safe_env): abort_on_error makes a genuine report die
+    trying to signal; handle_segv=0 keeps the sanitizer runtime from
+    intercepting glibc abort()'s escalation trap — the only signal a
+    pid-namespace-init harness can actually die by (self-raised
+    SIGABRT is discarded by the kernel; an intercepted trap terminates
+    through abort()'s _exit(127) fallback instead, an exit-code death
+    the signal-grade bar refuses)."""
+
+    def test_env_pins_the_death_shape(self):
+        from core.audit.dynamic_sweep import _get_safe_env
+
+        env = _get_safe_env()
+        for var in ("ASAN_OPTIONS", "UBSAN_OPTIONS"):
+            assert "abort_on_error=1" in env[var], env[var]
+            assert "handle_segv=0" in env[var], env[var]
+
+
 class TestSignalGradeHelper:
     def test_waitstatus_crash_true(self):
         r = _fake_result(-11, sandbox_info={
@@ -302,9 +406,15 @@ class TestGenuineUbsanStillSanitizerGrade:
     """Recall pin for the signal-grade bar: a GENUINE UBSan-only hit
     (the CWE-190 class the sweep targets) must still classify as
     'sanitizer'. UBSan's halt_on_error merely EXITS 1 (unsignaled) —
-    only abort_on_error raises the SIGABRT the signal-grade check
-    accepts, so the UBSAN_OPTIONS abort_on_error=1 in _get_safe_env is
-    load-bearing and this test is red without it."""
+    abort_on_error makes the report die trying. The harness runs as
+    the sandbox pid-namespace init, where abort()'s raise(SIGABRT) is
+    discarded by the kernel, so the actual signal is glibc abort()'s
+    escalation trap (a force-delivered hardware fault) — and the
+    handle_segv=0 in _get_safe_env is load-bearing too: with the
+    sanitizer's default SEGV interception, glibc 2.39-era runtimes
+    swallow the trap in-process and terminate through abort()'s
+    _exit(127) fallback (an exit-code death the signal-grade bar
+    rightly refuses), classifying the genuine hit 'exception'."""
 
     def test_ubsan_overflow_classifies_sanitizer(
             self, tmp_path, monkeypatch):

@@ -73,6 +73,11 @@ from .models import (
     CVSSScore,
     Dependency,
 )
+from .versions import (
+    VersionError,
+    affects_admissible_max,
+    compare as _version_compare,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +119,85 @@ _OSV_ECOSYSTEM_OVERRIDES = {"Cargo": "crates.io"}
 
 def _to_osv_ecosystem(ecosystem: str) -> str:
     return _OSV_ECOSYSTEM_OVERRIDES.get(ecosystem, ecosystem)
+
+
+def _canonical_name(ecosystem: str, name: str) -> str:
+    """Match the canonicalisation OSV expects per ecosystem."""
+    if ecosystem == "PyPI":
+        return re.sub(r"[-_.]+", "-", name).lower()
+    if ecosystem in ("npm", "Cargo"):
+        return name.lower()
+    return name
+
+
+def _has_corridor(dep: Dependency) -> bool:
+    """True when a version-less dep still carries a usable version
+    corridor (``pkg<2.0`` / ``pkg>1.0,<3.0`` shapes) — enough evidence
+    to run the whole-package query + admissible-range filter."""
+    return (
+        dep.version_floor is not None or dep.version_ceiling is not None
+    )
+
+
+def _matches_corridor(rec: OsvRecord, dep: Dependency) -> bool:
+    """True when the record's affected ranges (for this dep's package)
+    can reach a version admissible under the dep's corridor.
+
+    Range events go through :func:`versions.affects_admissible_max`
+    (resolver-max model). Explicit ``versions`` arrays fall back to
+    corridor membership — a discrete list carries no resolver-max
+    notion, so plain containment is the recall-safe reading.
+    """
+    eco = dep.ecosystem
+    want = _canonical_name(eco, dep.name)
+    osv_eco = _to_osv_ecosystem(eco)
+    for blk in rec.affected:
+        pkg = blk.package or {}
+        blk_eco = str(pkg.get("ecosystem") or "")
+        # OSV suffixes release streams onto some ecosystems
+        # ("Debian:11") — compare the base identifier.
+        if blk_eco.split(":", 1)[0] != osv_eco:
+            continue
+        blk_name = pkg.get("name")
+        if (
+            isinstance(blk_name, str)
+            and _canonical_name(eco, blk_name) != want
+        ):
+            continue
+        evaluated_ranges = False
+        for rng in blk.ranges:
+            if rng.type == "GIT":
+                continue
+            try:
+                if affects_admissible_max(
+                    eco, list(rng.events),
+                    dep.version_floor, dep.version_ceiling,
+                ):
+                    return True
+                evaluated_ranges = True
+            except VersionError:
+                continue
+        if evaluated_ranges:
+            # Ranges are authoritative; the explicit ``versions``
+            # array is a redundant enumeration when both ship. Only
+            # fall back to it when no range could be evaluated.
+            continue
+        for v in blk.versions:
+            try:
+                if (
+                    dep.version_floor is not None
+                    and _version_compare(eco, v, dep.version_floor) < 0
+                ):
+                    continue
+                if (
+                    dep.version_ceiling is not None
+                    and _version_compare(eco, v, dep.version_ceiling) > 0
+                ):
+                    continue
+            except VersionError:
+                continue
+            return True
+    return False
 
 
 def _encode_key_component(value: str) -> str:
@@ -201,7 +285,7 @@ class OsvClient:
         """
         unique_keys: dict[str, Dependency] = {}
         for d in deps:
-            if d.version is None:
+            if d.version is None and not _has_corridor(d):
                 continue
             unique_keys.setdefault(d.key(), d)
 
@@ -246,16 +330,21 @@ class OsvClient:
             # dispatch below has a flat list to map over.
             chunk_payloads: list[tuple[list[Dependency], list[dict]]] = []
             for chunk in _chunked(queryable, _BATCH_CHUNK_SIZE):
-                queries = [
-                    {
+                queries = []
+                for d in chunk:
+                    q: dict[str, Any] = {
                         "package": {
                             "name": d.name,
                             "ecosystem": _to_osv_ecosystem(d.ecosystem),
                         },
-                        "version": d.version,
                     }
-                    for d in chunk
-                ]
+                    # Corridor deps (range pin, no concrete version)
+                    # query the whole package; the per-dep corridor
+                    # filter below prunes advisories whose vulnerable
+                    # intervals can't reach an admissible version.
+                    if d.version is not None:
+                        q["version"] = d.version
+                    queries.append(q)
                 chunk_payloads.append((list(chunk), queries))
 
             # Parallel /querybatch dispatch. Each batch hits OSV with
@@ -350,6 +439,15 @@ class OsvClient:
         offline_db_advisories: dict[str, list[Advisory]] = {}
         if self._offline and self._offline_db is not None and uncached:
             for dep in uncached:
+                if dep.version is None:
+                    # Corridor deps need the raw affected-ranges of
+                    # every advisory for the package; the offline DB
+                    # only answers concrete-version queries.
+                    logger.debug(
+                        "sca.osv: offline DB has no corridor lookup; "
+                        "skipping %s", dep.key(),
+                    )
+                    continue
                 try:
                     advs = self._offline_db.query(
                         dep.ecosystem, dep.name, dep.version,
@@ -362,9 +460,19 @@ class OsvClient:
                     advs = []
                 offline_db_advisories[dep.key()] = advs
 
-        # Pass 2: hydrate unique vuln IDs via shared client.
+        # Pass 2: hydrate unique vuln IDs via shared client. Raw
+        # records are retained only for IDs that corridor deps
+        # reference — their per-dep filter below needs the per-package
+        # affected blocks, which ``Advisory`` flattens away.
         all_ids = sorted({i for ids in dep_to_ids.values() for i in ids})
+        corridor_ids = {
+            i
+            for key, dep in unique_keys.items()
+            if dep.version is None
+            for i in dep_to_ids.get(key, [])
+        }
         vuln_records: dict[str, Advisory] = {}
+        corridor_records: dict[str, OsvRecord] = {}
         for vid in all_ids:
             record = self._inner.get_vuln(vid)
             if record is None:
@@ -375,16 +483,29 @@ class OsvClient:
                 logger.debug(
                     "sca.osv: skipping malformed advisory %s: %s", vid, e,
                 )
+                continue
+            if vid in corridor_ids:
+                corridor_records[vid] = record
 
         # Project back to per-dep results, preserving input order.
         out: list[OsvResult] = []
         seen_keys: set[str] = set()
         for d in deps:
-            if d.version is None or d.key() in seen_keys:
+            if (d.version is None and not _has_corridor(d)) \
+                    or d.key() in seen_keys:
                 continue
             seen_keys.add(d.key())
             ids = dep_to_ids.get(d.key(), [])
             advisories = [vuln_records[i] for i in ids if i in vuln_records]
+            if d.version is None and advisories:
+                # Corridor dep — the batch query was version-less, so
+                # prune to advisories whose vulnerable intervals reach
+                # the corridor's admissible versions.
+                advisories = [
+                    a for a in advisories
+                    if a.osv_id in corridor_records
+                    and _matches_corridor(corridor_records[a.osv_id], d)
+                ]
             # Merge offline-DB hits, deduping on osv_id.
             already_have = {a.osv_id for a in advisories}
             for adv in offline_db_advisories.get(d.key(), []):
@@ -409,7 +530,18 @@ class OsvClient:
         # written under the old keys — acceptable; they just re-fetch.
         eco = _encode_key_component(dep.ecosystem)
         name = _encode_key_component(dep.name)
-        ver = _encode_key_component(dep.version or "*")
+        # Corridor deps (version=None) issue whole-package queries and
+        # cache the package's FULL ID list; a literal version="*" dep
+        # queries OSV with that string and caches whatever it returns.
+        # Distinct key spaces so neither consumes the other's cached
+        # list (the corridor filter runs post-cache, so the corridor
+        # bounds themselves need not join the key). The sentinel keeps
+        # a raw "*", which percent-encoded version strings can never
+        # contain — no concrete version can collide with it.
+        ver = (
+            "*corridor" if dep.version is None
+            else _encode_key_component(dep.version or "*")
+        )
         return f"queries/{eco}/{name}/{ver}"
 
     @staticmethod
@@ -458,6 +590,10 @@ class OsvClient:
         work: list[tuple[Dependency, str]] = []
         for key, dep in unique_keys.items():
             if dep_to_ids.get(key):
+                continue
+            if dep.version is None:
+                # Corridor deps carry no concrete version to hand
+                # OSS-Fuzz, and its records aren't corridor-filtered.
                 continue
             work.extend((dep, candidate) for candidate in _oss_fuzz_candidates(dep))
 

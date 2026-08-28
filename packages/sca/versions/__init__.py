@@ -78,9 +78,72 @@ def in_range(ecosystem: str, version: str, events: list[dict[str, str]]) -> bool
     if not events:
         return False
 
-    # Walk events, building intervals. Each "introduced" opens an interval;
-    # the next "fixed"/"last_affected"/"limit" closes it. A dangling
-    # "introduced" at end-of-list becomes an open-ended interval.
+    for lo, lo_incl, hi, hi_incl in _intervals(events):
+        if _within(ecosystem, version, lo, lo_incl, hi, hi_incl):
+            return True
+    return False
+
+
+def affects_admissible_max(
+    ecosystem: str,
+    events: list[dict[str, str]],
+    floor: str | None,
+    ceiling: str | None,
+) -> bool:
+    """Match a version *corridor* (range-pinned dep, no concrete
+    installed version) against an OSV affected.ranges.events list.
+
+    Models the version a maximising resolver would install for the
+    corridor: the greatest admissible version. For ``pkg<2.0`` that is
+    the greatest release below 2.0; for a floor-only corridor like
+    ``pkg>1.0`` it is the latest release. The advisory matches when
+    its vulnerable interval contains that resolver-max version:
+
+    * With a ceiling ``C``: an interval ``[lo, hi)`` matches when
+      ``lo <= C`` and ``hi >= C`` (or ``hi`` is open). Bound-operator
+      inclusivity is not recorded on the corridor, so both comparisons
+      are inclusive — the over-approximation keeps an advisory whose
+      interval only touches ``C`` exactly, never drops one that covers
+      versions below it. Note this intentionally KEEPS an advisory
+      fixed exactly at ``C``: for an exclusive ``<C`` corridor every
+      admissible version predates the fix.
+    * Without a ceiling: the resolver-max is the latest release, so
+      only open-ended (unfixed) intervals match.
+
+    An empty corridor (``floor > ceiling``) matches nothing.
+
+    Raises :class:`VersionError` when a bound comparison hits an
+    unparseable version — callers skip that range, mirroring
+    ``in_range`` error handling.
+    """
+    if not events:
+        return False
+    if (
+        floor is not None and ceiling is not None
+        and compare(ecosystem, floor, ceiling) > 0
+    ):
+        return False
+    for lo, _lo_incl, hi, _hi_incl in _intervals(events):
+        if ceiling is None:
+            if hi is None:
+                return True
+            continue
+        if lo != "0" and compare(ecosystem, lo, ceiling) > 0:
+            continue
+        if hi is None or compare(ecosystem, hi, ceiling) >= 0:
+            return True
+    return False
+
+
+def _intervals(
+    events: list[dict[str, str]],
+) -> list[tuple[str, bool, str | None, bool]]:
+    """Build vulnerable intervals from an OSV events list.
+
+    Walk events, building intervals. Each "introduced" opens an interval;
+    the next "fixed"/"last_affected"/"limit" closes it. A dangling
+    "introduced" at end-of-list becomes an open-ended interval.
+    """
     intervals: list[tuple] = []  # (lower, lower_inclusive, upper, upper_inclusive)
     current_lower: str = "0"     # default: from the start
     current_lower_inclusive = True
@@ -121,10 +184,7 @@ def in_range(ecosystem: str, version: str, events: list[dict[str, str]]) -> bool
     if has_open_lower:
         intervals.append((current_lower, current_lower_inclusive, None, False))
 
-    for lo, lo_incl, hi, hi_incl in intervals:
-        if _within(ecosystem, version, lo, lo_incl, hi, hi_incl):
-            return True
-    return False
+    return intervals
 
 
 def _within(
@@ -220,4 +280,6 @@ _register("NuGet", _nuget_compare)
 _register("Packagist", _composer_compare)
 _register("Debian", _debian_compare)
 
-__all__ = ["VersionError", "compare", "in_range"]
+__all__ = [
+    "VersionError", "affects_admissible_max", "compare", "in_range",
+]

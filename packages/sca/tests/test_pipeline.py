@@ -86,6 +86,30 @@ def test_canonical_dedups_repeated_lockfile_versions() -> None:
     assert len(select_canonical_for_osv(deps)) == 1
 
 
+def test_canonical_keeps_corridor_row_when_nothing_better() -> None:
+    """A range pin (``pkg<2.0``) resolves to version=None but carries a
+    corridor bound — it must reach OSV via the corridor path rather
+    than being dropped."""
+    import dataclasses
+    corridor = dataclasses.replace(
+        _dep("rangy", None), version_ceiling="2.0.0",
+    )
+    canonical = select_canonical_for_osv([corridor, _dep("bare", None)])
+    assert [d.name for d in canonical] == ["rangy"]
+
+
+def test_canonical_prefers_versioned_row_over_corridor() -> None:
+    import dataclasses
+    corridor = dataclasses.replace(
+        _dep("lodash", None), version_ceiling="2.0.0",
+    )
+    canonical = select_canonical_for_osv(
+        [corridor, _dep("lodash", "4.17.21")],
+    )
+    assert len(canonical) == 1
+    assert canonical[0].version == "4.17.21"
+
+
 # ---------------------------------------------------------------------------
 # Full run_sca
 # ---------------------------------------------------------------------------

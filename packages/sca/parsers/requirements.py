@@ -531,8 +531,13 @@ def _classify_specifier(
         # >, <, != — the operand is EXCLUDED by the spec. Recording it
         # as the installed version produced findings for precisely the
         # one version that is guaranteed NOT installed (``pkg!=1.5``
-        # flagged 1.5's CVEs). No concrete version → the OSV query is
-        # skipped, same as any other unresolvable range.
+        # flagged 1.5's CVEs). No concrete version — ``>`` / ``<``
+        # still record a bound via ``_spec_bounds``, so the OSV client
+        # matches them through the corridor path (whole-package query
+        # + admissible-range filter on ``version_floor`` /
+        # ``version_ceiling``). A bare ``!=`` records no bound at all
+        # and stays skipped — with neither corridor edge nor version
+        # there is nothing to match advisories against.
         return PinStyle.RANGE, None
     return PinStyle.RANGE, None
 

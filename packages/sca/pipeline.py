@@ -1914,8 +1914,14 @@ def select_canonical_for_osv(
     - When only manifest rows exist for a name, keep them with their
       declared version (best-effort; loose pins may produce false
       positives, callers should treat those as candidates).
-    - Rows without a usable version are dropped — OSV needs a concrete
-      version string to match.
+    - When no row carries a version but one carries a corridor bound
+      (``version_floor`` / ``version_ceiling`` from a range pin like
+      ``pkg<2.0``), keep the first such row — the OSV client resolves
+      corridor deps via a whole-package query plus an
+      admissible-range filter.
+    - Remaining versionless rows are dropped — with neither a
+      concrete version nor a corridor there is nothing to match
+      advisories against.
 
     Output preserves first-seen order for stable test output.
     """
@@ -1946,6 +1952,17 @@ def select_canonical_for_osv(
         if manifest_versions:
             r = manifest_versions[0]
             triple = (key[0], key[1], r.version or "")
+            if triple not in seen_versions:
+                seen_versions.add(triple)
+                out.append(r)
+            continue
+        corridor_rows = [
+            r for r in rows
+            if r.version_floor is not None or r.version_ceiling is not None
+        ]
+        if corridor_rows:
+            r = corridor_rows[0]
+            triple = (key[0], key[1], "")
             if triple not in seen_versions:
                 seen_versions.add(triple)
                 out.append(r)

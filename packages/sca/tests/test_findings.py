@@ -438,3 +438,43 @@ class TestAdvisoryCweExport:
 
         out = _advisory_summary(_adv())
         assert "cwe_ids" not in out
+
+
+# ---------------------------------------------------------------------------
+# Corridor (range-pin) findings — version_match_confidence
+# ---------------------------------------------------------------------------
+
+def test_corridor_finding_caps_version_match_confidence() -> None:
+    """A finding matched through a version corridor (range pin, no
+    concrete installed version) must not claim exact-match confidence."""
+    import dataclasses
+    d = dataclasses.replace(
+        _dep(), version=None, pin_style=PinStyle.RANGE,
+        version_ceiling="5.0.0",
+    )
+    adv = _adv()
+    findings = build_vuln_findings(
+        [d], [OsvResult(dep_key=d.key(), advisories=[adv])],
+    )
+    assert len(findings) == 1
+    vmc = findings[0].version_match_confidence
+    assert vmc.level == "medium"
+    assert "corridor" in vmc.reason
+    assert "5.0.0" in vmc.reason
+    # The finding id survives a None version.
+    assert "@" not in findings[0].finding_id.split(":", 2)[0]
+    assert ":*:" in findings[0].finding_id
+
+
+def test_corridor_finding_keeps_lower_parser_confidence() -> None:
+    import dataclasses
+    d = dataclasses.replace(
+        _dep(), version=None, pin_style=PinStyle.RANGE,
+        version_floor="1.0.0",
+        parser_confidence=Confidence("low", reason="heuristic"),
+    )
+    adv = _adv()
+    findings = build_vuln_findings(
+        [d], [OsvResult(dep_key=d.key(), advisories=[adv])],
+    )
+    assert findings[0].version_match_confidence.level == "low"

@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from io import BytesIO
 
 from core.zip import extract_files_from_zip
-from .osv import parse_osv_record
+from .osv import _canonical_name, parse_osv_record
 from .versions import VersionError, in_range as _in_range
 from typing import TYPE_CHECKING
 
@@ -347,18 +347,6 @@ class OsvOfflineDB:
 # ---------------------------------------------------------------------------
 # Canonicalisation + matching
 # ---------------------------------------------------------------------------
-
-def _canonical_name(ecosystem: str, name: str) -> str:
-    """Match the canonicalisation OSV expects per ecosystem."""
-    if ecosystem == "PyPI":
-        import re as _re
-        return _re.sub(r"[-_.]+", "-", name).lower()
-    if ecosystem == "npm":
-        return name.lower()
-    if ecosystem == "Cargo":
-        return name.lower()
-    return name
-
 
 def _our_ecosystem(osv_value: str) -> str | None:
     """Reverse-map OSV's ecosystem-string (``crates.io``) to ours

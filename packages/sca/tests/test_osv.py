@@ -845,3 +845,209 @@ def test_parse_osv_record_malformed_cwe_field() -> None:
     record = dict(_LOG4J_RECORD)
     record["database_specific"] = {"cwe_ids": "CWE-79"}
     assert parse_osv_record(record).cwe_ids == []
+
+
+# ---------------------------------------------------------------------------
+# OsvClient — corridor deps (range pin, no concrete version)
+# ---------------------------------------------------------------------------
+
+def _corridor_dep(
+    name: str,
+    *,
+    floor: str | None = None,
+    ceiling: str | None = None,
+    ecosystem: str = "npm",
+) -> Dependency:
+    return Dependency(
+        ecosystem=ecosystem,
+        name=name,
+        version=None,
+        declared_in=Path("./x"),
+        scope="main",
+        is_lockfile=False,
+        pin_style=PinStyle.RANGE,
+        direct=True,
+        purl=f"pkg:npm/{name}",
+        parser_confidence=Confidence("high", reason="t"),
+        version_floor=floor,
+        version_ceiling=ceiling,
+    )
+
+
+def _npm_record(
+    vid: str,
+    name: str,
+    *,
+    events: list[dict[str, str]] | None = None,
+    versions: list[str] | None = None,
+) -> dict:
+    blk: dict[str, Any] = {
+        "package": {"ecosystem": "npm", "name": name},
+    }
+    if events is not None:
+        blk["ranges"] = [{"type": "SEMVER", "events": events}]
+    if versions is not None:
+        blk["versions"] = versions
+    return {
+        "id": vid,
+        "modified": "2024-01-01T00:00:00Z",
+        "summary": "x",
+        "details": "y",
+        "affected": [blk],
+        "severity": [
+            {"type": "CVSS_V3",
+             "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"},
+        ],
+        "references": [],
+    }
+
+
+def test_corridor_dep_sends_versionless_query(tmp_path: Path) -> None:
+    """``pkg<2.0`` queries the whole package — no ``version`` field."""
+    deps = [_corridor_dep("rangy", ceiling="2.0.0")]
+    http = FakeHttp(batch_results=[[]], vuln_records={})
+    OsvClient(http, JsonCache(root=tmp_path)).query_batch(deps)
+    assert len(http.posts) == 1
+    (query,) = http.posts[0][1]["queries"]
+    assert "version" not in query
+    assert query["package"]["name"] == "rangy"
+
+
+def test_corridor_dep_keeps_advisory_reaching_admissible_max(
+    tmp_path: Path,
+) -> None:
+    """An advisory unfixed below the ceiling matches: every admissible
+    version (all < ceiling) predates the fix."""
+    deps = [_corridor_dep("rangy", ceiling="2.0.0")]
+    http = FakeHttp(
+        batch_results=[["OSV-1"]],
+        vuln_records={
+            "OSV-1": _npm_record(
+                "OSV-1", "rangy",
+                events=[{"introduced": "0"}, {"fixed": "2.5.0"}],
+            ),
+        },
+    )
+    results = OsvClient(http, JsonCache(root=tmp_path)).query_batch(deps)
+    assert [a.osv_id for a in results[0].advisories] == ["OSV-1"]
+
+
+def test_corridor_dep_drops_advisory_fixed_below_corridor_max(
+    tmp_path: Path,
+) -> None:
+    """An advisory fixed below the ceiling is not live at the version a
+    maximising resolver would install — pruned."""
+    deps = [_corridor_dep("rangy", ceiling="2.0.0")]
+    http = FakeHttp(
+        batch_results=[["OSV-2"]],
+        vuln_records={
+            "OSV-2": _npm_record(
+                "OSV-2", "rangy",
+                events=[{"introduced": "0"}, {"fixed": "1.0.0"}],
+            ),
+        },
+    )
+    results = OsvClient(http, JsonCache(root=tmp_path)).query_batch(deps)
+    assert results[0].advisories == []
+
+
+def test_corridor_without_ceiling_keeps_only_unfixed(
+    tmp_path: Path,
+) -> None:
+    """``pkg>1.0`` — resolver-max is the latest release, so only
+    open-ended (unfixed) intervals match."""
+    deps = [_corridor_dep("rangy", floor="1.0.0")]
+    http = FakeHttp(
+        batch_results=[["OSV-FIXED", "OSV-OPEN"]],
+        vuln_records={
+            "OSV-FIXED": _npm_record(
+                "OSV-FIXED", "rangy",
+                events=[{"introduced": "0"}, {"fixed": "3.0.0"}],
+            ),
+            "OSV-OPEN": _npm_record(
+                "OSV-OPEN", "rangy",
+                events=[{"introduced": "1.2.0"}],
+            ),
+        },
+    )
+    results = OsvClient(http, JsonCache(root=tmp_path)).query_batch(deps)
+    assert [a.osv_id for a in results[0].advisories] == ["OSV-OPEN"]
+
+
+def test_corridor_ranges_authoritative_over_versions_list(
+    tmp_path: Path,
+) -> None:
+    """When a block ships both ranges and an explicit versions array,
+    the (precise) range verdict wins — the enumeration of low affected
+    versions must not resurrect a pruned advisory."""
+    deps = [_corridor_dep("rangy", ceiling="2.0.0")]
+    http = FakeHttp(
+        batch_results=[["OSV-3"]],
+        vuln_records={
+            "OSV-3": _npm_record(
+                "OSV-3", "rangy",
+                events=[{"introduced": "0"}, {"fixed": "1.0.0"}],
+                versions=["0.5.0", "0.9.0"],
+            ),
+        },
+    )
+    results = OsvClient(http, JsonCache(root=tmp_path)).query_batch(deps)
+    assert results[0].advisories == []
+
+
+def test_corridor_versions_list_fallback_when_no_ranges(
+    tmp_path: Path,
+) -> None:
+    """A block with only an explicit versions array falls back to
+    corridor membership."""
+    deps = [_corridor_dep("rangy", floor="0.6.0", ceiling="2.0.0")]
+    http = FakeHttp(
+        batch_results=[["OSV-4", "OSV-5"]],
+        vuln_records={
+            "OSV-4": _npm_record("OSV-4", "rangy", versions=["0.9.0"]),
+            "OSV-5": _npm_record("OSV-5", "rangy", versions=["0.5.0"]),
+        },
+    )
+    results = OsvClient(http, JsonCache(root=tmp_path)).query_batch(deps)
+    assert [a.osv_id for a in results[0].advisories] == ["OSV-4"]
+
+
+def test_versionless_dep_without_corridor_still_skipped(
+    tmp_path: Path,
+) -> None:
+    """No version AND no corridor — nothing to match against; the dep
+    is skipped exactly as before."""
+    deps = [_corridor_dep("bare")]
+    http = FakeHttp(batch_results=[], vuln_records={})
+    results = OsvClient(http, JsonCache(root=tmp_path)).query_batch(deps)
+    assert results == []
+    assert http.posts == []
+
+
+def test_corridor_cache_key_distinct_from_literal_star(
+    tmp_path: Path,
+) -> None:
+    """A corridor dep's whole-package ID list must not be consumed by
+    (or consume) a literal version="*" dep's cached lookup — the
+    corridor list is the package's full, unfiltered advisory set."""
+    corridor = _corridor_dep("rangy", ceiling="2.0.0")
+    star = _dep("rangy", version="*")
+    assert OsvClient._query_key(corridor) != OsvClient._query_key(star)
+
+    # Behavioral check: warm the cache via the corridor dep, then a
+    # literal-"*" dep with a fresh client must still hit the network
+    # rather than reuse the corridor's package-level ID list.
+    cache = JsonCache(root=tmp_path)
+    http = FakeHttp(
+        batch_results=[["OSV-1"]],
+        vuln_records={
+            "OSV-1": _npm_record(
+                "OSV-1", "rangy",
+                events=[{"introduced": "0"}, {"fixed": "2.5.0"}],
+            ),
+        },
+    )
+    OsvClient(http, cache).query_batch([corridor])
+    http2 = FakeHttp(batch_results=[[]], vuln_records={})
+    OsvClient(http2, cache).query_batch([star])
+    assert len(http2.posts) == 1

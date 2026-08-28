@@ -310,7 +310,27 @@ def _assemble_finding(
     # range uses the parser's confidence; if the parser was uncertain
     # (heuristic Gradle / unresolved property), we inherit that.
     vmc = dep.parser_confidence
-    if vmc.level != "high":
+    if dep.version is None:
+        # Corridor match — no concrete installed version; the advisory
+        # matched the range pin's admissible versions, not a resolved
+        # install. Cap at medium so downstream ranking can tell these
+        # apart from exact-version matches.
+        bounds = ", ".join(
+            s for s in (
+                f"floor {dep.version_floor}" if dep.version_floor else "",
+                f"ceiling {dep.version_ceiling}"
+                if dep.version_ceiling else "",
+            ) if s
+        )
+        level = "medium" if vmc.level == "high" else vmc.level
+        vmc = Confidence(
+            level,
+            reason=(
+                f"version-match: range corridor ({bounds}) — "
+                "no exact installed version"
+            ),
+        )
+    elif vmc.level != "high":
         vmc = Confidence(
             vmc.level,
             reason=f"version-match: parser was {vmc.reason or vmc.level}",

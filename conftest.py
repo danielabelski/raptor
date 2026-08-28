@@ -138,7 +138,9 @@ from core.testing import git_hermeticity as _git_hermeticity  # noqa: E402
 # values. The first (top-level) session therefore publishes the true
 # displaced snapshot through an env var; every descendant session
 # parses it instead of re-capturing.
+import itertools as _itertools  # noqa: E402
 import json as _json  # noqa: E402
+import tempfile as _tempfile  # noqa: E402
 
 _AMBIENT_GIT_ENV_HANDOFF = "RAPTOR_GIT_AMBIENT_ENV"
 if os.environ.get(_AMBIENT_GIT_ENV_HANDOFF):
@@ -302,10 +304,29 @@ def _llm_egress_env_hermetic():
         _egress._reset_for_tests()
 
 
+_SESSIONS_DIR_SEQ = _itertools.count()
+
+
 @pytest.fixture(autouse=True)
-def _sessions_registry_in_tmp(tmp_path, monkeypatch):
+def _sessions_registry_in_tmp(monkeypatch):
+    # The redirect target is a UNIQUE PATH, not a pytest ``tmp_path``:
+    # requesting ``tmp_path`` here made every test in the suite allocate
+    # a numbered dir under the session basetemp, and pytest's
+    # ``make_numbered_dir`` scans the basetemp per allocation — a cost
+    # that grows with every test the session has already run (~30ms per
+    # SETUP by the 10k-test mark, minutes of pure setup overhead across
+    # a full single-process run). Nothing here needs a directory up
+    # front: registry writers ``mkdir(parents=True)`` on demand and
+    # readers treat a missing dir as an empty registry, so a fresh
+    # never-created path per test keeps the write-isolation guarantee
+    # at zero allocation cost. Created dirs land under the contained
+    # session tmp (``_contained_system_tmp``) and are removed with it.
     from core.project import sessions as _sessions
-    monkeypatch.setattr(_sessions, "SESSIONS_DIR", tmp_path / "sessions.d")
+    unique = (
+        Path(_tempfile.gettempdir())
+        / f"raptor-test-sessions-{os.getpid()}-{next(_SESSIONS_DIR_SEQ)}"
+    )
+    monkeypatch.setattr(_sessions, "SESSIONS_DIR", unique / "sessions.d")
     monkeypatch.setattr(_sessions, "_walk_session_pid", lambda: None)
     monkeypatch.delenv(_sessions.ENV_SESSION_PID, raising=False)
     monkeypatch.delenv(_sessions.ENV_SESSION_TOKEN, raising=False)

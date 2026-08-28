@@ -451,6 +451,39 @@ def test_mount_ns_failure_refuses_landlock_only_for_untrusted(
 
 @pytest.mark.integration
 @pytest.mark.skipif(sys.platform != "linux", reason="namespace sandbox")
+def test_exec_failure_refusal_carries_setup_category(tmp_path, monkeypatch):
+    """The fresh-procfs refusal on an in-sandbox exec failure ('X'
+    status — e.g. ETXTBSY on the target's own execve) exposes the
+    category STRUCTURALLY (SandboxSetupError.setup_category), so a
+    retry-capable consumer (zkpox reproduce) can tell "the sandbox
+    engaged and the target never exec'd" from "isolation could not
+    engage" without parsing message text."""
+    from core.sandbox import _spawn as _spawn_mod
+    from core.sandbox import context as _ctx
+    from core.sandbox.errors import SandboxSetupError
+
+    def fake_spawn(cmd, **kwargs):
+        cp = subprocess.CompletedProcess(cmd, returncode=126,
+                                         stdout="", stderr="")
+        cp._setup_status = ("X", "exec: [ETXTBSY] Text file busy")
+        return cp
+
+    monkeypatch.setattr(_spawn_mod, "run_sandboxed", fake_spawn)
+    monkeypatch.delenv("RAPTOR_ALLOW_DEGRADED_UNTRUSTED", raising=False)
+    try:
+        with pytest.raises(SandboxSetupError) as excinfo:
+            _ctx.run_untrusted(["true"], target=str(tmp_path),
+                               output=str(tmp_path), timeout=60)
+    except (pytest.skip.Exception, pytest.fail.Exception):
+        raise
+    except Exception as e:  # noqa: BLE001 — host can't reach the lane
+        pytest.skip(f"mount-ns lane unavailable: {e}")
+    assert excinfo.value.setup_category == "X"
+    assert "ETXTBSY" in str(excinfo.value)
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(sys.platform != "linux", reason="namespace sandbox")
 def test_no_mount_ns_host_refuses_untrusted_run(tmp_path):
     """On a host whose mount-ns backend cannot engage, untrusted runs
     fail closed up front (the fallback lanes leave the host-pid /proc

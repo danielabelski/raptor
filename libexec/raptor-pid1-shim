@@ -409,14 +409,39 @@ def main() -> int:
                                      or _rk in ("GCONV_PATH",
                                                 "GLIBC_TUNABLES")):
                             os.environ[_rk] = _rv
+            # Exec-failure convention (mirrors the shell's): 127 not
+            # found, 126 found-but-not-executable, 125 any other exec
+            # errno (ETXTBSY, ENOEXEC, ELOOP, ...). This lane has no
+            # exec-status pipe, so the exit code is the only machine
+            # channel — additionally name the errno on stderr with the
+            # "sandbox: " prefix so consumers (and humans reading a CI
+            # log) can tell "the target never ran" from a target that
+            # ran and chose one of these exit codes. An exec that
+            # fails writes nothing else, so the line cannot interleave
+            # with target output.
+            def _exec_fail(code: int, exc: OSError) -> None:
+                # Best-effort diagnostic in a dying pre-exec child —
+                # never let it mask the exit code.
+                try:
+                    import errno as _errno
+                    name = _errno.errorcode.get(exc.errno or 0,
+                                                "errno %s" % exc.errno)
+                    os.write(2, (
+                        "sandbox: pid1-shim: exec of target failed "
+                        "(%s): %s\n" % (name, exc.strerror or "")
+                    ).encode("utf-8", "replace"))
+                except Exception:  # noqa: BLE001
+                    pass
+                os._exit(code)
+
             try:
                 os.execvp(target_argv[0], target_argv)
-            except FileNotFoundError:
-                os._exit(127)
-            except PermissionError:
-                os._exit(126)
-            except OSError:
-                os._exit(125)
+            except FileNotFoundError as e:
+                _exec_fail(127, e)
+            except PermissionError as e:
+                _exec_fail(126, e)
+            except OSError as e:
+                _exec_fail(125, e)
             os._exit(125)  # unreachable
 
         # Intermediate — forward termination signals to the grandchild

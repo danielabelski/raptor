@@ -3817,6 +3817,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                     raise SandboxSetupError(
                         msg_0,
                         SEATBELT_FAIL_INSTRUCTIONS,
+                        setup_category=_mac_status[0],
                     )
             elif spawn_eligible:
                 try:
@@ -4013,6 +4014,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                                 "path (a sibling run sharing the output "
                                 "tree, or hostile code with write access "
                                 "to an ancestor directory) and re-run.",
+                                setup_category=_setup_status[0],
                             )
                         if _setup_status is not None and _setup_status[0] == "F":
                             from .errors import SandboxSetupError
@@ -4032,6 +4034,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                                 "persistent failure as an environment bug "
                                 "worth reporting. "
                                 + _fresh_procfs_override_hint(),
+                                setup_category=_setup_status[0],
                             )
                         if _setup_status is not None and _setup_status[0] in ("L", "S", "U"):
                             from .errors import SandboxSetupError
@@ -4057,6 +4060,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                             raise SandboxSetupError(
                                 msg_0,
                                 _instr,
+                                setup_category=_setup_status[0],
                             )
                         # Degrade-to-Landlock-only on a mount-ns ('M') or
                         # in-sandbox exec ('X') failure reported by the exec-
@@ -4095,6 +4099,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                                     "unpacked image (loader + libs "
                                     "present) and cmd[0] names a path "
                                     "that exists INSIDE the image.",
+                                    setup_category=_setup_status[0],
                                 )
                             # Persona fail-closed gate: the Landlock-
                             # only retry below runs WITHOUT mount-ns,
@@ -4122,6 +4127,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                                     "drop require_sanitisation= to "
                                     "accept host-real identity "
                                     "surfaces on degrade.",
+                                    setup_category=_setup_status[0],
                                 )
                             # Fresh-procfs fail-closed gate: the
                             # Landlock-only retry below runs with NO
@@ -4152,6 +4158,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                                     "the bind set — tool_paths= / "
                                     "--sandbox-tool-path). "
                                     + _fresh_procfs_override_hint(),
+                                    setup_category=_setup_status[0],
                                 )
                             # Populate the per-cmd cache so future
                             # calls for the same binary skip mount-ns

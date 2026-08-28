@@ -56,6 +56,7 @@ Graceful degrade:
 from __future__ import annotations
 
 import contextlib
+import errno
 import logging
 import os
 import platform
@@ -2543,6 +2544,21 @@ def run_sandboxed(
                     os._exit(127)
                 except PermissionError:
                     _write_setup_status(status_w, b"X", "exec: permission denied")
+                    os._exit(126)
+                except OSError as e:
+                    # Every other execve errno (ETXTBSY: a writer fd was
+                    # still open on the binary; ENOEXEC: not a loadable
+                    # image; ELOOP; E2BIG; ...). Same 'X' category — the
+                    # sandbox engaged, the target never ran — but name
+                    # the errno so consumers can tell a per-invocation
+                    # transient (ETXTBSY) from a wrong-binary shape.
+                    # Pre-fix this fell through to the generic
+                    # BaseException handler below, which stamped the
+                    # last traceback line: same category, worse name.
+                    _ename = errno.errorcode.get(
+                        e.errno or 0, f"errno {e.errno}")
+                    _write_setup_status(
+                        status_w, b"X", f"exec: [{_ename}] {e.strerror}")
                     os._exit(126)
                 os._exit(125)  # unreachable
             else:

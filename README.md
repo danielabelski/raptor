@@ -157,6 +157,7 @@ Environment variables that could inject code into the launcher chain are strippe
 | `/scan` | Static analysis with Semgrep and CodeQL | Stable |
 | `/understand` | Map attack surface, trace data flows, hunt vulnerability variants | Stable |
 | `/binary` | Black-box binary investigation, runtime evidence, graph queries and handoff | Beta |
+| `/ghidra` | Ghidra RE bridge: attach/import `.gpr` projects, cross-version diff, findings export | Beta |
 | `/audit` | Hypothesis-driven, tool-grounded systematic code review | Beta |
 | `/review` | Query audit state: findings, gaps, coverage, operator notes | Stable |
 | `/annotate` | Attach free-form per-function prose annotations (operator review notes) | Stable |
@@ -169,7 +170,6 @@ Environment variables that could inject code into the launcher chain are strippe
 | `/cve-env` | Build and verify a Docker environment running a CVE's affected application at its pre-patch version | Experimental |
 | `/exploit` | Generate proof-of-concept exploit code | Beta |
 | `/patch` | Generate secure patches for confirmed vulnerabilities | Beta |
-| `/cve-diff` | Discover, acquire, and diff the fix commit for a CVE | Stable |
 | `/fuzz` | Binary fuzzing with AFL++ and crash analysis | Stable |
 | `/crash-analysis` | Autonomous root-cause analysis for C/C++ crashes | Stable |
 | `/oss-forensics` | Evidence-backed forensic investigation for GitHub repositories | Stable |

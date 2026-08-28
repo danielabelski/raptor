@@ -151,7 +151,7 @@ raptor frida --target <target> --template <name> --duration <seconds>
 | Flag | Purpose |
 |------|---------|
 | `--target <target>` | Required. PID (digits), process name, bundle ID, or path to a binary to spawn. |
-| `--template <name>` | Bundled hook template name. Mutually exclusive with `--script` / `--sink-watch`. |
+| `--template <name>` | Bundled hook template name; combine several in one session with `+` (e.g. `--template seed-harvest+exec-and-load`). Mutually exclusive with `--script` / `--sink-watch`. |
 | `--script <path>` | Path to an operator-supplied JS hook file. Mutually exclusive with `--template` / `--sink-watch`. |
 | `--sink-watch <file>` | Watch a finding-specific sink list: a sinks JSON or a validation run's `attack-paths.json`. Mutually exclusive with `--template` / `--script`. |
 | `--host <host[:port]>` | Connect to a remote frida-server. Default port 27042. Mutually exclusive with `--usb`. |
@@ -189,7 +189,25 @@ raptor frida --target Safari --script ./my-hook.js --duration 30
 
 ## Bundled Templates
 
-Use `--list-templates` to see the current set.
+Use `--list-templates` to see the current set. Templates can be
+combined into one session with `--template a+b` (duplicate or empty
+names are rejected); each template's events land in the same
+`events.jsonl`.
+
+### I/O correlation
+
+When one session captures both an ingest family and a later-call
+family — `--template seed-harvest+exec-and-load`, add `+sink-watch`
+for sink arguments — the CLI automatically joins the harvested input
+payloads against string arguments of later events (exec argv, command
+strings, sink arguments) after the run. A byte sequence the target
+received from outside reappearing inside an `execve` argument is
+direct, cheap evidence that external input steers command execution:
+crude taint, no taint engine. Matches (8+ printable bytes; all
+indexing and scanning bounded, truncations counted in the manifest)
+are written to `io-correlation.json` and announced on the console.
+Correlation is additive — a correlation failure never fails a
+completed run.
 
 ### api-trace
 
@@ -406,8 +424,13 @@ are captured; callbacks invoked from inside excluded libraries are
 not), callee names resolve via DebugSymbol (symbol-bearing builds
 give the best coverage), and emission is driven by the controller's
 flush clock — in-agent timers are not dependable across frida
-installs, so the runner calls the script's exported `flush()` after
-resume, every 0.3s early on, then every ~2s, and before teardown.
+installs, so the runner drives flushes on a cadence: the first one
+0.3s after resume (never immediately — that races target startup),
+every 0.3s early on, then every ~2s, and a final one before
+teardown. Bundled templates receive them as posted `raptor:flush`
+messages (fire-and-forget, so a delivery race costs one tick instead
+of wedging the run); custom scripts without that handler get their
+exported `flush()` called instead.
 
 Experimental: CAPTURE is best-effort — Stalker thread-following is
 flaky on some frida builds (a run may follow nothing; check
@@ -552,6 +575,8 @@ Contents:
 | `script.js` | Copy of the hook that executed. |
 | `frida-report.md` | Short human-readable summary. |
 | `seeds/` + `seeds-manifest.json` | Fuzz-ready corpus distilled from data-carrying events (only when the script emitted `args.data_hex` payloads, e.g. seed-harvest). |
+| `coverage.drcov` | drcov-format basic-block coverage (bb-coverage template only). |
+| `io-correlation.json` | Ingest-payload / later-call-argument joins (written when the post-run join finds matches; needs one session capturing both families, e.g. `--template seed-harvest+exec-and-load`). |
 
 ---
 

@@ -11,7 +11,7 @@ Runtime instrumentation substrate. Attach to (or spawn) a target, load a hook sc
 
 ```
 /raptor-frida --target <pid|name|bundle-id|binary>
-              (--template <name> | --script <path> | --sink-watch <file>)
+              (--template <name>[+<name>] | --script <path> | --sink-watch <file>)
               [--host HOST[:PORT]] [--usb]
               [--duration N] [--stdin FILE] [--spawn] [--unsafe-attach]
               [--follow-children]
@@ -49,7 +49,10 @@ libexec/raptor-frida --target ... --template ...
 | `call-edges` | Dynamic call-graph edges (Stalker) → `frida_call_edge` reachability witness. |
 | `heap-trace` | Heap lifecycle: double-free / invalid-free / freed-memory-use candidates + leak sites. |
 
-List dynamically: `raptor frida --list-templates`.
+List dynamically: `raptor frida --list-templates`. Combine templates
+in one session with `--template a+b` (e.g.
+`seed-harvest+exec-and-load` — this pairing also triggers the
+automatic post-run I/O correlation join).
 
 ## Examples
 
@@ -81,6 +84,9 @@ Artefacts:
 - `metadata.json` - target, host info, timings, errors.
 - `script.js` - the script that ran.
 - `frida-report.md` - human-readable summary.
+- `seeds/` + `seeds-manifest.json` - fuzz-ready corpus (data-carrying events, e.g. seed-harvest).
+- `coverage.drcov` - bb-coverage template only.
+- `io-correlation.json` - ingest/later-call joins (combined-template sessions, only when matches found).
 
 ## Requirements
 

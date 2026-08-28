@@ -11,11 +11,12 @@
 #     plumbing.
 #
 # Usage:
-#   libexec/raptor-frida --target <pid|name|binary> --template <name>
+#   libexec/raptor-frida --target <pid|name|binary> --template <name>[+<name>]
 #                         [--script <path>] [--sink-watch <file>]
 #                         [--host HOST[:PORT]]
 #                         [--usb] [--duration N] [--stdin FILE] [--spawn]
-#                         [--unsafe-attach] [--out DIR]
+#                         [--unsafe-attach] [--follow-children]
+#                         [--list-templates] [--out DIR] [--project NAME]
 #
 # If --out is omitted, an output dir is resolved via
 # raptor-run-lifecycle (active project or out/frida_<ts>/).

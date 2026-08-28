@@ -104,6 +104,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip==26.1.1
           pip install -r requirements.txt -r requirements-dev.txt
+          # CVSS v4 scoring — optional for end users (see the
+          # requirements.txt entry), required here so severity-based
+          # bump prioritisation sees numeric v4 scores.
+          pip install cvss==3.6
 
       - name: Phase 1 — harden Python / Debian / npm manifests
         id: harden

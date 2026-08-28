@@ -78,6 +78,11 @@ jobs:
           # against each cloned project, so it needs everything
           # SCA needs (urllib3 plus parsers' dependencies).
           pip install -r requirements.txt
+          # CVSS v4 scoring — optional for end users (see the
+          # requirements.txt entry), required here so the corpus
+          # records numeric severities for v4-only advisories
+          # instead of the degraded fallback label.
+          pip install cvss==3.6
 
       - name: Collect samples
         # ``-v`` emits per-sample status lines so the PR body can

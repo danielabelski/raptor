@@ -92,6 +92,16 @@ defusedxml==0.7.1
 # compromise-detection corpus). Pin alongside the SCA hard deps.
 packaging==25.0
 
+# Optional: CVSS v4.0 scoring for packages/sca (GHSA publishes v4-only
+# advisories since 2024; PYSEC / RUSTSEC mirrors increasingly carry no v3
+# vector or database severity label). packages/sca/osv.py guard-imports
+# this — when absent, v4-only advisories fall back to the database
+# severity label and finally degrade to a blanket ``medium``, so
+# severity-based gates under-fire. Recommended when SCA severity accuracy
+# matters; the repo's own SCA CI jobs install it explicitly. Pure Python,
+# tiny (the reference MacroVector implementation).
+# cvss==3.6
+
 # Optional: Faster JSON parse/serialise (transparent fallback to stdlib json)
 # orjson==3.11.9
 

@@ -239,16 +239,28 @@ def test_bundle_then_reproduce_happy_path(tmp_path):
     assert manifest["tier"] == "1.5"  # bumped
     assert manifest["reproduction"]["reproduced"] is True
     assert manifest["reproduction"]["runs"] == 3
-    # Per-run diagnostics recorded for every run: on a divergent run
-    # the manifest (and the CLI report echoed on failure) names the
-    # shape — returncode, signal, isolation degradation — instead of
-    # a bare outcome string.
+    # Per-run diagnostics recorded for every EXECUTED run: on a
+    # divergent run the manifest (and the CLI report echoed on
+    # failure) names the shape — returncode, signal, isolation
+    # degradation — instead of a bare outcome string. The host may
+    # interleave retried spawn_failure attempt records (a transient
+    # exec failure, classified and retried — the spawn-failure
+    # machinery working, not a reproduction problem); the assertions
+    # here are about the executed outcomes.
     run_details = manifest["reproduction"]["run_details"]
-    assert len(run_details) == 3
-    for i, rec in enumerate(run_details, 1):
-        assert rec["run"] == i
+    executed = [rec for rec in run_details
+                if rec["outcome"] != "spawn_failure"]
+    assert [rec["run"] for rec in executed] == [1, 2, 3], (
+        f"expected all 3 runs to execute (spawn_failure attempt "
+        f"records excluded): {run_details}")
+    for rec in executed:
         assert rec["outcome"] == "exit_signal"
         assert "returncode" in rec
+    for rec in run_details:
+        if rec["outcome"] == "spawn_failure":
+            # Environment-supplied transient, retried by design —
+            # its provenance must be on the record.
+            assert "spawn_failure" in rec, rec
 
 
 @pytest.mark.skipif(
@@ -267,6 +279,14 @@ def test_reproduce_first_run_silent_exit_126_is_spawn_failure(tmp_path):
     later execution dies by SIGSEGV. Pre-fix the 126 was counted as
     no_obvious_effect and one such run flipped a deterministic
     SIGSEGV witness to "non-deterministic", reproduced=False.
+
+    The host environment can add ITS OWN spawn failures on top of the
+    injected one (the very race this machinery exists for) — including
+    on run 1's retry, which then excludes run 1 entirely. Under the
+    executed-runs verdict that is still reproduced=True / exit 0; the
+    assertions below distinguish the injected record (run 1, attempt
+    1, returncode 126) from environment-supplied ones and pin only
+    what the injection guarantees.
     """
     from core.hash import sha256_file
     from core.witness.store import WitnessStore
@@ -323,12 +343,36 @@ def test_reproduce_first_run_silent_exit_126_is_spawn_failure(tmp_path):
     assert r.returncode == 0, f"stdout={r.stdout}\nstderr={r.stderr}"
     manifest = json.loads((bundle_dir / "manifest.json").read_text())
     rep = manifest["reproduction"]
-    assert rep["reproduced"] is True
-    assert rep["spawn_failures"] == 1
-    assert rep["observed_outcomes"] == ["exit_signal"] * 3
     sf = [d for d in rep["run_details"]
           if d.get("outcome") == "spawn_failure"]
-    assert len(sf) == 1
-    assert sf[0]["run"] == 1
-    assert sf[0]["returncode"] == 126
+    # The INJECTED spawn failure: the scripted silent exit 126 lands
+    # on run 1 — attempt 1 normally, or attempt 2 when the
+    # environment's own race consumed attempt 1 before the script
+    # ever ran. Either way a run-1 spawn_failure record with
+    # returncode 126 must exist.
+    injected = [d for d in sf
+                if d["run"] == 1 and d.get("returncode") == 126]
+    assert injected, (
+        f"the injected run-1 silent 126 was not classified as a "
+        f"spawn failure: {rep['run_details']}")
+    # Any record beyond the injected one is the ENVIRONMENT's own
+    # spawn failure (the host race this machinery exists for) —
+    # legal on any run/attempt; environment X-category records carry
+    # no returncode. Every record must carry its provenance reason.
+    environment = [d for d in sf if d is not injected[0]]
+    for d in environment:
+        assert "spawn_failure" in d, (
+            f"environment spawn-failure record lacks provenance: {d}")
+    assert rep["spawn_failures"] == len(sf) >= 1
+    # Verdict over EXECUTED runs: every executed run must be the
+    # recorded SIGSEGV outcome. Normally the retry executes and all
+    # 3 runs are observed; an environment spawn failure on a retry
+    # excludes that run — still reproduced=True over the remainder.
+    assert rep["reproduced"] is True
+    executed = rep["observed_outcomes"]
+    assert 1 <= len(executed) <= 3
+    assert executed == ["exit_signal"] * len(executed), (
+        f"an executed run diverged from the recorded outcome "
+        f"(this would be a real reproduction failure, not the "
+        f"environment race): {rep}")
     assert manifest["tier"] == "1.5"

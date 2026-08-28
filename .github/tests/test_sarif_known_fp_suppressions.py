@@ -259,11 +259,10 @@ class SanitizerFPTests(unittest.TestCase):
                 ],
             )
         ])
-        matched, newly = mod.apply_suppressions(sarif)
+        matched, removed = mod.apply_suppressions(sarif)
         self.assertEqual(matched, 1)
-        self.assertEqual(newly, 1)
-        sup = sarif["runs"][0]["results"][0]["suppressions"][0]
-        self.assertIn("redact_secrets", sup["justification"])
+        self.assertEqual(removed, 1)
+        self.assertEqual(sarif["runs"][0]["results"], [])
 
 
 class SanitizerTableShapeTests(unittest.TestCase):
@@ -288,7 +287,23 @@ class SanitizerTableShapeTests(unittest.TestCase):
 
 
 class ApplySuppressionsTests(unittest.TestCase):
-    def test_stamps_suppression_on_match(self):
+    def test_previously_stamped_result_is_removed(self):
+        """Results stamped by the retired annotation cut must not
+        survive a re-run — they match the same tables."""
+        r = _make_result(
+            "py/clear-text-logging-sensitive-data",
+            "core/sandbox/context.py",
+        )
+        r["suppressions"] = [{
+            "kind": "external", "status": "accepted", "justification": "old",
+        }]
+        sarif = _wrap_in_sarif([r])
+        matched, removed = mod.apply_suppressions(sarif)
+        self.assertEqual(matched, 1)
+        self.assertEqual(removed, 1)
+        self.assertEqual(sarif["runs"][0]["results"], [])
+
+    def test_removes_result_on_match(self):
         sarif = _wrap_in_sarif(
             [
                 _make_result(
@@ -297,19 +312,15 @@ class ApplySuppressionsTests(unittest.TestCase):
                 )
             ]
         )
-        matched, newly = mod.apply_suppressions(sarif)
+        matched, removed = mod.apply_suppressions(sarif)
         self.assertEqual(matched, 1)
-        self.assertEqual(newly, 1)
-        result = sarif["runs"][0]["results"][0]
-        self.assertEqual(len(result["suppressions"]), 1)
-        sup = result["suppressions"][0]
-        self.assertEqual(sup["kind"], "external")
-        self.assertEqual(sup["status"], "accepted")
-        self.assertIn("Triaged FP", sup["justification"])
+        self.assertEqual(removed, 1)
+        # Removal, not annotation: GitHub ignores SARIF suppressions,
+        # so the result must vanish from the upload entirely.
+        self.assertEqual(sarif["runs"][0]["results"], [])
 
     def test_idempotent_on_already_suppressed(self):
-        """Re-running the script on a SARIF that's already had this
-        suppression applied must not double-stamp."""
+        """A second pass over an already-filtered SARIF is a no-op."""
         sarif = _wrap_in_sarif(
             [
                 _make_result(
@@ -319,12 +330,10 @@ class ApplySuppressionsTests(unittest.TestCase):
             ]
         )
         mod.apply_suppressions(sarif)  # first pass
-        matched, newly = mod.apply_suppressions(sarif)  # second pass
-        self.assertEqual(matched, 1)
-        self.assertEqual(newly, 0)
-        self.assertEqual(
-            len(sarif["runs"][0]["results"][0]["suppressions"]), 1
-        )
+        matched, removed = mod.apply_suppressions(sarif)  # second pass
+        self.assertEqual(matched, 0)
+        self.assertEqual(removed, 0)
+        self.assertEqual(sarif["runs"][0]["results"], [])
 
     def test_leaves_unrelated_results_untouched(self):
         sarif = _wrap_in_sarif(

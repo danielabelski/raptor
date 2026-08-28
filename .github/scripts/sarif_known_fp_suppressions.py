@@ -18,16 +18,14 @@ production code that genuinely needs the audit visibility. It runs
 between the multi-run SARIF merge step and the upload step in
 ``.github/workflows/codeql.yml``.
 
-The suppression mechanism is the standard SARIF 2.1.0 ``suppressions``
-property on a result object. GitHub Code Scanning honours external
-suppressions on upload, marking the alert as dismissed with the
-attached justification visible in the UI. Adding a new suppression
-to the table requires a code-review-visible PR — there is no
-silent UI dismissal here.
-
-Adding a new entry: append to ``KNOWN_FP_RULES`` below. Each entry
-matches results by ``(rule_id, sink_file_prefix)`` and stamps an
-external suppression with the documented justification.
+Mechanism: matched results are REMOVED from the SARIF before upload.
+GitHub does not act on the SARIF 2.1.0 ``suppressions`` property for
+open code-scanning alerts (verified empirically: repeated green
+uploads carrying stamped suppressions left the alerts open), so
+stamping is not a dismissal mechanism. Deleting the result instead
+closes the corresponding alert as no-longer-detected on the next
+upload. The reviewed justification for every removal lives in the
+tables below; adding a new entry
 """
 
 from __future__ import annotations
@@ -277,42 +275,25 @@ def _matches_known_fp(result: dict) -> KnownFP | SanitizerFP | None:
     return None
 
 
-def _already_suppressed(result: dict) -> bool:
-    """True if the result already carries any external suppression."""
-    for sup in result.get("suppressions") or []:
-        if sup.get("kind") == "external":
-            return True
-    return False
-
-
 def apply_suppressions(sarif: dict) -> tuple[int, int]:
-    """Annotate matching results with external suppressions.
+    """Remove results matching a reviewed known-FP entry.
 
-    Returns ``(matched, newly_suppressed)``. ``matched`` counts every
-    result that hit a KnownFP entry; ``newly_suppressed`` excludes
-    results that already carried an external suppression (idempotent
-    re-runs don't double-stamp).
+    Returns ``(matched, removed)`` (always equal; both kept so the CI
+    log line stays diffable against historical runs). Removing the
+    result — rather than stamping a SARIF suppression, which GitHub
+    ignores — closes the open alert as no-longer-detected on upload.
     """
     matched = 0
-    newly_suppressed = 0
     for run in sarif.get("runs") or []:
-        for result in run.get("results") or []:
-            entry = _matches_known_fp(result)
-            if entry is None:
-                continue
-            matched += 1
-            if _already_suppressed(result):
-                continue
-            suppressions = result.setdefault("suppressions", [])
-            suppressions.append(
-                {
-                    "kind": "external",
-                    "status": "accepted",
-                    "justification": entry.justification,
-                }
-            )
-            newly_suppressed += 1
-    return matched, newly_suppressed
+        results = run.get("results") or []
+        kept = []
+        for result in results:
+            if _matches_known_fp(result) is None:
+                kept.append(result)
+            else:
+                matched += 1
+        run["results"] = kept
+    return matched, matched
 
 
 def main(argv: list[str]) -> int:
@@ -333,7 +314,7 @@ def main(argv: list[str]) -> int:
         json.dumps(sarif, indent=2) + "\n", encoding="utf-8"
     )
     print(
-        f"Known-FP triage: matched={matched} newly_suppressed={newly} "
+        f"Known-FP triage: matched={matched} removed={newly} "
         f"(rules: {len(KNOWN_FP_RULES)} file-prefix + "
         f"{len(SANITIZER_FP_RULES)} sanitiser)"
     )

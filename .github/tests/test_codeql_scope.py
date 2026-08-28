@@ -246,25 +246,38 @@ class TestWriteScopedConfig:
 class TestOnRealRepo:
     """Integration tests against the actual RAPTOR codebase."""
 
-    @pytest.fixture()
-    def repo(self):
+    @pytest.fixture(scope="class")
+    @staticmethod
+    def repo():
         repo = Path(__file__).resolve().parents[2]
         if not (repo / "core").is_dir():
             pytest.skip("not running from RAPTOR repo root")
         return repo
 
+    @pytest.fixture(scope="class")
+    @staticmethod
+    def repo_graph(repo):
+        """One whole-repo graph build shared by the class.
+
+        The graph is a pure function of the tree and the tree does
+        not change while this class runs; rebuilding it per test
+        re-paid the full-repo AST parse (tens of seconds on a CI
+        runner) for an identical result.
+        """
+        files = discover_py_files(repo)
+        reverse, failures = build_graph(files, repo)
+        return files, reverse, failures
+
     def test_discover_finds_files(self, repo):
         files = discover_py_files(repo)
         assert len(files) > 100
 
-    def test_graph_builds_without_failures(self, repo):
-        files = discover_py_files(repo)
-        _, failures = build_graph(files, repo)
+    def test_graph_builds_without_failures(self, repo_graph):
+        _, _, failures = repo_graph
         assert failures == 0
 
-    def test_leaf_file_has_small_closure(self, repo):
-        files = discover_py_files(repo)
-        reverse, _ = build_graph(files, repo)
+    def test_leaf_file_has_small_closure(self, repo_graph):
+        files, reverse, _ = repo_graph
         # A leaf package file should have a small closure.
         leaf = Path("packages/web/scanner.py")
         if leaf not in set(files):
@@ -272,9 +285,8 @@ class TestOnRealRepo:
         closure = transitive_dependents({leaf}, reverse)
         assert len(closure) < 50
 
-    def test_hub_file_has_large_closure(self, repo):
-        files = discover_py_files(repo)
-        reverse, _ = build_graph(files, repo)
+    def test_hub_file_has_large_closure(self, repo_graph):
+        files, reverse, _ = repo_graph
         hub = Path("core/config/__init__.py")
         if hub not in set(files):
             pytest.skip("core/config/__init__.py not found")

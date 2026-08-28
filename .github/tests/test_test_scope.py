@@ -176,12 +176,40 @@ class TestTierConsistency:
 class TestOnRealRepo:
     """Integration tests against the actual RAPTOR codebase."""
 
-    @pytest.fixture()
-    def repo(self):
+    @pytest.fixture(scope="class")
+    @staticmethod
+    def repo():
         repo = Path(__file__).resolve().parents[2]
         if not (repo / "core").is_dir():
             pytest.skip("not running from RAPTOR repo root")
         return repo
+
+    @pytest.fixture(scope="class", autouse=True)
+    @staticmethod
+    def _shared_import_graph(repo):
+        """Build the whole-repo import graph once for the class.
+
+        ``compute_tier_dispatch`` rebuilds the reverse import graph —
+        an AST parse of every Python file in the repo, tens of seconds
+        per call on a CI runner — on every invocation. The graph is a
+        pure function of the tree, and the tree does not change while
+        this class runs, so every test after the first re-derived the
+        same value. Serve one build to all of them; discovery, the
+        closure walk, tier mapping, and batching still run for real
+        in each test.
+        """
+        import test_scope as _ts
+        cached = _ts.build_graph(_ts.discover_py_files(repo), repo)
+        real_build_graph = _ts.build_graph
+
+        def _build_graph_cached(all_py, repo_arg):
+            if repo_arg == repo:
+                return cached
+            return real_build_graph(all_py, repo_arg)
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(_ts, "build_graph", _build_graph_cached)
+            yield
 
     def test_leaf_change_scopes_tightly(self, repo):
         result = compute_tier_dispatch(

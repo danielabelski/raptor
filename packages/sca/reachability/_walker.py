@@ -76,11 +76,17 @@ def walk_source_files(
         if depth >= max_depth:
             dirnames[:] = []
         else:
-            dirnames[:] = [
+            # Sorted in-place so os.walk recurses in a stable order.
+            # Raw readdir order is filesystem-dependent — identical
+            # trees walked on different hosts produced differently
+            # ordered (and, once capped for display, differently
+            # truncated) reachability evidence lists, churning every
+            # corpus refresh diff.
+            dirnames[:] = sorted(
                 d for d in dirnames if d not in EXCLUDED_DIR_NAMES
-            ]
+            )
         dp = Path(dirpath)
-        for fn in filenames:
+        for fn in sorted(filenames):
             dot = fn.rfind(".")
             suffix = fn[dot:].lower() if dot > 0 else ""
             out.append((dp / fn, suffix))

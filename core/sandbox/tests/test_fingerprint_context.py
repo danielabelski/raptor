@@ -10,6 +10,7 @@ around the persona lifecycle and the public API surface.
 from __future__ import annotations
 
 import logging
+import re
 import sys
 import tempfile
 
@@ -263,9 +264,28 @@ def test_required_sanitisation_accepts_input_kwarg(
         r = _run(["/bin/cat", "/etc/machine-id"], input=b"unused",
                  capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, r.stderr[-300:]
-    host_mid = Path("/etc/machine-id").read_text().strip()
-    assert host_mid not in (r.stdout or ""), (
-        "persona did not apply on the input= path")
+    sandbox_mid = (r.stdout or "").strip()
+    # Assert the persona's OWN contract (fingerprint._derive_machine_id:
+    # 32 lowercase-hex chars, never all-zeros, never the host's real
+    # id) rather than only substring-absence — the previous
+    # `host_mid not in stdout` check was vacuously false wherever the
+    # host /etc/machine-id is empty (containers, pre-firstboot images):
+    # the empty string is a substring of everything.
+    assert re.fullmatch(r"[0-9a-f]{32}", sandbox_mid), (
+        f"persona did not apply on the input= path — in-sandbox "
+        f"machine-id is not the persona shape: {sandbox_mid!r}")
+    assert sandbox_mid != "0" * 32, (
+        "all-zero machine-id is a documented sandbox tell")
+    try:
+        host_mid = Path("/etc/machine-id").read_text().strip()
+    except OSError:
+        host_mid = ""
+    assert sandbox_mid != host_mid, (
+        "persona did not apply on the input= path — child saw the "
+        "host machine-id")
+    if host_mid:
+        assert host_mid not in (r.stdout or ""), (
+            "host machine-id leaked through the persona")
 
 
 def test_required_sanitisation_refuses_speculative_cache_demotion(

@@ -107,12 +107,15 @@ class ElfMetadata:
     populated fields on :class:`packages.binary_analysis.
     radare2_understand.BinaryContextMap`, so fingerprints
     produced by the ELF tier and by the radare2 tier are
-    comparable.
+    comparable. ``endianness`` comes from ``EI_DATA`` — it
+    distinguishes e.g. mipsel from mips firmware, which share an
+    e_machine value.
     """
 
     arch: str
     bits: int
     binary_format: str = "elf"
+    endianness: str = "little"   # "little" | "big" (from EI_DATA)
     imports: set[str] = field(default_factory=set)
 
 
@@ -149,6 +152,7 @@ def _parse_elf_stream(f) -> ElfMetadata | None:
         return None
     bits = 64 if ei_class == _ELFCLASS64 else 32
     endian = "<" if ei_data == _ELFDATA2LSB else ">"
+    endianness = "little" if ei_data == _ELFDATA2LSB else "big"
 
     # --- ELF header (continues after e_ident) -----------------
     # ELF64: HHIQQQIHHHHHH (12-byte preamble + Q for entry/phoff/shoff)
@@ -173,24 +177,24 @@ def _parse_elf_stream(f) -> ElfMetadata | None:
     if e_shoff == 0 or e_shnum == 0 or e_shnum > _MAX_SHNUM:
         # No section headers — possible (PIE stripped binary)
         # but we can't enumerate imports without them. Bail.
-        return _bare_metadata(e_machine, bits)
+        return _bare_metadata(e_machine, bits, endianness)
     if e_shstrndx >= _MAX_SHSTRNDX_BOUND:
         # SHN_XINDEX or similar — would require reading
         # section 0 for the extended index. Not handling.
-        return _bare_metadata(e_machine, bits)
+        return _bare_metadata(e_machine, bits, endianness)
 
     # --- Section header table ----------------------------------
     sections = _read_section_headers(
         f, e_shoff, e_shentsize, e_shnum, bits=bits, endian=endian,
     )
     if sections is None or e_shstrndx >= len(sections):
-        return _bare_metadata(e_machine, bits)
+        return _bare_metadata(e_machine, bits, endianness)
 
     # --- Section-name string table -----------------------------
     shstrtab_section = sections[e_shstrndx]
     shstrtab = _read_section_bytes(f, shstrtab_section)
     if shstrtab is None:
-        return _bare_metadata(e_machine, bits)
+        return _bare_metadata(e_machine, bits, endianness)
 
     # Resolve section names so we can find .dynsym + .dynstr
     named_sections: list[tuple[str, _SectionHeader]] = []
@@ -210,12 +214,12 @@ def _parse_elf_stream(f) -> ElfMetadata | None:
     if dynsym is None or dynstr is None:
         # Static binary or stripped — no dynamic imports.
         # Return metadata without imports.
-        return _bare_metadata(e_machine, bits)
+        return _bare_metadata(e_machine, bits, endianness)
 
     # --- Read .dynstr (the symbol-name string table) -----------
     dynstr_bytes = _read_section_bytes(f, dynstr)
     if dynstr_bytes is None:
-        return _bare_metadata(e_machine, bits)
+        return _bare_metadata(e_machine, bits, endianness)
 
     # --- Walk .dynsym entries, collect imports -----------------
     imports = _read_dynsym_imports(
@@ -226,6 +230,7 @@ def _parse_elf_stream(f) -> ElfMetadata | None:
         arch=_MACHINE_ARCH.get(e_machine, "unknown"),
         bits=bits,
         binary_format="elf",
+        endianness=endianness,
         imports=imports,
     )
 
@@ -372,14 +377,16 @@ def _read_dynsym_imports(
     return imports
 
 
-def _bare_metadata(e_machine: int, bits: int) -> ElfMetadata:
+def _bare_metadata(e_machine: int, bits: int, endianness: str) -> ElfMetadata:
     """Return metadata-only result (no imports). Used when the
     section headers are malformed or absent — we can still
-    surface arch / bits / format from the ELF header alone."""
+    surface arch / bits / endianness / format from the ELF header
+    alone."""
     return ElfMetadata(
         arch=_MACHINE_ARCH.get(e_machine, "unknown"),
         bits=bits,
         binary_format="elf",
+        endianness=endianness,
         imports=set(),
     )
 

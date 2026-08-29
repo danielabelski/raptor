@@ -332,7 +332,12 @@ class TestInstructorTruncationStop:
         """The exception type is a definitional truncation signal even
         when no completion rides on it."""
         pytest.importorskip("instructor")
-        from instructor.exceptions import IncompleteOutputException
+        try:
+            # instructor >= 1.9: public exceptions live in
+            # instructor.core; the old path is deprecated-for-removal.
+            from instructor.core import IncompleteOutputException
+        except ImportError:  # older installs predating instructor.core
+            from instructor.exceptions import IncompleteOutputException
 
         from core.llm.providers import _instructor_truncation_stop
         exc = IncompleteOutputException(last_completion=None)
@@ -405,7 +410,13 @@ def test_real_instructor_incomplete_output_detected(monkeypatch) -> None:
     """The real instructor exception (as raised by its Anthropic
     handler on stop_reason="max_tokens") takes the truncation path."""
     pytest.importorskip("instructor")
-    from instructor.exceptions import IncompleteOutputException
+    try:
+        # instructor >= 1.9 moved the public exceptions to
+        # instructor.core; the old instructor.exceptions path emits a
+        # DeprecationWarning and is slated for removal.
+        from instructor.core import IncompleteOutputException
+    except ImportError:  # older installs predating instructor.core
+        from instructor.exceptions import IncompleteOutputException
     provider, fallback_calls = _anthropic_provider(
         monkeypatch,
         IncompleteOutputException(

@@ -1,10 +1,10 @@
 {
   "_source": {
-    "captured_at": "2026-08-29T00:28:19Z",
-    "captured_with_commit": "84d890ba4",
+    "captured_at": "2026-08-29T12:53:40Z",
+    "captured_with_commit": "255182084",
     "license": "MIT (RAPTOR-generated). Captured per-sample diagnostics (deps_analysed, vuln_findings, eco_breakdown, elapsed_seconds_p50) for regression detection — no third-party content.",
     "name": "RAPTOR SCA stress-test baseline",
-    "provenance": "Counts (deps_analysed, vuln_findings, eco_breakdown) re-captured by an operator run of ``run_stress_sweep`` after intentional scanner-capability changes (restored base-image package inventories + distro advisory matching). elapsed_seconds_p50 values are deliberately retained from the previous CI-captured baseline — count fields are deterministic given upstream data, timing fields are host-specific. Re-generated in full by ``write_baseline()`` on the next warn-level CI refresh.",
+    "provenance": "Counts re-captured by an operator run of ``run_stress_sweep`` after scanner-capability fixes (ratio-shaped layer decompression budget restoring large-layer extraction; versioned SBOM cache keys invalidating stale-shaped image rows). Every NEW ecosystem category was sample-verified against the live OSV API before acceptance. elapsed_seconds_p50 values are retained from the previous CI-captured baseline — count fields are deterministic given upstream data, timing fields are host-specific. Re-generated in full by ``write_baseline()`` on the next warn-level CI refresh.",
     "sample_count": 51,
     "url": "internal — packages.sca.calibration.stress"
   },
@@ -135,14 +135,15 @@
       "vuln_findings": 16
     },
     "firecracker-1.0": {
-      "deps_analysed": 582,
+      "deps_analysed": 528,
       "eco_breakdown": {
         "Cargo": 20,
-        "PyPI": 21
+        "PyPI": 21,
+        "Ubuntu": 160
       },
       "ecosystem": "Cargo",
       "elapsed_seconds_p50": 14.7,
-      "vuln_findings": 41
+      "vuln_findings": 201
     },
     "flask": {
       "deps_analysed": 61,
@@ -182,16 +183,17 @@
       "vuln_findings": 52
     },
     "istio-1.4": {
-      "deps_analysed": 3610,
+      "deps_analysed": 3142,
       "eco_breakdown": {
-        "Debian": 261,
+        "Debian": 3085,
         "Go": 1100,
         "PyPI": 53,
+        "Ubuntu": 3248,
         "npm": 1
       },
       "ecosystem": "Go",
       "elapsed_seconds_p50": 88.9,
-      "vuln_findings": 1415
+      "vuln_findings": 7487
     },
     "jenkins-2.387": {
       "deps_analysed": 978,
@@ -286,13 +288,14 @@
       "vuln_findings": 1
     },
     "nushell-0.85": {
-      "deps_analysed": 997,
+      "deps_analysed": 991,
       "eco_breakdown": {
+        "Alpine:v3.24": 10,
         "Cargo": 74
       },
       "ecosystem": "Cargo",
       "elapsed_seconds_p50": 26.7,
-      "vuln_findings": 74
+      "vuln_findings": 84
     },
     "orchardcore-2.0": {
       "deps_analysed": 2908,
@@ -335,26 +338,30 @@
       "vuln_findings": 531
     },
     "pterodactyl-0.7": {
-      "deps_analysed": 351,
+      "deps_analysed": 340,
       "eco_breakdown": {
+        "Alpine:v3.23": 10,
         "Packagist": 65,
         "Ubuntu": 93
       },
       "ecosystem": "Packagist",
       "elapsed_seconds_p50": 17.2,
-      "vuln_findings": 158
+      "vuln_findings": 168
     },
     "pterodactyl-1.11": {
       "deps_analysed": 1917,
       "eco_breakdown": {
+        "Alpine:v3.11": 14,
+        "Alpine:v3.21": 26,
+        "Alpine:v3.23": 10,
         "Alpine:v3.24": 10,
         "Packagist": 57,
-        "Ubuntu": 155,
+        "Ubuntu": 223,
         "npm": 232
       },
       "ecosystem": "Packagist",
       "elapsed_seconds_p50": 71.1,
-      "vuln_findings": 454
+      "vuln_findings": 572
     },
     "rails": {
       "deps_analysed": 1086,
@@ -404,7 +411,7 @@
       "vuln_findings": 5
     },
     "saleor-2.10": {
-      "deps_analysed": 1094,
+      "deps_analysed": 1064,
       "eco_breakdown": {
         "Debian": 1651,
         "PyPI": 163,
@@ -415,14 +422,15 @@
       "vuln_findings": 1854
     },
     "sentry-8.22": {
-      "deps_analysed": 1591,
+      "deps_analysed": 1558,
       "eco_breakdown": {
+        "Debian": 570,
         "PyPI": 127,
         "npm": 310
       },
       "ecosystem": "PyPI",
       "elapsed_seconds_p50": 66.6,
-      "vuln_findings": 437
+      "vuln_findings": 1007
     },
     "serde": {
       "deps_analysed": 44,
@@ -432,13 +440,14 @@
       "vuln_findings": 0
     },
     "spring-boot": {
-      "deps_analysed": 1585,
+      "deps_analysed": 1435,
       "eco_breakdown": {
-        "Maven": 20
+        "Maven": 20,
+        "Ubuntu": 304
       },
       "ecosystem": "Maven",
       "elapsed_seconds_p50": 34.7,
-      "vuln_findings": 20
+      "vuln_findings": 324
     },
     "spring-boot-1.5": {
       "deps_analysed": 2374,
@@ -470,11 +479,15 @@
       "vuln_findings": 700
     },
     "superset-0.36": {
-      "deps_analysed": 5956,
-      "eco_breakdown": {},
+      "deps_analysed": 6059,
+      "eco_breakdown": {
+        "Debian": 5808,
+        "PyPI": 110,
+        "npm": 364
+      },
       "ecosystem": "PyPI",
       "elapsed_seconds_p50": 61.8,
-      "vuln_findings": 3240
+      "vuln_findings": 6282
     },
     "tokio": {
       "deps_analysed": 240,
@@ -486,14 +499,15 @@
       "vuln_findings": 11
     },
     "wagtail-2.10": {
-      "deps_analysed": 2325,
+      "deps_analysed": 2299,
       "eco_breakdown": {
+        "Debian": 364,
         "PyPI": 62,
         "npm": 207
       },
       "ecosystem": "PyPI",
       "elapsed_seconds_p50": 30.1,
-      "vuln_findings": 269
+      "vuln_findings": 633
     }
   }
 }

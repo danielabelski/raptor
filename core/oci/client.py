@@ -34,6 +34,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
 
+from core.http import HttpError
 
 from .auth import (
     lookup_credentials,
@@ -193,9 +194,79 @@ def _safe_error_snippet(resp) -> str:
     scorecards. Redact before the text ever reaches an error string;
     the extra pre-truncation slack keeps a token that straddles the
     200-char boundary recognisable to the redactor.
+
+    A bodyless response (redirects, HEAD-ish errors) yields a named
+    placeholder instead of an empty string — error messages that
+    interpolate this must never trail off into ``": "`` with the
+    actual failure detail lost.
     """
     from core.security.redaction import redact_secrets
-    return redact_secrets(resp.text[:600], reveal_secrets=False)[:200]
+    snippet = redact_secrets(resp.text[:600], reveal_secrets=False)[:200]
+    if snippet.strip():
+        return snippet
+    status = getattr(resp, "status_code", "?")
+    location = (resp.headers or {}).get("Location") or \
+        (resp.headers or {}).get("location")
+    if location:
+        return (
+            f"(HTTP {status} with empty body; Location present — "
+            f"redirect not followed at this call site)"
+        )
+    return f"(HTTP {status} with empty body)"
+
+
+# Blob GETs are the one OCI surface where off-registry redirects are
+# part of the protocol: Docker Hub (and most large registries) answer
+# ``/v2/<name>/blobs/<digest>`` with a 307 whose Location is a
+# pre-signed CDN URL on a different origin. core.http deliberately
+# never follows redirects (the backend can't run this client's address
+# policy), so the client follows them here — bounded, re-validated,
+# and with registry credentials confined to the registry origin.
+_BLOB_REDIRECT_STATUSES = frozenset((301, 302, 303, 307, 308))
+_MAX_BLOB_REDIRECT_HOPS = 3
+
+# Byte budget for one layer blob fetched from a redirect target.
+# The buffered ``request()`` default cap (50 MB) is far below real
+# layer sizes (Debian-based images routinely carry 100-400 MB
+# layers); the CDN hop streams through ``stream_bytes`` instead, so
+# this bounds cumulative stream size, not RSS. Content addressing +
+# the post-stream digest check keep integrity; the budget is a
+# denial-of-service bound only.
+_MAX_BLOB_BYTES = 2 * 1024 ** 3
+
+
+def _validate_blob_redirect_target(location: str, *, base_url: str) -> str:
+    """Resolve a blob-GET redirect ``Location`` against ``base_url``
+    and hold the target to the same host policy as any registry host.
+
+    Returns the absolute URL to fetch. Raises :class:`ValueError`
+    naming the refusal when the target is not https, carries
+    userinfo, or fails the parse-time / resolved-address gates. The
+    CDN host is deliberately NOT run through ``api_endpoint_for``'s
+    registry knowledge — it is expected to be off-registry — but it
+    gets the full SSRF policy: name-shape validation plus
+    every-resolved-address-must-be-global.
+    """
+    from urllib.parse import urljoin, urlparse
+
+    from .registry_hosts import (
+        _validate_registry_host,
+        validate_resolved_registry_addresses,
+    )
+    target = urljoin(base_url, location.strip())
+    parsed = urlparse(target)
+    if parsed.scheme != "https":
+        raise ValueError(
+            f"redirect target scheme {parsed.scheme!r} is not https",
+        )
+    if "@" in parsed.netloc:
+        raise ValueError("redirect target carries userinfo")
+    authority = parsed.netloc
+    if not authority:
+        raise ValueError("redirect target has no host")
+    _validate_registry_host(authority)
+    validate_resolved_registry_addresses(authority)
+    return target
 
 
 def _validate_link_next(
@@ -616,20 +687,122 @@ class OciRegistryClient:
             "GET", ref.registry, url,
             headers={"Accept-Encoding": "identity"}, stream=True,
         )
-        if resp.status_code != 200:
-            raise RegistryError(
-                resp.status_code,
-                f"blob GET failed for {digest} in "
-                f"{ref.to_canonical()}: {_safe_error_snippet(resp)}",
+        # Registries answer blob GETs with a redirect to a pre-signed
+        # CDN URL (Docker Hub 307s every layer to its CDN; the
+        # pre-signed query string IS the authorisation). core.http
+        # never follows redirects, so follow them here: bounded hops,
+        # every target re-validated through the registry host policy,
+        # and the registry's Authorization confined to the registry
+        # origin — same-origin redirects re-enter the authed path,
+        # cross-origin targets are fetched with a clean request (per
+        # the OCI distribution spec the registry credential must not
+        # leak to the storage host).
+        from .registry_hosts import api_endpoint_for
+        current_url = f"https://{api_endpoint_for(ref.registry)}{url}"
+        hops = 0
+        cdn_stream: Iterator[bytes] | None = None
+        while resp.status_code in _BLOB_REDIRECT_STATUSES:
+            status = resp.status_code
+            location = (
+                resp.headers.get("Location")
+                or resp.headers.get("location")
             )
+            resp.close()
+            if hops >= _MAX_BLOB_REDIRECT_HOPS:
+                raise RegistryError(
+                    status,
+                    f"blob GET for {digest} in {ref.to_canonical()} "
+                    f"exceeded {_MAX_BLOB_REDIRECT_HOPS} redirect hops",
+                )
+            if not location:
+                raise RegistryError(
+                    status,
+                    f"blob GET for {digest} in {ref.to_canonical()} "
+                    f"redirected ({status}) without a Location header",
+                )
+            try:
+                current_url = _validate_blob_redirect_target(
+                    location, base_url=current_url,
+                )
+            except ValueError as exc:
+                raise RegistryError(
+                    status,
+                    f"refusing blob redirect for {digest} in "
+                    f"{ref.to_canonical()}: {exc}",
+                ) from exc
+            hops += 1
+            from urllib.parse import urlparse
+            parsed = urlparse(current_url)
+            if parsed.netloc == api_endpoint_for(ref.registry):
+                # Same-origin — stay on the authed path (the
+                # registry may still demand its bearer token) and
+                # keep looping: the registry may redirect again.
+                path = parsed.path + (
+                    f"?{parsed.query}" if parsed.query else ""
+                )
+                resp = self._authed_request(
+                    "GET", ref.registry, path,
+                    headers={"Accept-Encoding": "identity"},
+                    stream=True,
+                )
+                continue
+            # Off-origin CDN — terminal hop: clean request (no
+            # registry credential; the pre-signed URL is the
+            # authorisation) through the true streaming surface.
+            # The buffered ``request()`` path caps bodies at its
+            # default byte budget, far below real layer sizes;
+            # ``stream_bytes`` yields chunks without buffering
+            # under the dedicated blob budget. Terminal by design:
+            # registries redirect registry → storage in one hop, and
+            # ``stream_bytes`` cannot expose a further redirect's
+            # status — a misbehaving chain surfaces as the loud
+            # empty-body error below.
+            cdn_stream = self.http.stream_bytes(
+                current_url,
+                headers={"Accept-Encoding": "identity"},
+                max_bytes=_MAX_BLOB_BYTES,
+            )
+            break
+        if cdn_stream is None:
+            if resp.status_code != 200:
+                raise RegistryError(
+                    resp.status_code,
+                    f"blob GET failed for {digest} in "
+                    f"{ref.to_canonical()}: {_safe_error_snippet(resp)}",
+                )
+            chunk_iter: Iterator[bytes] = resp.iter_content(
+                chunk_size=chunk_size,
+            )
+            close = resp.close
+        else:
+            chunk_iter = cdn_stream
+            close = getattr(cdn_stream, "close", lambda: None)
         hasher = hashlib.sha256()
+        total = 0
         try:
-            for chunk in resp.iter_content(chunk_size=chunk_size):
+            for chunk in chunk_iter:
                 if chunk:
                     hasher.update(chunk)
+                    total += len(chunk)
                     yield chunk
+        except HttpError as exc:
+            # stream_bytes raises lazily on first iteration (4xx,
+            # size budget, refused redirect); carry the blob context.
+            raise RegistryError(
+                getattr(exc, "status", 0) or 0,
+                f"blob GET failed for {digest} in "
+                f"{ref.to_canonical()}: {exc}",
+            ) from exc
         finally:
-            resp.close()
+            close()
+        if cdn_stream is not None and total == 0:
+            raise RegistryError(
+                200,
+                f"blob GET for {digest} in {ref.to_canonical()} "
+                f"returned an empty body from the redirect target "
+                f"(possibly a further redirect, which the terminal "
+                f"CDN hop does not follow)",
+            )
         computed = "sha256:" + hasher.hexdigest()
         if computed != digest:
             raise RegistryError(

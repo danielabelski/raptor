@@ -1044,6 +1044,10 @@ def _context_map(
                 "transitive_distance": fn.transitive_distance,
                 "confidence": "high" if fn.calls_dangerous else "candidate",
                 "evidence_tier": EvidenceTier.XREF_BACKED.value,
+                # Complexity is present only when the deep run computed
+                # it (extract_cfgs); absent otherwise — same contract as
+                # BinaryContextMap.to_dict.
+                **({"cyclomatic": fn.cyclomatic} if fn.cyclomatic is not None else {}),
             }
             for fn in context.interesting_functions
             if not _is_runtime_support_name(fn.name)
@@ -1779,6 +1783,12 @@ def analyse_blackbox_binary(
             llm=llm,
             quick=quick,
             max_decompile=max_decompile,
+            # Deep runs also recover each interesting function's basic-
+            # block CFG and its cyclomatic complexity (r2 afbj, cached
+            # per build-id; per-function failures degrade to an absent
+            # field). Quick mode stays metadata-only and cheap — no CFG
+            # extraction — as does the compare-binary pass below.
+            extract_cfgs=not quick,
             slice_arch=slice_arch,
         )
     except Exception as exc:

@@ -111,32 +111,40 @@ or build it locally using the included `Dockerfile`:
 docker build -f .devcontainer/Dockerfile -t raptor:latest .
 ```
 
-The image expects the RAPTOR framework (this repo) to be mounted into `/workspaces/raptor` on startup. You can optionally mount a target-folder for local analysis, if that's how you're planning to work (examples shown below).
+The image expects the RAPTOR framework (this repo) to be mounted into `/workspaces/raptor` on startup. You can optionally mount a target folder for local analysis.
 
-To start the container run the following (`--privileged` required if using the `rr` deterministic debugger):
+To start the container:
 ```bash
-docker run --privileged -it \
+docker run -it \
   -v "$(pwd):/workspaces/raptor" \
-  # optional target-folder mount
+  raptor:latest
+```
+
+To mount a target folder as well:
+```bash
+docker run -it \
+  -v "$(pwd):/workspaces/raptor" \
   -v "/path/to/target-folder:/workspaces/target" \
   raptor:latest
 ```
 
-VSCode Devcontainers are also supported. To mount a target-folder, add it to the `mounts` section of `.devcontainer/devcontainer.json`:
-```bash
+Add `--privileged` if you need the `rr` deterministic debugger.
+
+VS Code devcontainers are also supported. To mount a target folder, add it to the `mounts` section of `.devcontainer/devcontainer.json`:
+```jsonc
 "mounts": [
   // ...existing entries...
   "source=/path/to/target-folder,target=/workspaces/target,type=bind,consistency=cached"
 ]
 ```
 
-Then from a terminal run:
+Then open the repo in VS Code — it will prompt you to reopen in the container:
 ```bash
 cd /path/to/raptor
 code .
 ```
 
-Either way once you're inside the container, run `raptor` to get started.
+Either way, once you're inside the container, run `raptor` to get started.
 
 ---
 

@@ -156,9 +156,13 @@ _sandbox_landlock_only_warned = False
 _bare_run_posture_warned = False
 _net_and_tcp_allowlist_warned = False
 # Degraded-mode Landlock TCP-connect deny (block_network without a
-# namespace backend): engaged / cannot-engage one-shot warnings.
+# namespace backend): engaged one-shot warning. When the degraded deny
+# CANNOT engage either, the context refuses the run outright — unless
+# the operator accepted the degraded tier via
+# RAPTOR_ALLOW_DEGRADED_UNTRUSTED, which downgrades the refusal to the
+# second one-shot warning here.
 _degraded_tcp_deny_warned = False
-_degraded_tcp_deny_unavailable_warned = False
+_degraded_net_open_override_warned = False
 # Egress-proxy tier 2 engaged (Landlock TCP port pin, no netns bridge):
 # the pin is port-scoped, not (host, port)-scoped — weaker guarantee
 # than the netns tier; warned once per process at engagement.

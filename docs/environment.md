@@ -116,7 +116,16 @@ global escape hatch, not a silent degrade. When the override waives
 a refusal that lands the run on a host-procfs-visible lane — the
 no-backend refusal, or a per-call `pass_fds=` demotion — every
 affected untrusted run logs a WARNING. With the override set, those
-runs proceed with the old warn-only degrade.
+runs proceed with the old warn-only degrade. Two bounds on the
+waiver: on a kernel with no Landlock at all, "Landlock/seccomp-only
+containment" does not exist, so a demoted call that declared a
+filesystem/TCP policy (`target=`/`output=`/`allowed_tcp_ports=`/
+`restrict_reads=`) still refuses; and the override DOES extend to
+the `block_network` refusal on hosts missing both the namespace
+backend and Landlock ABI v4+ — accepting it there means accepting
+UNRESTRICTED network for those runs, and the warning says so (the
+narrower per-run escapes are a profile without the network block,
+e.g. `--sandbox target_run`, or `degraded_net_deny=False`).
 
 Distinct from `RAPTOR_ALLOW_UNSANDBOXED_TOOLS`, which waives a
 *missing sandbox module* at the tool-runner import seam — this one

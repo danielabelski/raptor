@@ -1013,10 +1013,21 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                  (Landlock net rules are port-scoped, not address-scoped),
                  which breaks daemon-IPC tools; known offenders are nudged
                  to no-daemon mode via env (GRADLE_OPTS, NX_DAEMON). bind/
-                 listen and UDP are untouched. Pass False to opt out when
-                 a workload genuinely needs loopback TCP on a degraded
-                 host and the operator accepts open egress. No effect
-                 when a namespace backend is available or on macOS.
+                 listen and UDP are untouched. When the degraded deny
+                 cannot engage either (no Landlock ABI v4+ — which also
+                 leaves an allowed_tcp_ports allowlist unenforceable on
+                 this path), the context raises SandboxSetupError
+                 rather than running with the demanded block silently
+                 absent. On Linux with the default True, block_network=
+                 True therefore always yields a deny layer, an enforced
+                 port allowlist, or a refusal — never silently open
+                 egress; the explicit acceptance levers are False here
+                 (per call: a workload that genuinely needs loopback
+                 TCP / egress on a degraded host) and
+                 RAPTOR_ALLOW_DEGRADED_UNTRUSTED=1 (host-wide, converts
+                 the refusal to a loud warning). No effect when a
+                 namespace backend is available or on macOS (whose
+                 seatbelt lane has its own posture).
         omit_proc_reads: (default False) Remove `/proc` from the
                  default read allowlist computed under
                  `restrict_reads=True`. Set by `run_untrusted()` /
@@ -1845,9 +1856,10 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             and not effectively_disabled
             and degraded_net_deny
             and block_network
-            and not use_sandbox
-            and not allowed_tcp_ports):
-        if check_landlock_available() and _get_landlock_abi() >= 4:
+            and not use_sandbox):
+        _ll_net_capable = (check_landlock_available()
+                           and _get_landlock_abi() >= 4)
+        if _ll_net_capable and not allowed_tcp_ports:
             _degraded_tcp_deny = True
             if state.warn_once("_degraded_tcp_deny_warned"):
                 logger.warning(
@@ -1860,12 +1872,68 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                     "degraded_net_deny=False to opt out for workloads "
                     "that need loopback TCP."
                 )
-        elif state.warn_once("_degraded_tcp_deny_unavailable_warned"):
-            logger.warning(
-                "Sandbox: block_network requested but no namespace "
-                "backend is available AND Landlock ABI v4+ is missing — "
-                "network access is NOT restricted for this call."
-            )
+        elif _ll_net_capable:
+            # allowed_tcp_ports supplied: the port allowlist IS the
+            # caller's network policy and Landlock (ABI v4+) enforces
+            # it on this backend-less path — the deny-all lane would
+            # break the allowlist. The block_network+allowed_tcp_ports
+            # combination itself gets the dead-combo warning below.
+            pass
+        elif not strict_required:
+            # Neither deny lane can engage: no namespace backend for
+            # the interface-level block, no Landlock v4+ for the
+            # degraded TCP-connect deny — and when allowed_tcp_ports
+            # was supplied, no enforcement for that allowlist either
+            # (Landlock TCP rules are an ABI v4+ feature). The caller
+            # demanded a network policy; running with unrestricted
+            # network after a one-shot warning made that policy
+            # evaporate exactly on the hosts that can least afford it
+            # (and only the FIRST such call even saw the warning).
+            # Fail closed, with two explicit acceptance levers:
+            #   * degraded_net_deny=False (per call, library callers)
+            #     skips this whole block — "this run may egress";
+            #   * RAPTOR_ALLOW_DEGRADED_UNTRUSTED=1 (host-wide, the
+            #     documented degraded-tier acceptance) converts the
+            #     refusal into a loud warning naming what is being
+            #     accepted.
+            # strict defers to its own gate below so that one abort
+            # names EVERY unmet strict requirement, this one included.
+            _degraded_ok = os.environ.get(
+                "RAPTOR_ALLOW_DEGRADED_UNTRUSTED", "",
+            ).strip().lower() in ("1", "true", "yes", "on")
+            if _degraded_ok:
+                if state.warn_once("_degraded_net_open_override_warned"):
+                    logger.warning(
+                        "Sandbox: block_network requested but no "
+                        "namespace backend is available AND Landlock "
+                        "ABI v4+ is missing — "
+                        "RAPTOR_ALLOW_DEGRADED_UNTRUSTED=1 accepts "
+                        "running with NETWORK UNRESTRICTED on this "
+                        "host%s.",
+                        (" (the allowed_tcp_ports allowlist is "
+                         "unenforced too)" if allowed_tcp_ports else ""),
+                    )
+            else:
+                from .errors import SandboxSetupError
+                from .probes import ENGAGE_FAIL_INSTRUCTIONS
+                _ports_clause = (
+                    " The supplied allowed_tcp_ports allowlist is "
+                    "equally unenforceable (Landlock TCP rules need "
+                    "ABI v4+)." if allowed_tcp_ports else "")
+                raise SandboxSetupError(
+                    "Sandbox: block_network=True was requested, but no "
+                    "namespace backend is available on this host AND "
+                    "Landlock ABI v4+ is missing — no layer can enforce "
+                    "the requested network block." + _ports_clause,
+                    ENGAGE_FAIL_INSTRUCTIONS + " Alternatively: choose "
+                    "a profile without the network block when the "
+                    "workload genuinely needs egress (e.g. `--sandbox "
+                    "target_run`, which keeps filesystem confinement), "
+                    "pass degraded_net_deny=False (library callers) to "
+                    "accept an unrestricted-network run per call, or "
+                    "set RAPTOR_ALLOW_DEGRADED_UNTRUSTED=1 to accept "
+                    "the degraded tier host-wide.",
+                )
 
     # strict is fail-closed: it refuses to run rather than degrade. The
     # aborts raise SandboxSetupError (not RuntimeError) so (a) the
@@ -5627,8 +5695,13 @@ def run(cmd: list[str], block_network: bool = True, target: str | None = None,
     Use this instead of subprocess.run() for any command that processes
     untrusted content — and prefer run_untrusted() when the COMMAND
     ITSELF comes from or is influenced by the analysed target: it is
-    the fail-closed variant (refuses to execute when the sandbox
-    cannot engage, where this wrapper degrades with a warning).
+    the fail-closed variant (refuses to execute whenever the sandbox
+    cannot engage). This wrapper degrades with a warning ONLY while
+    some layer can still enforce what the caller asked for; it too
+    refuses (SandboxSetupError) when nothing can — a mount-ns demotion
+    on a Landlock-less kernel with target/output/allowed_tcp_ports/
+    restrict_reads set, or block_network=True with neither the
+    namespace backend nor Landlock ABI v4+ available.
     Applies get_safe_env(), resource limits, and namespace isolation
     automatically.
 

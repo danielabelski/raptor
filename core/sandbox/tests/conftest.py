@@ -71,7 +71,7 @@ def _sandbox_state_guard():
         "_bare_run_posture_warned",
         "_net_and_tcp_allowlist_warned",
         "_degraded_tcp_deny_warned",
-        "_degraded_tcp_deny_unavailable_warned",
+        "_degraded_net_open_override_warned",
         "_proxy_tier2_port_pin_warned",
         "_seccomp_arch_missing_warned", "_mount_unavailable_warned",
         "_ptrace_unavailable_warned", "_audit_warned_no_spawn",

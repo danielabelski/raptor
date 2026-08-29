@@ -54,10 +54,114 @@ rules:
     pattern: |
       free($PTR);
       ...
-      $PTR->$FIELD
-    message: "potential use-after-free"
+      $X = $PTR->$FIELD;
+    message: "potential use-after-free: field access on freed pointer"
     languages: [c]
     severity: ERROR
+    metadata:
+      cwe: "CWE-416"
+      confidence: LOW
+      source: decompiler
+
+  - id: decompiler-free-then-write-field
+    pattern: |
+      free($PTR);
+      ...
+      $PTR->$FIELD = $VAL;
+    message: "potential use-after-free: write to freed pointer field"
+    languages: [c]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-416"
+      confidence: MEDIUM
+      source: decompiler
+
+  - id: decompiler-free-then-deref-assign
+    pattern: |
+      free($PTR);
+      ...
+      $X = *$PTR;
+    message: "potential use-after-free via dereference"
+    languages: [c]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-416"
+      confidence: LOW
+      source: decompiler
+
+  - id: decompiler-free-then-deref-write
+    pattern: |
+      free($PTR);
+      ...
+      *$PTR = $VAL;
+    message: "potential use-after-free: write through freed pointer"
+    languages: [c]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-416"
+      confidence: MEDIUM
+      source: decompiler
+
+  - id: decompiler-free-then-array-read
+    pattern: |
+      free($PTR);
+      ...
+      $X = $PTR[$IDX];
+    message: "potential use-after-free via array read"
+    languages: [c]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-416"
+      confidence: LOW
+      source: decompiler
+
+  - id: decompiler-free-then-array-write
+    pattern: |
+      free($PTR);
+      ...
+      $PTR[$IDX] = $VAL;
+    message: "potential use-after-free via array write"
+    languages: [c]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-416"
+      confidence: MEDIUM
+      source: decompiler
+
+  - id: decompiler-free-then-memcpy
+    pattern: |
+      free($PTR);
+      ...
+      memcpy($PTR, $SRC, $LEN);
+    message: "potential use-after-free: memcpy into freed buffer"
+    languages: [c]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-416"
+      confidence: MEDIUM
+      source: decompiler
+
+  - id: decompiler-free-then-func-call
+    pattern: |
+      free($PTR);
+      ...
+      $FN($PTR);
+    message: "freed pointer passed to function"
+    languages: [c]
+    severity: WARNING
+    metadata:
+      cwe: "CWE-416"
+      confidence: LOW
+      source: decompiler
+
+  - id: decompiler-free-then-func-call-multi
+    pattern: |
+      free($PTR);
+      ...
+      $FN($PTR, $ARG);
+    message: "freed pointer passed to function"
+    languages: [c]
+    severity: WARNING
     metadata:
       cwe: "CWE-416"
       confidence: LOW

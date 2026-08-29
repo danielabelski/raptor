@@ -21,6 +21,9 @@ _CWE_RULE_MAP: dict[str, list[str]] = {
     "CWE-121": ["buffer-overflow.yaml"],
     "CWE-122": ["buffer-overflow.yaml", "memory-safety.yaml"],
     "CWE-78": ["command-injection.yaml"],
+    "CWE-190": ["integer-overflow.yaml"],
+    "CWE-195": ["integer-overflow.yaml"],
+    "CWE-680": ["integer-overflow.yaml"],
     "CWE-416": ["memory-safety.yaml"],
     "CWE-415": ["memory-safety.yaml"],
 }
@@ -45,6 +48,12 @@ _KEYWORD_RULE_MAP: dict[str, str] = {
     "memmove": "memory-safety.yaml",
     "size mismatch": "memory-safety.yaml",
     "bounds check": "memory-safety.yaml",
+    "integer overflow": "integer-overflow.yaml",
+    "integer truncation": "integer-overflow.yaml",
+    "narrowing cast": "integer-overflow.yaml",
+    "truncation": "integer-overflow.yaml",
+    "integer wraparound": "integer-overflow.yaml",
+    "alloc truncation": "integer-overflow.yaml",
 }
 
 
@@ -96,6 +105,51 @@ def run_heap_copy_check(
     from .heap_copy_checker import check_decompiled_function
 
     findings = check_decompiled_function(
+        function_name, decompiled_c, file=file,
+    )
+    return [f.to_dict() for f in findings]
+
+
+def run_integer_truncation_check(
+    function_name: str,
+    decompiled_c: str,
+    *,
+    file: str = "",
+) -> list[dict]:
+    """Run integer truncation → alloc mismatch analysis."""
+    from .integer_truncation_checker import check_integer_truncation
+
+    findings = check_integer_truncation(
+        function_name, decompiled_c, file=file,
+    )
+    return [f.to_dict() for f in findings]
+
+
+def run_proto_length_check(
+    function_name: str,
+    decompiled_c: str,
+    *,
+    file: str = "",
+) -> list[dict]:
+    """Run protocol-parser length discipline analysis."""
+    from .proto_length_checker import check_proto_length
+
+    findings = check_proto_length(
+        function_name, decompiled_c, file=file,
+    )
+    return [f.to_dict() for f in findings]
+
+
+def run_struct_field_check(
+    function_name: str,
+    decompiled_c: str,
+    *,
+    file: str = "",
+) -> list[dict]:
+    """Run struct-field-size vs copy-length analysis."""
+    from .struct_field_checker import check_struct_field_copy
+
+    findings = check_struct_field_copy(
         function_name, decompiled_c, file=file,
     )
     return [f.to_dict() for f in findings]

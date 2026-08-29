@@ -1,0 +1,79 @@
+rules:
+  - id: decompiler-truncation-in-alloc-arg
+    patterns:
+      - pattern: $BUF = malloc(($NARROW_TYPE)$EXPR);
+      - metavariable-regex:
+          metavariable: $NARROW_TYPE
+          regex: "(unsigned short|ushort|uint16_t|short|int16_t|uint16|int16|WORD)"
+    message: "malloc argument truncated to narrow type"
+    languages: [c]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-190"
+      confidence: HIGH
+      source: decompiler
+
+  - id: decompiler-truncation-in-calloc-arg
+    patterns:
+      - pattern: $BUF = calloc(..., ($NARROW_TYPE)$EXPR);
+      - metavariable-regex:
+          metavariable: $NARROW_TYPE
+          regex: "(unsigned short|ushort|uint16_t|short|int16_t|uint16|int16|WORD)"
+    message: "calloc element size truncated to narrow type"
+    languages: [c]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-190"
+      confidence: HIGH
+      source: decompiler
+
+  - id: decompiler-cast-before-alloc
+    patterns:
+      - pattern: |
+          $NARROW = ($NARROW_TYPE)$WIDE;
+          ...
+          $BUF = malloc($NARROW);
+      - metavariable-regex:
+          metavariable: $NARROW_TYPE
+          regex: "(unsigned short|ushort|uint16_t|short|int16_t|uint16|int16|WORD|int|int32_t|uint|uint32_t)"
+    message: "wide value cast to narrow type, then used as allocation size"
+    languages: [c]
+    severity: WARNING
+    metadata:
+      cwe: "CWE-190"
+      confidence: MEDIUM
+      source: decompiler
+
+  - id: decompiler-signed-alloc-size
+    patterns:
+      - pattern: $BUF = malloc(($SIGNED_TYPE)$EXPR);
+      - metavariable-regex:
+          metavariable: $SIGNED_TYPE
+          regex: "(int|short|int16_t|int32_t|long|int64_t)"
+    message: "allocation size cast to signed type — negative value wraps to huge allocation or truncation"
+    languages: [c]
+    severity: WARNING
+    metadata:
+      cwe: "CWE-195"
+      confidence: MEDIUM
+      source: decompiler
+
+  - id: decompiler-multiply-overflow-alloc
+    pattern: $BUF = malloc($A * $B);
+    message: "multiplication in malloc argument — may overflow before allocation"
+    languages: [c]
+    severity: WARNING
+    metadata:
+      cwe: "CWE-190"
+      confidence: LOW
+      source: decompiler
+
+  - id: decompiler-add-overflow-alloc
+    pattern: $BUF = malloc($A + $B);
+    message: "addition in malloc argument — may overflow before allocation"
+    languages: [c]
+    severity: WARNING
+    metadata:
+      cwe: "CWE-190"
+      confidence: LOW
+      source: decompiler

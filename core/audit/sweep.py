@@ -3317,3 +3317,141 @@ def run_heap_copy_sweep(
         function_name=function_name, outcome="refuted",
         rule_id="heap-copy",
     )
+
+
+INTEGER_TRUNC_CWES = frozenset({
+    "CWE-190", "CWE-195", "CWE-680", "CWE-122", "CWE-131",
+})
+
+PROTO_LENGTH_CWES = frozenset({
+    "CWE-120", "CWE-122", "CWE-131", "CWE-190", "CWE-787",
+})
+
+STRUCT_FIELD_CWES = frozenset({
+    "CWE-120", "CWE-122", "CWE-131", "CWE-787",
+})
+
+
+def run_integer_truncation_sweep(
+    *,
+    file_path: str,
+    function_name: str,
+    source: str,
+    cwe: str = "",
+) -> SweepResult:
+    """Static integer-truncation → undersized-allocation check."""
+    if cwe and cwe not in INTEGER_TRUNC_CWES:
+        return SweepResult(
+            tool="integer-truncation", file_path=file_path,
+            function_name=function_name, outcome="inconclusive",
+            errors=[f"CWE {cwe} not in integer-truncation scope"],
+            rule_id="integer-truncation",
+        )
+    try:
+        from core.audit.integer_truncation_checker import (
+            check_integer_truncation,
+        )
+        findings = check_integer_truncation(
+            function_name, source, file=file_path,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return SweepResult(
+            tool="integer-truncation", file_path=file_path,
+            function_name=function_name, outcome="error",
+            errors=[f"integer_truncation_checker raised: {exc}"],
+            rule_id="integer-truncation",
+        )
+    if findings:
+        return SweepResult(
+            tool="integer-truncation", file_path=file_path,
+            function_name=function_name, outcome="confirmed",
+            matches=[f.to_dict() for f in findings],
+            rule_id="integer-truncation",
+        )
+    return SweepResult(
+        tool="integer-truncation", file_path=file_path,
+        function_name=function_name, outcome="refuted",
+        rule_id="integer-truncation",
+    )
+
+
+def run_proto_length_sweep(
+    *,
+    file_path: str,
+    function_name: str,
+    source: str,
+    cwe: str = "",
+) -> SweepResult:
+    """Static protocol-parser length discipline check."""
+    if cwe and cwe not in PROTO_LENGTH_CWES:
+        return SweepResult(
+            tool="proto-length", file_path=file_path,
+            function_name=function_name, outcome="inconclusive",
+            errors=[f"CWE {cwe} not in proto-length scope"],
+            rule_id="proto-length",
+        )
+    try:
+        from core.audit.proto_length_checker import check_proto_length
+        findings = check_proto_length(
+            function_name, source, file=file_path,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return SweepResult(
+            tool="proto-length", file_path=file_path,
+            function_name=function_name, outcome="error",
+            errors=[f"proto_length_checker raised: {exc}"],
+            rule_id="proto-length",
+        )
+    if findings:
+        return SweepResult(
+            tool="proto-length", file_path=file_path,
+            function_name=function_name, outcome="confirmed",
+            matches=[f.to_dict() for f in findings],
+            rule_id="proto-length",
+        )
+    return SweepResult(
+        tool="proto-length", file_path=file_path,
+        function_name=function_name, outcome="refuted",
+        rule_id="proto-length",
+    )
+
+
+def run_struct_field_sweep(
+    *,
+    file_path: str,
+    function_name: str,
+    source: str,
+    cwe: str = "",
+) -> SweepResult:
+    """Static struct-field-size vs copy-length check."""
+    if cwe and cwe not in STRUCT_FIELD_CWES:
+        return SweepResult(
+            tool="struct-field", file_path=file_path,
+            function_name=function_name, outcome="inconclusive",
+            errors=[f"CWE {cwe} not in struct-field scope"],
+            rule_id="struct-field",
+        )
+    try:
+        from core.audit.struct_field_checker import check_struct_field_copy
+        findings = check_struct_field_copy(
+            function_name, source, file=file_path,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return SweepResult(
+            tool="struct-field", file_path=file_path,
+            function_name=function_name, outcome="error",
+            errors=[f"struct_field_checker raised: {exc}"],
+            rule_id="struct-field",
+        )
+    if findings:
+        return SweepResult(
+            tool="struct-field", file_path=file_path,
+            function_name=function_name, outcome="confirmed",
+            matches=[f.to_dict() for f in findings],
+            rule_id="struct-field",
+        )
+    return SweepResult(
+        tool="struct-field", file_path=file_path,
+        function_name=function_name, outcome="refuted",
+        rule_id="struct-field",
+    )

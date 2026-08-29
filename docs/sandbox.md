@@ -83,9 +83,14 @@ remaining ones and emits a one-time warning. Nothing silently downgrades
 to "no isolation".
 
 **Landlock is fail-closed.** If installing the Landlock ruleset fails
-in the child (kernel drift, ABI mismatch), the child exits 126 rather
-than continue unsandboxed; the parent sees a non-zero return code plus
-a `sandbox: Landlock ...` line on stderr explaining which step failed.
+in the child (kernel drift, ABI mismatch), the run never continues
+unsandboxed. On the mount-ns spawn lane the failure reports through
+the setup-status pipe and the parent raises a typed
+`SandboxSetupError` (`setup_category` `"L"`) naming the failing step —
+attributable, and unspoofable by a target that happens to exit 126.
+On the preexec lane, where raising is not fork-safe, the child exits
+126; the parent sees the non-zero return code plus a
+`sandbox: Landlock ...` line on stderr explaining which step failed.
 
 **Untrusted runs refuse to degrade silently.** On Linux hosts without
 unprivileged user namespaces, untrusted execution fails closed with a
@@ -139,6 +144,14 @@ outside the bind tree, and callers can opt tool directories in
 runtime roots for Python tools). If a bind set turns out insufficient,
 the call automatically retries at Landlock-only and caches the result
 for the rest of the process.
+
+Declaring a directory via `tool_paths` is also how `$HOME`-resident
+toolchains stay runnable: the sandboxed child's environment scrub
+drops every home-rooted `PATH` entry, EXCEPT entries that equal or sit
+under a declared `tool_paths` dir (matched by both the literal and the
+symlink-resolved spelling). Declare `~/.cargo/bin` and a rustup
+toolchain resolves by name inside the sandbox; leave it undeclared and
+the entry is scrubbed, so the exec fails with ENOENT (exit 127).
 
 If a tool genuinely needs a config file from your real home, copy it
 into the sandbox's fake home (`<output>/.home/`) before the run. Git is

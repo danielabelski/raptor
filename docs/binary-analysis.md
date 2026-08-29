@@ -133,6 +133,16 @@ binary analyser uses radare2 for:
 - COFF/PE/ELF/Mach-O header parsing
 - Objective-C and Swift class metadata extraction
 
+Opt-in (`extract_cfgs=True` on the analyser API), radare2 also recovers
+each interesting function's basic-block CFG (`afbj`, cached per
+build-id) and surfaces its complexity as a `cyclomatic` field on the
+function records in the context map. Cyclomatic complexity is the
+metric of record here because it won a head-to-head evaluation against
+path homology's direction-aware β₁ on real binaries (AUC 0.707 vs
+0.693): Huntsman, "Path homology as a stronger analogue of cyclomatic
+complexity", [arXiv:2003.00944](https://arxiv.org/abs/2003.00944)
+(2020).
+
 For Mach-O universal binaries, radare2 selects a slice automatically;
 use `--slice-arch` to pin a specific architecture.
 

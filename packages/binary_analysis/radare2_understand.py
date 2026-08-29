@@ -71,8 +71,15 @@ from core.function_taxonomy import (
 from core.function_taxonomy import (
     TOCTOU_FUNCS as _T_TOCTOU,
 )
+from core.analysis.cfg_metrics import cyclomatic_number
 from core.json import save_json
 
+from .function_cfg import (
+    BasicBlockCFG,
+    load_cached_cfgs,
+    parse_afbj,
+    save_cached_cfgs,
+)
 from .surface_classification import classify_security_api
 
 # Module-level lock serialising the os.environ mutation + r2pipe.open()
@@ -139,6 +146,16 @@ class FunctionInfo:
     transitive_distance: int = 0  # min hops to any sink (0 = not reachable)
     decompiled: str = ""        # Filled lazily for high-priority functions
     rationale: str = ""         # LLM-supplied if analysed
+    # Intra-function basic-block CFG. Populated only under
+    # analyse(extract_cfgs=True); None otherwise so default runs pay no
+    # extra r2 cost. A directed Graph-protocol object consumable by
+    # core.analysis.dominators / core.analysis.cfg_metrics.
+    basic_block_cfg: "BasicBlockCFG | None" = None
+    # Directed cyclomatic number |E|-|V|+c of the basic-block CFG —
+    # the per-function complexity metric. Computed together with the
+    # CFG under extract_cfgs=True; None otherwise, and absent from
+    # serialised output when None so default runs are byte-identical.
+    cyclomatic: int | None = None
 
 
 @dataclass
@@ -241,6 +258,12 @@ class BinaryContextMap:
             # Address 0 is a valid address (especially for relocatable code
             # before linking); only emit None if address was never set.
             addr = hex(f.address) if f.address is not None else None
+            # Complexity is emitted only when computed (extract_cfgs=True)
+            # so default-run output stays byte-identical.
+            extra: dict[str, Any] = (
+                {"cyclomatic": f.cyclomatic} if f.cyclomatic is not None
+                else {}
+            )
             return {
                 "id": f"{prefix}-{f.address:x}",
                 "name": f.name,
@@ -257,6 +280,7 @@ class BinaryContextMap:
                     f.transitively_reaches_dangerous,
                 "transitive_distance": f.transitive_distance,
                 "rationale": f.rationale,
+                **extra,
             }
 
         entry_points = [fn_dict(f, "BEP") for f in self.entry_points]
@@ -452,6 +476,7 @@ class BinaryUnderstand:
     _T_QUERY = 60.0         # ij / iij / iEj / aflj / izj
     _T_XREF = 30.0          # axffj per function (cheap in-memory lookup)
     _T_CALLGRAPH = 90.0     # aflcj — full call graph as JSON (one-shot)
+    _T_BLOCKS = 30.0        # afbj per function — basic blocks (in-memory)
     _MAX_CLASSES = 4096
     _MAX_METHODS_PER_CLASS = 512
     _MAX_FIELDS_PER_CLASS = 256
@@ -467,11 +492,17 @@ class BinaryUnderstand:
         max_decompile: int = 20,
         max_strings: int = 100,
         quick: bool = False,
+        extract_cfgs: bool = False,
     ) -> BinaryContextMap:
         """Run the full analysis pipeline.
 
         max_decompile bounds the number of high-priority functions we ask
         the decompiler for, since decompilation is the slowest step.
+
+        ``extract_cfgs=True`` additionally populates each interesting
+        function's ``basic_block_cfg`` (via r2 ``afbj``, cached per
+        build-id) and its ``cyclomatic`` complexity. Off by default —
+        adds a per-function r2 call. Ignored under ``quick``.
 
         ``quick=True`` skips radare2's ``aaa`` (full auto-analysis)
         and every step that depends on it: function enumeration,
@@ -600,6 +631,12 @@ class BinaryUnderstand:
                 # dangerous / transitive_distance fields used by
                 # the prioritise step.
                 self._tag_transitive_callers(r2, ctx)
+                # Opt-in per-function basic-block CFG extraction +
+                # cyclomatic complexity. Off by default so standard
+                # runs pay no extra r2 cost. Must follow
+                # _extract_functions (needs interesting_functions).
+                if extract_cfgs:
+                    self._extract_function_cfgs(r2, ctx)
                 self._decompile_priorities(
                     r2, ctx, limit=max_decompile,
                 )
@@ -1127,6 +1164,54 @@ class BinaryUnderstand:
             )
             fn.transitive_distance = dist
 
+    def _extract_function_cfgs(self, r2, ctx: BinaryContextMap) -> None:
+        """Populate ``fn.basic_block_cfg`` + ``fn.cyclomatic`` for each
+        interesting function.
+
+        Pulls each function's basic-block graph via r2 ``afbj`` and parses
+        it (in ``function_cfg.parse_afbj``) into a directed Graph-protocol
+        object, then computes the cyclomatic number over it. Results are
+        cached on disk per build-id so re-analysing the same binary reuses
+        extraction — the dominant cost (r2 ``aaa``) already ran once; this
+        avoids paying even the per-function ``afbj`` again across separate
+        invocations.
+
+        Best-effort and isolated: a parse/timeout failure on one function
+        leaves that ``basic_block_cfg`` as ``None`` and never aborts the
+        analysis.
+        """
+        cached = load_cached_cfgs(self.binary) or {}
+        extracted: dict[int, BasicBlockCFG] = {}
+        for fn in ctx.interesting_functions:
+            if fn.is_imported:
+                continue
+            cfg = cached.get(fn.address)
+            if cfg is None:
+                try:
+                    blocks = json.loads(
+                        self._cmd_t(
+                            r2, f"afbj @ {fn.address}", self._T_BLOCKS)
+                        or "[]"
+                    )
+                    cfg = parse_afbj(blocks, entry_addr=fn.address)
+                except Exception as e:  # noqa: BLE001 — r2 output is hostile; per-function isolation
+                    logger.debug(
+                        "afbj failed for %s @ %#x: %s",
+                        fn.name, fn.address, e)
+                    continue
+            fn.basic_block_cfg = cfg
+            if cfg.nodes():
+                fn.cyclomatic = cyclomatic_number(cfg)
+            extracted[fn.address] = cfg
+
+        # Persist the merged map (cache hits + new extractions) so the
+        # cache converges to the full set even if earlier runs covered
+        # only a subset of functions.
+        if extracted:
+            merged = dict(cached)
+            merged.update(extracted)
+            save_cached_cfgs(self.binary, merged)
+
     def _decompile_priorities(
         self,
         r2,
@@ -1370,6 +1455,7 @@ def analyse_binary_context(
     max_decompile: int = 20,
     max_strings: int = 100,
     quick: bool = False,
+    extract_cfgs: bool = False,
     slice_arch: str | None = None,
 ) -> BinaryContextMap:
     """Run radare2 analysis and optionally persist the context map.
@@ -1384,6 +1470,13 @@ def analyse_binary_context(
     fingerprinting, bump capability-delta. Order of magnitude
     faster on typical binaries. ``dangerous_sinks`` and
     ``interesting_functions`` come back empty.
+
+    ``extract_cfgs=True`` additionally populates each interesting
+    function's ``basic_block_cfg`` (via r2 ``afbj``, cached per
+    build-id) and its ``cyclomatic`` complexity, surfaced as a
+    ``cyclomatic`` field on the function records in the context map.
+    Off by default — adds a per-function r2 call. Ignored under
+    ``quick``.
     """
     if slice_arch is None:
         analyser = BinaryUnderstand(binary_path, llm=llm)
@@ -1393,6 +1486,7 @@ def analyse_binary_context(
         max_decompile=max_decompile,
         max_strings=max_strings,
         quick=quick,
+        extract_cfgs=extract_cfgs,
     )
     if out_path:
         context.write(out_path)

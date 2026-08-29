@@ -242,3 +242,36 @@ name: solo
 version: 1.0
 """)
     assert chart_repository_hosts(tmp_path) == []
+
+
+def test_broken_chart_in_fixture_tree_logs_debug_not_warning(
+    tmp_path, caplog,
+):
+    """A deliberately-broken chart in a test/fixture tree (helm's own
+    testdata/testcharts is the canonical case) is a test assertion —
+    it must not warn at operator level. The same breakage in a
+    production path stays a WARNING (real deps silently missing)."""
+    import logging
+
+    from packages.sca.parsers._safe_read import scan_root_context
+    from packages.sca.parsers.helm_chart import parse
+
+    bad_yaml = "dependencies:\n  - name: a\n   oops: [\n"
+    fixture = tmp_path / "cmd" / "helm" / "testdata" / "testcharts" \
+        / "chart-bad-requirements" / "Chart.yaml"
+    fixture.parent.mkdir(parents=True)
+    fixture.write_text(bad_yaml)
+    prod = tmp_path / "deploy" / "Chart.yaml"
+    prod.parent.mkdir(parents=True)
+    prod.write_text(bad_yaml)
+
+    with scan_root_context(tmp_path):
+        with caplog.at_level(logging.DEBUG, logger="packages.sca.parsers.helm_chart"):
+            assert parse(fixture) == []
+            assert parse(prod) == []
+
+    records = [r for r in caplog.records if "YAML parse failed" in r.message]
+    fixture_recs = [r for r in records if "testcharts" in str(r.args[0])]
+    prod_recs = [r for r in records if "deploy" in str(r.args[0])]
+    assert fixture_recs and all(r.levelname == "DEBUG" for r in fixture_recs)
+    assert prod_recs and all(r.levelname == "WARNING" for r in prod_recs)

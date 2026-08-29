@@ -73,7 +73,21 @@ def parse(path: Path) -> list[Dependency]:
     try:
         data = safe_load(text)
     except yaml.YAMLError as e:
-        logger.warning(
+        # Deliberately-broken charts in test/fixture trees (helm's
+        # own testdata/testcharts/chart-bad-requirements is the
+        # canonical case) are assertions, not operator problems —
+        # keep those at debug. A malformed chart in production paths
+        # stays a warning: there it usually means real deps are
+        # silently missing from the scan.
+        from .._test_paths import is_test_resident
+        from ._safe_read import _SCAN_ROOT
+        root = _SCAN_ROOT.get() or path
+        level = (
+            logging.DEBUG if is_test_resident(path, root)
+            else logging.WARNING
+        )
+        logger.log(
+            level,
             "sca.parsers.helm_chart: YAML parse failed for %s: %s",
             path, e,
         )

@@ -132,10 +132,11 @@ jobs:
               "packages/sca/data/calibration/stress_baseline.json"
           )
           # Elapsed is one sample of a network-dominated process;
-          # re-measure elapsed-only fails so per-registry throttling
-          # roulette doesn't block the sweep. Genuine code
-          # regressions reproduce on the second sample and still
-          # fail. Count drifts are never re-measured.
+          # re-measure elapsed-only warns AND fails (fails first in
+          # the shared budget) so per-registry throttling roulette
+          # neither blocks the sweep nor noises the report. Genuine
+          # code regressions reproduce on the second sample and
+          # still count. Count drifts are never re-measured.
           results = confirm_elapsed_regressions(
               results, PROJECT_SAMPLES, baseline,
               git_clone_timeout=300,

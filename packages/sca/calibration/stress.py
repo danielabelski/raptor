@@ -410,17 +410,19 @@ def confirm_elapsed_regressions(
     elapsed_warn_x: float = DEFAULT_ELAPSED_WARN_X,
     elapsed_fail_x: float = DEFAULT_ELAPSED_FAIL_X,
 ) -> list[StressResult]:
-    """Re-measure projects whose ONLY fail-level drift is elapsed
-    time, and fold the better sample in.
+    """Re-measure projects whose ONLY elapsed drift pushed them to
+    warn or fail level, and fold the better sample in.
 
     A scan's wall clock is one sample of a network-dominated
     process: identical code produced 30s and 183s cold scans of the
     same project on the same host within minutes (per-registry
     throttling roulette). Comparing one noisy sample against the
-    baseline's single sample at the fail multiplier turns that
-    roulette into a blocking sweep failure. Counts don't have this
+    baseline's single sample turns that roulette into blocking sweep
+    failures and, at the warn multiplier, into recurring
+    single-sample noise in the report (a 52.7s throttled scan that
+    re-measured to 3.6s proved the class). Counts don't have this
     problem — they are deterministic given upstream data — so only
-    elapsed-driven fails are re-measured.
+    elapsed-driven drift is re-measured, at BOTH severities.
 
     For each such project (bounded by ``max_remeasures``): scan it
     once more and keep the re-scan result with ``elapsed_seconds =
@@ -461,15 +463,44 @@ def confirm_elapsed_regressions(
         from packages.sca import SCA_CACHE_ROOT
         out_root = SCA_CACHE_ROOT / "stress" / "clones"
 
+    _RANK = {"ok": 0, "new": 0, "warn": 1, "fail": 2}
+
+    def _elapsed_raised_to(result: StressResult) -> str | None:
+        """The severity the elapsed dimension ALONE raised this
+        project to (ok→warn, ok→fail, warn→fail), or None when
+        elapsed isn't the cause. Count drift keeps whatever severity
+        it earns either way."""
+        if result.error is not None:
+            return None
+        with_elapsed = _severity(result, ignore_elapsed=False)
+        without_elapsed = _severity(result, ignore_elapsed=True)
+        if _RANK.get(with_elapsed, 0) > _RANK.get(without_elapsed, 0):
+            return with_elapsed
+        return None
+
+    # Budget priority: FAILS first. The budget is shared and the
+    # sweep is input-ordered, so warn-level noise appearing earlier
+    # in the list could otherwise exhaust the re-measures and leave a
+    # genuine elapsed-only FAIL unconfirmed — blocking the sweep with
+    # exactly the single-sample noise this mechanism exists to
+    # absorb. Fails are re-measured in input order, then warns with
+    # whatever budget remains.
+    raised_by: dict[str, str] = {}
+    for result in results:
+        raised = _elapsed_raised_to(result)
+        if raised is not None:
+            raised_by[result.project] = raised
+    budget_order = (
+        [r.project for r in results if raised_by.get(r.project) == "fail"]
+        + [r.project for r in results if raised_by.get(r.project) == "warn"]
+    )
+    approved = set(budget_order[:max_remeasures])
+
     out: list[StressResult] = []
     remeasured = 0
     for result in results:
-        elapsed_only_fail = (
-            result.error is None
-            and _severity(result, ignore_elapsed=False) == "fail"
-            and _severity(result, ignore_elapsed=True) != "fail"
-        )
-        if not elapsed_only_fail or remeasured >= max_remeasures:
+        elapsed_raised = result.project in approved
+        if not elapsed_raised or remeasured >= max_remeasures:
             out.append(result)
             continue
         sample = by_name.get(result.project)
@@ -478,10 +509,11 @@ def confirm_elapsed_regressions(
             continue
         remeasured += 1
         logger.info(
-            "sca.calibration.stress: elapsed-only fail for %s "
+            "sca.calibration.stress: elapsed-only %s for %s "
             "(%.1fs) — re-measuring to separate code regression "
             "from registry-throughput variance",
-            result.project, result.elapsed_seconds,
+            raised_by[result.project], result.project,
+            result.elapsed_seconds,
         )
         second = _scan_one(
             sample, out_root, git_clone_timeout=git_clone_timeout,

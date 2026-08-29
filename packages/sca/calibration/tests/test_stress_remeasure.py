@@ -176,3 +176,77 @@ def test_scan_error_results_pass_through(
         out_root=tmp_path,
     )
     assert confirmed[0].error == "scan timed out"
+
+
+def test_elapsed_only_warn_also_remeasured(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """Warn-level elapsed noise (3-5x) is the same single-sample
+    roulette as fail-level — a fast second sample clears it from the
+    report."""
+    baseline = _baseline(tmp_path, {"proj": _BASE_ENTRY})
+    monkeypatch.setattr(
+        stress_mod, "_scan_one",
+        lambda sample, out_root, *, git_clone_timeout:
+            _result(elapsed=20.0),
+    )
+    # 60s vs baseline 18s = 3.3x → warn band.
+    confirmed = confirm_elapsed_regressions(
+        [_result(elapsed=60.0)], [_sample()], baseline,
+        out_root=tmp_path,
+    )
+    assert confirmed[0].elapsed_seconds == 20.0
+    diffs = compare_to_baseline(confirmed, baseline)
+    assert diffs[0].severity == "ok"
+
+
+def test_count_warn_with_fast_elapsed_not_remeasured(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """A pure count warn must not trigger a re-scan — only the
+    elapsed dimension is noisy."""
+    baseline = _baseline(tmp_path, {"proj": _BASE_ENTRY})
+
+    def _boom(*a, **k):
+        raise AssertionError("count-driven warn must not re-scan")
+
+    monkeypatch.setattr(stress_mod, "_scan_one", _boom)
+    # vulns 10 -> 13 (+30%) = count warn; elapsed fine.
+    confirmed = confirm_elapsed_regressions(
+        [_result(elapsed=19.0, vulns=13)], [_sample()], baseline,
+        out_root=tmp_path,
+    )
+    assert confirmed[0].vuln_findings == 13
+
+
+def test_fails_take_remeasure_budget_before_warns(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """Warn-level elapsed noise earlier in the sweep order must not
+    starve a genuine elapsed-only FAIL out of the shared budget —
+    that would turn throttle noise back into a blocking rc=2."""
+    projects = {f"p{i}": dict(_BASE_ENTRY) for i in range(4)}
+    baseline = _baseline(tmp_path, projects)
+    remeasured: list[str] = []
+
+    def _fake_scan(sample, out_root, *, git_clone_timeout):
+        remeasured.append(sample.name)
+        return _result(name=sample.name, elapsed=20.0)
+
+    monkeypatch.setattr(stress_mod, "_scan_one", _fake_scan)
+    results = [
+        _result(name="p0", elapsed=60.0),    # warn (3.3x)
+        _result(name="p1", elapsed=60.0),    # warn
+        _result(name="p2", elapsed=60.0),    # warn
+        _result(name="p3", elapsed=200.0),   # FAIL (11x), last in order
+    ]
+    samples = [_sample(f"p{i}") for i in range(4)]
+    confirmed = confirm_elapsed_regressions(
+        results, samples, baseline, out_root=tmp_path,
+        max_remeasures=3,
+    )
+    # The fail was re-measured (first), and the sweep exits clean.
+    assert "p3" in remeasured
+    assert len(remeasured) == 3
+    diffs = compare_to_baseline(confirmed, baseline)
+    assert all(d.severity != "fail" for d in diffs)

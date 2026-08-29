@@ -64,6 +64,12 @@ _DEFAULT_REACHABILITY = Reachability(
     ),
 )
 
+# Upper bound on the per-finding sibling cross-reference list. The
+# sibling ids share the finding-id prefix (same dep), so consumers
+# that want the FULL set can select on the dep; the inline list is a
+# bounded navigational sample (deterministic: group order).
+_MAX_RELATED_FINDINGS = 25
+
 
 # ---------------------------------------------------------------------------
 # Building VulnFindings
@@ -121,7 +127,16 @@ def build_vuln_findings(
         for group in groups:
             rep = _group_representative(group)
             this_id = _vuln_finding_id(d, rep)
-            related = [i for i in sibling_ids if i != this_id]
+            # Cap the cross-reference list: it is quadratic in the
+            # dep's advisory count, and distro source packages carry
+            # hundreds of advisories (a Debian ``linux`` row with
+            # ~500 advisories put a ~500-entry list on each of its
+            # ~500 findings — 58 MB of one findings.json). The field
+            # is navigational ("this dep has siblings"), so a
+            # bounded, deterministic sample keeps the utility.
+            related = [
+                i for i in sibling_ids if i != this_id
+            ][:_MAX_RELATED_FINDINGS]
             out.append(_assemble_finding(
                 dep=d,
                 group=group,

@@ -478,3 +478,26 @@ def test_corridor_finding_keeps_lower_parser_confidence() -> None:
         [d], [OsvResult(dep_key=d.key(), advisories=[adv])],
     )
     assert findings[0].version_match_confidence.level == "low"
+
+
+def test_related_findings_capped() -> None:
+    """The sibling cross-reference list is quadratic in a dep's
+    advisory count — distro source packages carry hundreds of
+    advisories, which put tens of MB of id strings into one
+    findings.json before the cap."""
+    d = _dep()
+    advisories = [
+        _adv(osv_id=f"OSV-{i:04d}", aliases=[f"CVE-2099-{i:04d}"])
+        for i in range(40)
+    ]
+    findings = build_vuln_findings(
+        [d], [OsvResult(dep_key=d.key(), advisories=advisories)],
+    )
+    assert len(findings) == 40
+    from packages.sca.findings import _MAX_RELATED_FINDINGS
+    assert all(
+        len(f.related_findings) <= _MAX_RELATED_FINDINGS
+        for f in findings
+    )
+    # Still navigational — every finding keeps some siblings.
+    assert all(f.related_findings for f in findings)

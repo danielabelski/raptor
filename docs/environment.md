@@ -601,10 +601,49 @@ the JVM-installer caveat.
 | `ASAN_OPTIONS`, `UBSAN_OPTIONS`, `AFL_INPUT_FILE` | Written by RAPTOR into fuzzing/crash-verification child envs (sanitizer contracts); operator values are not consumed. |
 | `AFL_PATH` | Read when probing for AFL++ binary-only tracers (`afl-qemu-trace`, `afl-frida-trace.so`); also set in the campaign child env (setdefault) to the resolved tracer's directory so `afl-fuzz -Q`/`-O` finds a tracer that is not adjacent to the afl-fuzz binary. |
 | `CONDA_DEFAULT_ENV`, `VIRTUAL_ENV` | Read only to phrase install hints for missing tools. |
+| `SEMGREP_ENABLE_VERSION_CHECK`, `SEMGREP_SEND_METRICS` | Semgrep's own phone-home switches. Force-set to off by RAPTOR in every sanitised child env so every semgrep invocation shape stays offline — the argv flags only cover subcommands that accept them; operator values do not reach those children. The test conftest only *defaults* them off, so an ambient value survives in the test session's own process. |
+| `RUNNER_TEMP` | GitHub Actions runner scratch directory; the sandbox feature-matrix harness defaults its results base under it (see `RAPTOR_MATRIX_RESULTS` in Core runtime). |
 | `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`, `GIT_COMMITTER_EMAIL` | Pinned by RAPTOR in child envs for internal git operations (deterministic identity); operator values are not consumed. |
 | `GOPATH`, `GOCACHE`, `TMPDIR` | Redirected by RAPTOR into per-run scratch space when spawning build/tool children (Go builds in cvefix/dark-verify, the run-scoped `TMPDIR` in `core.run.scratch`) so untrusted builds cannot write into the operator's real caches. |
 | `CARGO_HOME` | Honoured (with the standard `~/.cargo` default) when locating the Rust toolchain for corpus builds; also on the dangerous-env scan list for target-repo settings. |
 | `DOCKER_CONFIG` | Honoured when locating registry credentials for OCI auth (`core.oci.auth`), standard `~/.docker` default. |
+
+
+## Test-suite and CI knobs
+
+Read only by the test infrastructure (root `conftest.py`, per-suite
+gates) — no production code path consults them — but they change what
+a pytest run does, so anyone debugging CI needs them. The workflow
+files under `.github/workflows/` are the reference for what each CI
+tier sets.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `RAPTOR_TEST_LIVE_LLM` | unset | Exactly `1` lets a pytest session make live (billed) LLM calls. Otherwise the root `conftest.py` force-sets `RAPTOR_CC_TRANSPORT_DISABLED=1` for the whole session — subprocesses inherit it — so live-LLM invocation from tests is explicit opt-in, never a side effect of running a tier. |
+| `RAPTOR_MAX_TEST_SECONDS` | unset = guard off | Per-test wallclock budget (seconds) for the slow-test guard: a test whose SETUP or CALL phase exceeds it is flagged and the session fails at the end naming the offenders (tests still run to completion — the signal is "this test got slow", not "killed mid-run"). Overruns of *half* the budget get a warn listing only. The default-tier CI matrix sets it; nightly (legitimately slow `slow`/`integration` tests) and local runs leave it unset. |
+| `RAPTOR_MAX_SESSION_SECONDS` | unset = guard off | Per-tier aggregate wallclock tripwire, companion to the per-test guard: catches suite-wide drift no single test explains. Flags at session end, never kills; workflows set it to the tier's measured baseline plus headroom. |
+| `RAPTOR_RANDOMISE_TESTS` | unset | Randomises collected test order so order-dependent failures surface early (no plugin needed). Scope-grouped shuffle: module order, then class-bucket order per module, then items per bucket — bounds expensive module/class fixtures to one setup per session. A numeric value is the seed; any other value hashes to one. Deterministic per seed, and the seed prints in the terminal header for reproduction. |
+| `RAPTOR_REQUIRE_AUDIT_TESTS` | unset | Exactly `1` converts the audit-suite prerequisite skips into one loud failure naming each missing prereq (`core/sandbox/tests/test_audit_skip_budget.py`). For CI jobs asserting "audit tests must run on this host"; unset, the audit tests keep skipping silently when prereqs are absent. |
+| `RAPTOR_SKIP_PROXY_TESTS` | unset | Exactly `1` skips the sandbox proxy/lane test modules — for hosts whose network posture breaks loopback-proxy tests. |
+| `RAPTOR_BEDROCK_E2E_MODEL` | `claude-haiku-4-5` | Model pin for the credential-gated live Bedrock e2e suites (`core/llm/tests/test_bedrock_e2e.py`, `test_bedrock_live_features.py`; both auto-skip without Bedrock credentials in env). Bare RAPTOR names gain the `anthropic.` provider segment; IDs already carrying one pass verbatim. |
+| `RAPTOR_BEDROCK_E2E_RUNTIME_MODEL` | derived | Full model ID override for the live suite's runtime-API leg, which needs a Cross-Region Inference Profile ID; unset, the regional prefix (`us.`/`eu.`/`apac.`/`au.`) is derived from `AWS_REGION`. |
+| `RAPTOR_BEDROCK_E2E_APIS` | `mantle,runtime` | Which Bedrock HTTP surfaces the live feature suite exercises: `mantle`, `runtime`, or both. |
+
+Two more are session-internal handoffs the controller conftest mints
+and publishes for its own descendants — never set them manually:
+`RAPTOR_GIT_AMBIENT_ENV` (JSON snapshot of the operator git env
+displaced by the git-hermeticity pin, so nested pytest sessions
+restore the true ambient values instead of re-capturing the pinned
+ones) and `RAPTOR_EGRESS_LEAK_DIR` (marker directory through which
+xdist workers report LLM-egress state leaks to their controller).
+`PYTEST_XDIST_WORKER` is pytest-xdist's own contract and is read for
+detection only.
+
+Fixture sentinels (`RAPTOR_TEST_*` and similar names that exist only
+as test data, with no behavioural contract to document) are tracked in
+the machine inventory but deliberately not documented; run
+`python3 .github/scripts/check_env_docs.py --list test-only` for the
+current list.
 
 
 ## Internal plumbing — do not set
@@ -635,6 +674,19 @@ setting them manually either does nothing or weakens a boundary.
 | `SAGE_ENABLED` | `raptor-sage-setup` | Written as `true` into `.claude/settings.local.json` so sessions enable SAGE; default `false`, truthy `true`/`1`/`yes` (fail-closed). Removed by teardown. |
 | `SAGE_IDENTITY_PATH`, `SAGE_PROJECT`, `SAGE_PROVIDER` | `raptor-sage-setup` → `.mcp.json` | Agent identity/namespace for the SAGE MCP wrapper (container-internal defaults). |
 | `SAGE_EMBED_DIM` | `raptor-sage-setup` | Compose-time embedding dimension (default 768); no Python reads it at runtime — pairs with `SAGE_EMBED_MODEL` before setup. |
+
+Child-env transport with no table row of its own: `_JAVA_OPTIONS`
+(the Joern server child env pins `-Djava.io.tmpdir` to a run-scoped
+scratch dir — unlike a launcher argv flag it reaches every JVM the
+launcher shell nests; also on the dangerous-env scan list), and the
+sandbox feature-matrix harness's driver→lane plumbing (`SXV_LANE`,
+`SXV_TIER`, `SXV_REQHASH_MATCH`, `SXV_UNMASK`, `SXV_SG_REEXEC`,
+`MATRIX_PY`, plus `run-matrix.sh`'s own script-to-container
+transport: `LANE`, `LANES`, `LANE_ARR`, `LANE_OPTS`, `LANE_TIMEOUT`,
+`TIER`, `TIERV`, `IMG`, `IMAGES`, `IMAGE_SEL`, `DUR`, `REF`, `REPO`,
+`RESULTS_BASE`, `SKIP_BUILD`, `PY_VERSION`). The harness's operator
+knobs are `RAPTOR_MATRIX_RESULTS` / `RAPTOR_MATRIX_APT_MIRROR` in
+the Core runtime section.
 
 Namespace look-alikes that are **not** environment variables: grep
 also surfaces `RAPTOR_GD_*` / `RAPTOR_FLOW_*` (Joern guard-dominance
@@ -678,8 +730,5 @@ seam and scanned for drift.
 - **`LLM_API_KEY_VARS`**, **`LLM_ROUTING_ENV_VARS`** +
   **`LLM_ROUTING_ENV_PREFIXES`** — documented in their sections above.
 
-Test-only variables (used exclusively by the test suite, e.g.
-`RAPTOR_SELFTEST_*` fixtures, `RAPTOR_TEST_*` sentinels) are tracked
-in the machine inventory but deliberately not documented here; run
-`python3 .github/scripts/check_env_docs.py --list test-only` for the
-current list.
+Test-infrastructure knobs and fixture sentinels are covered in
+"Test-suite and CI knobs" above.

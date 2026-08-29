@@ -173,7 +173,9 @@ def fetch_image_binary(
             continue
         try:
             chunks = client.stream_blob(ref, layer.digest)
-            files = extract_files_from_layer(chunks, extract_set)
+            files = extract_files_from_layer(
+                chunks, extract_set, compressed_size=layer.size,
+            )
         except Exception as e:                        # noqa: BLE001
             logger.debug(
                 "sca.bump.image_binary_extract: layer %s extract "

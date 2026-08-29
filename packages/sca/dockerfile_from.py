@@ -675,6 +675,10 @@ def fetch_image_sbom(
             chunks = client.stream_blob(ref, layer.digest)
             files = extract_files_from_layer(
                 chunks, wanted, media_type=layer.media_type,
+                # Scales the decompression budget (ratio-shaped
+                # bomb test) off the transfer size this loop
+                # already caps via max_layer_bytes.
+                compressed_size=layer.size,
             )
         except Exception as e:                      # noqa: BLE001
             # Surfaced, not swallowed: a valid-but-undecodable layer

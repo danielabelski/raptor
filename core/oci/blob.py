@@ -39,11 +39,75 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_ENTRY_BYTES = 64 * 1024 * 1024
 
 # Aggregate caps for untrusted registry layers.  The entry-count
-# cap mirrors the tar extractor's own default; the total-bytes cap
-# bounds the sum of all extracted entries (the per-member cap alone
-# doesn't prevent a bomb made of many smaller files).
+# cap mirrors the tar extractor's own default.
 DEFAULT_MAX_ENTRY_COUNT = 50_000
-DEFAULT_MAX_TOTAL_BYTES = 256 * 1024 * 1024
+
+# ---------------------------------------------------------------------------
+# Decompression budget — READ THIS BEFORE CHANGING ANY OF THE THREE
+# CONSTANTS BELOW. This limit has flip-flopped; both failure modes
+# have bitten in production:
+#
+#   * Unbounded (before fa7449b67): a hostile registry could serve a
+#     kilobyte-sized gzip blob that stream-decompresses to hundreds of
+#     GB. The walk selects only a handful of paths, but stream-mode
+#     tarfile must DECOMPRESS every member's data to skip past it and
+#     the digest check requires draining to EOF — so "selective"
+#     extraction still pays full decompression CPU. gzip tops out
+#     near 1030:1, so the exposure is real (42.zip-class DoS).
+#   * Flat 256 MiB (fa7449b67 → the ratio budget below): refused
+#     PLAINLY LEGITIMATE base-image layers and silently degraded
+#     package inventories to partial. Measured on the exact layers a
+#     stress sweep refused: python:3.8 211 MB → 597 MB (2.83x),
+#     mysql:8 132 MB → 548 MB (4.14x), rust:alpine3.16 216 MB →
+#     667 MB (3.09x). Ordinary distro layers routinely decompress to
+#     1-2 GB; no flat cap can both admit them and stop bombs.
+#
+# A bomb is a RATIO, not a size. The budget scales with the
+# compressed bytes actually fetched (which upstream already bounds:
+# dockerfile_from skips layers over its max_layer_bytes and
+# stream_blob enforces its own stream budget):
+#
+#   budget = min(CEILING, max(FLOOR, RATIO * compressed_size))
+#
+#   * RATIO 12: three times the worst legitimate ratio measured
+#     above (4.14x); real gzip bombs run 100-1030x. Lowering this
+#     back toward ~4 will re-refuse legitimate layers; raising it
+#     multiplies the CPU a hostile blob can burn per fetched byte.
+#   * FLOOR 256 MiB: small layers may decompress this far regardless
+#     of ratio (sparse/text layers legitimately hit high ratios at
+#     small absolute size; 256 MiB of gunzip is ~1 s of CPU, not a
+#     DoS). This is exactly the old flat cap, demoted to the
+#     small-input allowance.
+#   * CEILING 8 GiB: absolute work bound no observed legitimate
+#     layer approaches; keeps worst-case CPU bounded even for
+#     callers with large compressed-size caps.
+#
+# The regression tests (test_blob_budget.py) pin both directions:
+# legit-shape large layers accepted, bomb-shape ratios refused.
+# ---------------------------------------------------------------------------
+DECOMPRESSION_RATIO_BOUND = 12
+DECOMPRESSION_BUDGET_FLOOR = 256 * 1024 * 1024
+DECOMPRESSION_BUDGET_CEILING = 8 * 1024 * 1024 * 1024
+
+
+def layer_decompression_budget(compressed_size: int | None) -> int:
+    """Aggregate decompressed-bytes budget for one layer extraction.
+
+    ``compressed_size`` is the layer's transferred size (manifest
+    descriptor ``size``); ``None`` / non-positive values (absent or
+    lying manifests) get the floor — refusing to scale a budget off
+    unverified zero keeps a hostile manifest from picking its own
+    bound in either direction.
+    """
+    if not compressed_size or compressed_size <= 0:
+        return DECOMPRESSION_BUDGET_FLOOR
+    return min(
+        DECOMPRESSION_BUDGET_CEILING,
+        max(
+            DECOMPRESSION_BUDGET_FLOOR,
+            DECOMPRESSION_RATIO_BOUND * compressed_size,
+        ),
+    )
 
 
 class UnsupportedLayerMediaType(ValueError):
@@ -87,6 +151,7 @@ def extract_files_from_layer(
     *,
     max_entry_bytes: int = DEFAULT_MAX_ENTRY_BYTES,
     media_type: str = "",
+    compressed_size: int | None = None,
 ) -> dict[str, bytes]:
     """Pull specific files out of a streamed layer blob.
 
@@ -113,6 +178,11 @@ def extract_files_from_layer(
     Skips entries larger than ``max_entry_bytes`` with a debug log
     — defends against pathological / malicious inputs without
     inflating memory.
+
+    ``compressed_size`` (the manifest descriptor's ``size`` for this
+    layer) scales the aggregate decompression budget — the
+    ratio-shaped bomb test documented on the module constants.
+    ``None`` applies the floor budget.
 
     Integrity: ``layer_chunks`` typically comes from
     :meth:`OciRegistryClient.stream_blob`, which verifies the blob's
@@ -155,9 +225,12 @@ def extract_files_from_layer(
         # consumed to EOF for digest verification anyway. The
         # max_total_bytes cap below bounds the decompression work.
         unique_keys=True,
-        # Explicit caps for untrusted registry layers.
+        # Explicit caps for untrusted registry layers. The
+        # decompression budget scales with the layer's compressed
+        # size (ratio-shaped bomb test — see the rationale block on
+        # the constants above).
         max_entry_count=DEFAULT_MAX_ENTRY_COUNT,
-        max_total_bytes=DEFAULT_MAX_TOTAL_BYTES,
+        max_total_bytes=layer_decompression_budget(compressed_size),
     )
     # Drain the source to EOF before returning anything. stream_blob
     # only performs its sha256 check on exhaustion; returning after

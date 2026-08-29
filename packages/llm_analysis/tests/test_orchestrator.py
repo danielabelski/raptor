@@ -213,7 +213,7 @@ class TestOrchestrate:
         report_path = tmp_path / "report.json"
         report_path.write_text(json.dumps(report))
 
-        with patch.dict(os.environ, {}, clear=True), \
+        with patch.dict(os.environ, {"RAPTOR_DIR": os.environ["RAPTOR_DIR"]}, clear=True), \
              patch("core.llm.cc_adapter.resolve_claude_cli", return_value=None):
             result = orchestrate(
                 prep_report_path=report_path,
@@ -280,7 +280,7 @@ class TestOrchestrate:
             ),
         }
 
-        with patch.dict(os.environ, {}, clear=True), \
+        with patch.dict(os.environ, {"RAPTOR_DIR": os.environ["RAPTOR_DIR"]}, clear=True), \
              patch("core.llm.cc_adapter.resolve_claude_cli", return_value="/usr/bin/claude"), \
              patch("core.sandbox.run_untrusted_networked",
                    side_effect=_mock_subprocess_ok(cc_results)):
@@ -323,7 +323,7 @@ class TestOrchestrate:
         }
         cc_results = [json.dumps(sloppy)]
 
-        with patch.dict(os.environ, {}, clear=True), \
+        with patch.dict(os.environ, {"RAPTOR_DIR": os.environ["RAPTOR_DIR"]}, clear=True), \
              patch("core.llm.cc_adapter.resolve_claude_cli", return_value="/usr/bin/claude"), \
              patch("core.sandbox.run_untrusted_networked",
                    side_effect=_mock_subprocess_ok(cc_results)):
@@ -359,7 +359,7 @@ class TestOrchestrate:
         report_path = tmp_path / "report.json"
         report_path.write_text(json.dumps(report))
 
-        with patch.dict(os.environ, {}, clear=True), \
+        with patch.dict(os.environ, {"RAPTOR_DIR": os.environ["RAPTOR_DIR"]}, clear=True), \
              patch("core.llm.cc_adapter.resolve_claude_cli", return_value="/usr/bin/claude"):
             result = orchestrate(
                 prep_report_path=report_path,
@@ -386,7 +386,7 @@ class TestOrchestrate:
             result.stderr = "Error 401 Unauthorized"
             return result
 
-        with patch.dict(os.environ, {}, clear=True), \
+        with patch.dict(os.environ, {"RAPTOR_DIR": os.environ["RAPTOR_DIR"]}, clear=True), \
              patch("core.llm.cc_adapter.resolve_claude_cli", return_value="/usr/bin/claude"), \
              patch("core.sandbox.run_untrusted_networked", side_effect=mock_run):
             result = orchestrate(
@@ -1008,7 +1008,7 @@ class TestWeakenedDefenses:
 
         cc_result = json.dumps(_make_cc_result("finding-001"))
 
-        with patch.dict(os.environ, {}, clear=True), \
+        with patch.dict(os.environ, {"RAPTOR_DIR": os.environ["RAPTOR_DIR"]}, clear=True), \
              patch("core.llm.cc_adapter.resolve_claude_cli",
                    return_value="/usr/bin/claude"), \
              patch("core.sandbox.run_untrusted_networked",

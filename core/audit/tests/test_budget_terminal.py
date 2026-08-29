@@ -97,6 +97,14 @@ def _config(target: Path, out: Path, **kw) -> OrchestratorConfig:
         "batch_sloc_threshold": 0,  # force the executor path, no batching
         "prefilter": False,         # every function reaches review_fn
         "validate": False,
+        # Budget rails are under test, not the Joern channel: on a
+        # joern-equipped host run_orchestrator otherwise starts a REAL
+        # server (JVM spawn + CPG build + pre-sweep + stop, ~9s on the
+        # C fixtures here — the same incidental-substrate cost class as
+        # the mechanical-detector seam the batched test already stubs).
+        # The production knob keeps the whole lifecycle off; the Joern
+        # channel has its own wiring tests.
+        "joern_overrides": {"enabled": False},
     }
     defaults.update(kw)
     return OrchestratorConfig(**defaults)

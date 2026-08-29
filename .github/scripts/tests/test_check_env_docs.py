@@ -118,6 +118,30 @@ class TestPythonExtraction:
         inv = det.scan_tree(root)
         assert _kinds(inv, "RAPTOR_MP_ONLY") == ["monkeypatch"]
 
+    def test_env_helper_call_is_a_read(self, det, tmp_path):
+        """``_env_int('VAR', default)``-convention wrappers hide the
+        os.environ.get key behind an opaque parameter — the call
+        site is the read. Only ALL-CAPS first arguments register, so
+        a helper matching the name shape over a non-env string stays
+        invisible."""
+        root = _tree(tmp_path, {"core/a.py": (
+            "import os\n"
+            "def _env_int(name, default):\n"
+            "    return int(os.environ.get(name) or default)\n"
+            "def _env_prefix(s):\n"
+            "    return s + '_'\n"
+            "_CONST_KEY = 'RAPTOR_HELPER_CONST'\n"
+            "cap = _env_int('RAPTOR_HELPER_CAP', 10)\n"
+            "srv = server._env_float('RAPTOR_HELPER_USD', 0.25)\n"
+            "cst = _env_int(_CONST_KEY, 7)\n"
+            "noise = _env_prefix('lowercase_key')\n"
+        )})
+        inv = det.scan_tree(root)
+        assert _kinds(inv, "RAPTOR_HELPER_CAP") == ["read"]
+        assert _kinds(inv, "RAPTOR_HELPER_USD") == ["read"]
+        assert "read" in _kinds(inv, "RAPTOR_HELPER_CONST")
+        assert "lowercase_key" not in inv.vars
+
 
 class TestBashExtraction:
     def test_read_export_and_locals(self, det, tmp_path):
@@ -206,6 +230,35 @@ class TestClassification:
             "y = os.environ.get('RAPTOR_PLUMB')\n"
         )})
         assert self._classify(det, root, "RAPTOR_PLUMB") == "internal"
+
+    def test_monkeypatch_only_is_test_only(self, det, tmp_path):
+        """A name whose only occurrences are monkeypatch calls is
+        test scaffolding, not a declared policy entry."""
+        root = _tree(tmp_path, {"core/tests/test_a.py": (
+            "def test_x(monkeypatch):\n"
+            "    monkeypatch.setenv('RAPTOR_MP_CLASS', '1')\n"
+        )})
+        assert self._classify(det, root, "RAPTOR_MP_CLASS") == "test-only"
+
+    def test_source_package_named_build_is_scanned(self, det, tmp_path):
+        """``core/build`` is a tracked source package (it carries
+        ``__init__.py``) — the artifact-dir skip must not prune it.
+        A plain ``build/`` output tree without the package marker
+        stays skipped."""
+        root = _tree(tmp_path, {
+            "core/build/__init__.py": "",
+            "core/build/probe.py": (
+                "import os\n"
+                "t = os.environ.get('RAPTOR_BUILD_PKG_KNOB')\n"
+            ),
+            "core/x/build/gen.py": (
+                "import os\n"
+                "t = os.environ.get('RAPTOR_BUILD_ARTIFACT')\n"
+            ),
+        })
+        inv = det.scan_tree(root)
+        assert _kinds(inv, "RAPTOR_BUILD_PKG_KNOB") == ["read"]
+        assert "RAPTOR_BUILD_ARTIFACT" not in inv.vars
 
     def test_external_standard_names(self, det, tmp_path):
         root = _tree(tmp_path, {"core/a.py": (

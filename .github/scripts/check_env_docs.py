@@ -24,7 +24,10 @@ Python (AST, no regex-over-source):
   ``env_flag("VAR", ...)`` calls (``core.config``'s shared
   boolean-toggle parser, bare or attribute form) count as reads at
   the call site — inside the helper the ``os.environ.get`` key is an
-  opaque parameter.
+  opaque parameter. The same applies to the local ``_env_<type>``
+  wrapper convention (``_env_int`` / ``_env_float`` /
+  ``_env_byte_cap`` / ``_env_bool`` / ...): a call whose first
+  argument resolves to an ALL-CAPS name is a read of that variable.
   ``monkeypatch.setenv/delenv`` calls are recorded but excluded from
   the primary inventory (test scaffolding, not a code-level
   consumer).
@@ -51,7 +54,8 @@ Classification heuristics (first match wins)
    misjudge; every entry carries a reason in the comment.
 2. ``declared-only`` — the name appears in a policy table but is never
    read or written by code. Documented via the table's own doc
-   section, not per-variable.
+   section, not per-variable. A name with *no* policy-table entry and
+   only monkeypatch occurrences classifies ``test-only`` instead.
 3. ``test-only`` — every occurrence is under a test path
    (``tests/``, ``test/``, ``conftest.py``, ``fixtures``,
    ``.github/``) or is monkeypatch-only.
@@ -102,6 +106,10 @@ ROOT_PY_FILES = [
 ]
 BASH_ROOTS = ["bin", "libexec"]
 
+# Artifact/scratch directory names, pruned from the walk. A *tracked
+# source package* that happens to carry an artifact-y name
+# (``core/build``) is exempt: artifact dirs do not contain
+# ``__init__.py`` (see ``_is_artifact_dir``).
 SKIP_DIR_NAMES = {
     ".git", "__pycache__", "node_modules", "out", ".out", ".tox",
     ".venv", "venv", "build", "dist", "worktrees",
@@ -217,6 +225,16 @@ OVERRIDES: dict[str, str] = {
     "RAPTOR_SANITIZER_CUT": "operator",
     "RAPTOR_SANITIZER_CUT_NO_LEXICAL": "operator",
     "RAPTOR_SANITIZER_CUT_PARITY_LOG": "operator",
+    # Same written-and-read misjudgement, different writers: the
+    # transport kill-switch is forwarded into child envs
+    # (core/config get_safe_env) and force-set by the test conftest;
+    # the cache kill-switch is set by the corpus runner's
+    # --no-llm-cache for its own run; the Ghidra install root is
+    # re-exported for pyghidra children after auto-detection. Each
+    # read side is a documented operator interface.
+    "RAPTOR_CC_TRANSPORT_DISABLED": "operator",
+    "RAPTOR_LLM_CACHE": "operator",
+    "GHIDRA_INSTALL_DIR": "operator",
     # Sandbox feature-matrix harness (core/sandbox/scripts/
     # feature-matrix/): the driver passes SXV_* into its lane
     # containers via `docker run -e` and MATRIX_PY is baked as image
@@ -243,6 +261,13 @@ OVERRIDES: dict[str, str] = {
 
 VAR_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 CAPS_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")
+
+# Local env-reading wrapper convention: ``_env_int`` / ``_env_float``
+# / ``_env_byte_cap`` / ``_env_bool`` / ``_env_parse`` ... — private
+# helpers that take the env-var name as their first argument. Only
+# ALL-CAPS first arguments count (helpers matching the name shape but
+# taking non-env strings stay invisible).
+ENV_HELPER_NAME = re.compile(r"^_env_[a-z0-9_]+$")
 
 
 class Occurrence:
@@ -411,16 +436,25 @@ class _PyScanner(ast.NodeVisitor):
         # core.config.env_flag(name, default) — the shared boolean-
         # toggle parser wraps os.environ.get, so the call site is the
         # real read of the variable (inside the helper the key is an
-        # opaque parameter).
-        if (
-            (
-                (isinstance(func, ast.Name) and func.id == "env_flag")
-                or (isinstance(func, ast.Attribute)
-                    and func.attr == "env_flag")
-            )
-            and node.args
-        ):
-            self._record(node.args[0], node.lineno, "read")
+        # opaque parameter). The private ``_env_<type>`` wrapper
+        # convention is the same seam; its first argument must
+        # additionally be ALL-CAPS so name-shaped helpers over
+        # non-env strings cannot register.
+        helper = (
+            func.id if isinstance(func, ast.Name)
+            else func.attr if isinstance(func, ast.Attribute)
+            else None
+        )
+        if helper and node.args:
+            if helper == "env_flag":
+                self._record(node.args[0], node.lineno, "read")
+            elif ENV_HELPER_NAME.match(helper):
+                name = self._name_of(node.args[0])
+                if name and CAPS_NAME.match(name) and \
+                        not name.endswith("_"):
+                    self.inv.add(
+                        name, Occurrence(self.rel, node.lineno, "read"),
+                    )
         self.generic_visit(node)
 
 
@@ -583,6 +617,25 @@ def _scan_bash(path: Path, rel: str, inv: Inventory) -> None:
 
 # --- tree walk ---------------------------------------------------------------
 
+def _is_artifact_dir(root: Path, rel_parts: tuple[str, ...]) -> bool:
+    """True when a *directory* component is an artifact/scratch dir.
+
+    Only directory components are judged (the filename itself never
+    is), and a component whose directory carries ``__init__.py`` is a
+    tracked source package, not an artifact — ``core/build`` must be
+    scanned, a stray ``build/`` output tree must not. An artifact
+    tree that happens to carry a top-level ``__init__.py`` fails
+    toward over-scanning (more documentation demands), never toward
+    suppressing a real variable — and CI scans a clean checkout.
+    """
+    for i, part in enumerate(rel_parts[:-1]):
+        if part in SKIP_DIR_NAMES:
+            d = root.joinpath(*rel_parts[: i + 1])
+            if not (d / "__init__.py").is_file():
+                return True
+    return False
+
+
 def _iter_files(root: Path):
     seen: set[Path] = set()
     for sub in PY_ROOTS + BASH_ROOTS:
@@ -593,7 +646,7 @@ def _iter_files(root: Path):
             if not p.is_file() or p in seen:
                 continue
             rel_parts = p.relative_to(root).parts
-            if any(part in SKIP_DIR_NAMES for part in rel_parts):
+            if _is_artifact_dir(root, rel_parts):
                 continue
             seen.add(p)
             yield p
@@ -692,7 +745,9 @@ def classify(name: str, occs: list[Occurrence]) -> str:
     declared = [o for o in live if o.kind.startswith("declared:")]
     code = [o for o in live if not o.kind.startswith("declared:")]
     if not code:
-        return "declared-only"
+        # No policy-table entry either means the only occurrences are
+        # monkeypatch calls — test scaffolding, not declared policy.
+        return "declared-only" if declared else "test-only"
     if all(_is_test_path(o.file) for o in code):
         return "test-only"
     if name in EXTERNAL_NAMES or name.startswith(EXTERNAL_PREFIXES):

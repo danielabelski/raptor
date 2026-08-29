@@ -174,6 +174,8 @@ selection.
 | `RAPTOR_CC_PROBE_WARM` | `1` | Exactly `0` skips the run-start probe warm (one tiny `claude -p` call). Auto-skipped under pytest and on non-claudecode providers. |
 | `RAPTOR_CC_CALIBRATE_NETWORK_PROBE` | off | Exactly `1` opts the sandbox-calibration probe into a real (token-billing) network call so calibrated `proxy_hosts` populate; requires an auth signal (`ANTHROPIC_API_KEY` or a `CLAUDE_CODE_USE_*` flag), else silently falls back to `claude --version`. |
 | `RAPTOR_CC_TRANSPORT_DISABLED` | unset | Anything but `0`/empty refuses every **billed** `claude` spawn (dispatch and the live pre-flight probe) at the exec chokepoint with a named `RuntimeError` — no CLI process, no spend. Detection, model selection and mock-driven transport code are unaffected. The pytest root conftest sets it for every test session unless `RAPTOR_TEST_LIVE_LLM=1`: live-LLM invocation from tests is explicit opt-in, never a side effect of running a tier. |
+| `RAPTOR_CC_STREAM_STDOUT_CAP` | `67108864` (64 MiB) | Retention ceiling (bytes) for a streamed `claude` child's stdout: the drain loop keeps reading past the cap (no pipe deadlock) but retains only the head plus a rolling tail, so a hostile or looping endpoint cannot balloon parent memory; the authoritative stream-json `result` event arrives last and rides the retained tail. Positive integer; zero/negative/non-numeric falls back silently. |
+| `RAPTOR_CC_STREAM_STDERR_CAP` | `8388608` (8 MiB) | Same head-plus-tail retention ceiling for the streamed child's stderr. |
 | `RAPTOR_CC_CREDENTIAL_MODE` | `env` | Credential posture for CC skill-pass children (`/understand` prepass, `/validate` postpass). `env` = current behaviour (backend credential overlay + AWS minting). `proxy` = child env carries ZERO provider credentials; the child authenticates to the local LLM dispatcher with a scoped minted token, sent by the CLI as `ANTHROPIC_AUTH_TOKEN` against the gateway route the CLI's backend mode reads — `ANTHROPIC_BASE_URL` on API installs; `ANTHROPIC_BEDROCK_MANTLE_BASE_URL`/`ANTHROPIC_BEDROCK_BASE_URL` with `CLAUDE_CODE_SKIP_MANTLE_AUTH`/`CLAUDE_CODE_SKIP_BEDROCK_AUTH` on Bedrock installs. The mint's model allowlist comes from the install's pins (`ANTHROPIC_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`, `ANTHROPIC_DEFAULT_HAIKU_MODEL`/`ANTHROPIC_DEFAULT_SONNET_MODEL`/`ANTHROPIC_DEFAULT_OPUS_MODEL`, `RAPTOR_CC_MODEL`, `RAPTOR_CC_FALLBACK_MODEL`) (budget = the pass budget, TTL sized to the pass timeout, model allowlist from the install's model pins) and the dispatcher fronts the provider. Requires the dispatcher route + the netns sandbox tier; setup failure fails the pass loudly (never a silent fallback to env credentials). Invalid values warn and use `env`. |
 
 ### Bedrock (`RAPTOR_BEDROCK_*`)
@@ -202,22 +204,25 @@ AWS credentials alone never select Bedrock.
 
 ### Credential-isolation dispatcher knobs
 
-Three integer knobs on the dispatcher server
-(`core/llm/dispatcher/server.py`). All resolve caller argument > env
-> default; non-numeric or below-minimum (1) values fall back to the
+Numeric knobs on the dispatcher server
+(`core/llm/dispatcher/server.py`), plus one boolean opt-out
+(`RAPTOR_LLM_TOKEN_RENEW`). The numeric knobs resolve env > default —
+only the token pair (`RAPTOR_LLM_DISPATCHER_TOKEN_TTL_S` /
+`_TOKEN_BUDGET`) additionally accepts a caller argument, which wins
+over both. Non-numeric or below-minimum values fall back to the
 default with a debug log — a typo never breaks dispatcher startup.
+The minimum is 1 unless a row says otherwise.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `RAPTOR_LLM_DISPATCHER_UPSTREAM_TIMEOUT_S` | `600` | Read/write/pool timeout in seconds on the dispatcher→provider forwarding leg, re-read per request. The connect timeout stays fixed at 10 s: a provider that cannot finish the TCP/TLS handshake in 10 s is down, and a long connect timeout only delays failover. |
 | `RAPTOR_LLM_DISPATCHER_TOKEN_TTL_S` | `28800` (8 h) | Lifetime of a worker's one-shot auth token; bump for kernel-scale runs that outlive the default. The in-process self-serve route (`core/llm/dispatcher/lifecycle.py`) sizes its own token to 7 days when this is unset — an explicit value pins both. Workers renew a still-valid token in place before expiry (see `RAPTOR_LLM_TOKEN_RENEW`), so for a live worker the TTL bounds time-since-last-renewal, not total run length. |
 | `RAPTOR_LLM_TOKEN_RENEW` | enabled | Worker-side proactive token renewal on the dispatcher socket (`POST /_token/renew` shortly before the token's TTL window closes). Set `0` / `false` / `no` to opt out — the worker then keeps the original fixed TTL and runs longer than it will 401 at expiry. |
-
-The third knob, `RAPTOR_LLM_DISPATCHER_TOKEN_BUDGET` (default
-`10000`) — requests allowed per worker token — is read only through
-the server's `_env_int` helper, which the machine inventory does not
-see; it stays in prose until the extractor learns that seam (a table
-row would trip the stale-entry check).
+| `RAPTOR_LLM_DISPATCHER_TOKEN_BUDGET` | `10000` | Requests allowed per worker token; bump alongside the TTL for runs whose workers legitimately make more calls. |
+| `RAPTOR_LLM_DISPATCHER_MAX_BODY_BYTES` | `33554432` (32 MiB) | Request-body ceiling on the provider plane. Content-Length is peer-typed input even on the token-authenticated planes, so oversized or negative declared lengths are refused instead of allocated. Clears the largest legitimate Messages payloads (multi-image requests); the child-admin plane keeps its own fixed 1 MiB cap. |
+| `RAPTOR_LLM_DISPATCHER_RELAY_MAX_BYTES` | `268435456` (256 MiB) | Cumulative byte cap on one upstream response relay — bounds what a fire-hosing (mis)behaving upstream can stream through the process. Exceeding it aborts the request mid-stream: partial usage is booked and a `request.error` audit row records the limit class. |
+| `RAPTOR_LLM_DISPATCHER_RELAY_DEADLINE_S` | `3600` | Total wall deadline on one upstream response relay — bounds how long a drip-feeding upstream can hold a handler thread and connection slot. Same mid-stream abort path as the byte cap. |
+| `RAPTOR_LLM_DISPATCHER_CHILD_RESERVE_USD` | `0.25` | Fallback per-request budget reservation for scoped child tokens when the model is *unpriced* (no USD ceiling derivable from pricing); priced requests reserve their derived worst-case cost instead. Float, minimum `0.01`. |
 
 Not to be confused with the dispatcher *route pair*
 (`RAPTOR_LLM_SOCKET` / `RAPTOR_LLM_TOKEN_FD`) — that is per-child
@@ -279,10 +284,13 @@ See "Egress proxy" and "Upstream proxy support" in
 | `RAPTOR_PATCH_GATE_SCOPE_SLACK` | `40` | Hunk slack (lines around the finding span) the patch gate tolerates (`packages/llm_analysis.patch_gate`). Per-call argument > env > default; malformed/negative values warn and use 40. |
 | `RAPTOR_CORPUS_HISTORY` | `~/.local/share/raptor/corpus-history.jsonl` | Path of the append-only corpus run-history store (`core.audit.corpus.history`). Each corpus run appends a run header plus per-label verdict records after results.json is finalized; a write failure warns and never fails the run. Run headers record the run's profile (`cold`/`deployed`); `compare` warns across differing profiles. Reporting-only: the read side is the `python3 -m core.audit.corpus.history` CLI (`runs`/`compare`/`trend`/`stability`/`import`) plus one post-run operator report — nothing reads it to alter behavior. Tests must point this at a temporary path. |
 
-One more knob lives in `core/build/build_detector.py` (a directory the
-inventory scanner currently skips, so prose rather than a row):
-`RAPTOR_COMPILE_TIMEOUT_S` (default `120` seconds) caps each
-single-file compile the build prober runs, so a pathological input
+One more knob rides in prose rather than a row because no static
+in-repo read exists for the inventory to key on: the build script
+`core/build/build_detector.py` *synthesises* for CodeQL database
+creation reads `RAPTOR_COMPILE_TIMEOUT_S` at DB-build time (the read
+lives inside the generated script's source text). Default `120`
+seconds, capping each single-file compile the build prober runs, so a
+pathological input
 (fork-bomb template instantiation, deliberately slow untrusted
 source) cannot hang a CodeQL DB build — a hung compile is killed and
 counted as a failure and the pass continues. Non-numeric falls back

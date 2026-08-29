@@ -41,3 +41,34 @@ def test_overlong_version_still_closes_the_box():
 def test_empty_version_leaves_placeholder_untouched():
     line = _version_line(banner.read_logo(""))
     assert "__VERSION__" in line
+
+
+class TestToolUpdateFootnote:
+    _TOOL_RESULTS = [
+        ("afl++", True),
+        ("semgrep 1.79.0", True),
+        ("z3", True),
+    ]
+
+    def test_asterisk_appended_to_updatable_tool(self):
+        out = banner.format_banner(
+            "", "quote", self._TOOL_RESULTS, [], [], [], [], [],
+            tool_updates={"semgrep"},
+        )
+        assert "semgrep 1.79.0*" in out
+
+    def test_no_asterisk_when_no_updates(self):
+        out = banner.format_banner(
+            "", "quote", self._TOOL_RESULTS, [], [], [], [], [],
+            tool_updates=set(),
+        )
+        assert "semgrep 1.79.0 ✓" in out
+        assert "*" not in out
+
+    def test_non_updatable_tool_unchanged(self):
+        out = banner.format_banner(
+            "", "quote", self._TOOL_RESULTS, [], [], [], [], [],
+            tool_updates={"semgrep"},
+        )
+        assert "afl++ ✓" in out
+        assert "z3 ✓" in out

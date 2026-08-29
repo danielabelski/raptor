@@ -256,3 +256,114 @@ class TestCachedCliVersion:
         proc = mock.Mock(returncode=0, stdout="sometool 3.1.4\n", stderr="")
         with mock.patch("subprocess.run", return_value=proc):
             assert startup_init._cached_cli_version("sometool") == "3.1.4"
+
+
+class TestVersionNewer:
+    def test_newer(self):
+        assert startup_init._version_newer("1.82.0", "1.79.0") is True
+
+    def test_same(self):
+        assert startup_init._version_newer("1.79.0", "1.79.0") is False
+
+    def test_older(self):
+        assert startup_init._version_newer("1.78.0", "1.79.0") is False
+
+    def test_major_bump(self):
+        assert startup_init._version_newer("2.0.0", "1.99.9") is True
+
+    def test_trailing_rc_stripped(self):
+        assert startup_init._version_newer("1.80.0rc1", "1.79.0") is True
+
+    def test_both_have_two_segments(self):
+        assert startup_init._version_newer("1.80", "1.79") is True
+
+
+class TestCheckPypiUpdate:
+    def test_returns_true_when_newer(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+        resp = mock.Mock(status_code=200)
+        resp.json.return_value = {"info": {"version": "1.82.0"}}
+        with mock.patch("requests.get", return_value=resp):
+            assert startup_init._check_pypi_update("semgrep", "1.79.0") is True
+
+    def test_returns_false_when_same(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+        resp = mock.Mock(status_code=200)
+        resp.json.return_value = {"info": {"version": "1.79.0"}}
+        with mock.patch("requests.get", return_value=resp):
+            assert startup_init._check_pypi_update("semgrep", "1.79.0") is False
+
+    def test_returns_false_on_network_error(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+        import requests as _req
+        with mock.patch("requests.get", side_effect=_req.ConnectionError):
+            assert startup_init._check_pypi_update("semgrep", "1.79.0") is False
+
+    def test_returns_false_when_requests_missing(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+        import builtins
+        real_import = builtins.__import__
+
+        def _block_requests(name, *a, **kw):
+            if name == "requests":
+                raise ImportError("no requests")
+            return real_import(name, *a, **kw)
+
+        with mock.patch("builtins.__import__", side_effect=_block_requests):
+            assert startup_init._check_pypi_update("semgrep", "1.79.0") is False
+
+    def test_cached_result_avoids_network(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+        import json
+        import time
+        cache_dir = tmp_path / "cache" / "raptor"
+        cache_dir.mkdir(parents=True)
+        (cache_dir / "tool-versions.json").write_text(
+            json.dumps({"updates": {"semgrep": {
+                "latest": "1.82.0", "ts": time.time(),
+            }}})
+        )
+        with mock.patch("requests.get") as get:
+            assert startup_init._check_pypi_update("semgrep", "1.79.0") is True
+        get.assert_not_called()
+
+    def test_stale_cache_triggers_fetch(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+        import json
+        import time
+        cache_dir = tmp_path / "cache" / "raptor"
+        cache_dir.mkdir(parents=True)
+        (cache_dir / "tool-versions.json").write_text(
+            json.dumps({"updates": {"semgrep": {
+                "latest": "1.82.0", "ts": time.time() - 90000,
+            }}})
+        )
+        resp = mock.Mock(status_code=200)
+        resp.json.return_value = {"info": {"version": "1.83.0"}}
+        with mock.patch("requests.get", return_value=resp) as get:
+            assert startup_init._check_pypi_update("semgrep", "1.79.0") is True
+        get.assert_called_once()
+
+
+class TestCheckToolUpdates:
+    def test_returns_name_when_update_available(self):
+        with mock.patch(
+            "core.startup.init._semgrep_version", return_value="1.79.0",
+        ), mock.patch(
+            "core.startup.init._check_pypi_update", return_value=True,
+        ):
+            assert "semgrep" in startup_init.check_tool_updates()
+
+    def test_returns_empty_when_current(self):
+        with mock.patch(
+            "core.startup.init._semgrep_version", return_value="1.79.0",
+        ), mock.patch(
+            "core.startup.init._check_pypi_update", return_value=False,
+        ):
+            assert startup_init.check_tool_updates() == set()
+
+    def test_returns_empty_when_version_unknown(self):
+        with mock.patch(
+            "core.startup.init._semgrep_version", return_value=None,
+        ):
+            assert startup_init.check_tool_updates() == set()

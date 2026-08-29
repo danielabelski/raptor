@@ -62,6 +62,7 @@ def format_banner(
     env_warnings: list[str],
     project_line: str | None = None,
     lang_line: str | None = None,
+    tool_updates: set[str] | None = None,
 ) -> str:
     """Format the startup banner from gathered data.
 
@@ -76,18 +77,23 @@ def format_banner(
         env_warnings: List of warning strings from env checks.
         project_line: One-line project status, or None.
         lang_line: Pre-formatted language support line, or None.
+        tool_updates: Tool names that have a newer version on PyPI.
 
     Returns:
         Formatted banner string.
     """
     lines = []
+    _updates = tool_updates or set()
 
     if logo:
         lines.append(logo)
         lines.append("")
 
-    # Tools
-    tool_parts = [f"{name} {'✓' if ok else '✗'}" for name, ok in tool_results]
+    # Tools — append * to version-gated tools with a newer release.
+    tool_parts = []
+    for name, ok in tool_results:
+        star = "*" if name.split()[0] in _updates else ""
+        tool_parts.append(f"{name}{star} {'✓' if ok else '✗'}")
     lines.append(f" tools: {'  '.join(tool_parts)}")
 
     # Env

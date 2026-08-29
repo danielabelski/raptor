@@ -160,6 +160,91 @@ def _joern_version() -> str | None:
     return _version_from_dist(joern) if joern else None
 
 
+def _version_newer(latest: str, installed: str) -> bool:
+    """True when *latest* is strictly newer than *installed*.
+
+    Compares as integer tuples; non-numeric trailing segments are
+    ignored so ``1.82.0rc1`` compares as ``(1, 82, 0)``.
+    """
+    def _parse(v: str) -> tuple[int, ...]:
+        parts: list[int] = []
+        for seg in v.split("."):
+            try:
+                parts.append(int(seg))
+            except ValueError:
+                break
+        return tuple(parts)
+
+    return _parse(latest) > _parse(installed)
+
+
+def _check_pypi_update(package: str, installed: str) -> bool:
+    """Return True if PyPI has a newer release of *package*.
+
+    Result is cached for 24 hours in the same cache file as
+    ``_cached_cli_version``.  Never raises — network / parse
+    failures silently return False.
+    """
+    import time
+
+    cache_dir = Path(
+        os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache")
+    ) / "raptor"
+    cache_file = cache_dir / "tool-versions.json"
+    from core.json import load_json, save_json
+
+    cache: dict = {}
+    loaded = load_json(cache_file, max_bytes=_MAX_CACHE_BYTES)
+    if isinstance(loaded, dict):
+        cache = loaded
+
+    updates_cache = cache.get("updates")
+    if isinstance(updates_cache, dict):
+        hit = updates_cache.get(package)
+        if isinstance(hit, dict):
+            ts = hit.get("ts", 0)
+            if isinstance(ts, (int, float)) and time.time() - ts < 86400:
+                latest = hit.get("latest")
+                if isinstance(latest, str) and latest:
+                    return _version_newer(latest, installed)
+
+    try:
+        import requests  # noqa: F811
+    except ImportError:
+        return False
+    try:
+        r = requests.get(
+            f"https://pypi.org/pypi/{package}/json",
+            timeout=2,
+        )
+        if r.status_code != 200:
+            return False
+        latest = r.json().get("info", {}).get("version")
+        if not isinstance(latest, str) or not latest:
+            return False
+    except Exception:  # noqa: BLE001
+        return False
+
+    if "updates" not in cache or not isinstance(cache["updates"], dict):
+        cache["updates"] = {}
+    cache["updates"][package] = {"latest": latest, "ts": time.time()}
+    try:
+        save_json(cache_file, cache)
+    except OSError:
+        pass
+
+    return _version_newer(latest, installed)
+
+
+def check_tool_updates() -> set[str]:
+    """Return the set of version-gated tool names with a newer PyPI release."""
+    updatable: set[str] = set()
+    ver = _semgrep_version()
+    if ver and _check_pypi_update("semgrep", ver):
+        updatable.add("semgrep")
+    return updatable
+
+
 def _cached_cli_version(binary: str) -> str | None:
     """Disk-cached ``<binary> --version`` probe for startup-hot paths.
 
@@ -944,6 +1029,7 @@ def main() -> None:
         try:
             logging.disable(logging.WARNING)
             tool_results, tool_warnings, unavailable = check_tools()
+            tool_updates = check_tool_updates()
             llm_lines, llm_warnings = check_llm()
             env_parts, env_warnings = check_env(unavailable)
             lang_line, lang_warnings = check_lang()
@@ -956,6 +1042,7 @@ def main() -> None:
             llm_lines, llm_warnings, env_parts,
             env_warnings + lang_warnings,
             project_line, lang_line,
+            tool_updates=tool_updates,
         )
     except Exception:  # noqa: BLE001
         output = f"{logo}\n\nraptor:~$ {quote}"

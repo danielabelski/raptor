@@ -225,6 +225,9 @@ def _canonical_ecosystem(eco: str) -> str:
 
 
 _ECOSYSTEM_ALIASES = {
+    # Ubuntu packages use dpkg version semantics — same comparator
+    # as Debian.
+    "ubuntu": "Debian",
     "pypi": "PyPI",
     "python": "PyPI",
     "npm": "npm",

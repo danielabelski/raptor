@@ -692,12 +692,11 @@ def test_query_batch_filters_unsupported_ecosystems(tmp_path: Path) -> None:
     """
     deps = [
         _dep("django", ecosystem="PyPI", version="3.0.6"),
-        # ``Debian`` is what Dockerfile-FROM scanning surfaces for
-        # apt-installed binaries; OSV doesn't index it. Picked over
-        # ``GitHub`` so the OSS-Fuzz fallback (which retries
-        # GitHub-eco deps with a candidate-name) doesn't fire and
-        # confuse the post-count assertion below.
-        _dep("openssl-libs", ecosystem="Debian", version="1.1.1"),
+        # An ecosystem OSV has no index for. ``Inline`` (shell /
+        # Dockerfile RUN-line installs with no resolvable registry)
+        # never reaches OSV and has no OSS-Fuzz candidate mapping,
+        # so the post-count assertion below stays single-batch.
+        _dep("openssl-libs", ecosystem="Inline", version="1.1.1"),
         _dep("lodash", ecosystem="npm", version="4.17.20"),
     ]
     http = FakeHttp(
@@ -727,21 +726,21 @@ def test_query_batch_filters_unsupported_ecosystems(tmp_path: Path) -> None:
             == "GHSA-real-pypi")
     assert (by_key["npm:lodash@4.17.20"].advisories[0].osv_id
             == "GHSA-real-npm")
-    # Debian-eco dep recorded but with empty advisory list.
-    assert by_key["Debian:openssl-libs@1.1.1"].advisories == []
+    # Unindexed-eco dep recorded but with empty advisory list.
+    assert by_key["Inline:openssl-libs@1.1.1"].advisories == []
 
     # The /querybatch HTTP call must have included exactly 2
-    # queries — the Debian one was filtered out before the post.
+    # queries — the unindexed one was filtered out before the post.
     assert len(http.posts) == 1
     posted_body = http.posts[0][1]
     posted_queries = posted_body["queries"]
     assert len(posted_queries) == 2, (
-        f"Debian-eco dep must not have reached /querybatch — body "
+        f"unindexed-eco dep must not have reached /querybatch — body "
         f"contained {len(posted_queries)} queries: "
         f"{[q['package']['ecosystem'] for q in posted_queries]}"
     )
     posted_ecosystems = {q["package"]["ecosystem"] for q in posted_queries}
-    assert "Debian" not in posted_ecosystems
+    assert "Inline" not in posted_ecosystems
 
 
 def test_query_batch_translates_cargo_to_crates_io(tmp_path: Path) -> None:
@@ -1051,3 +1050,25 @@ def test_corridor_cache_key_distinct_from_literal_star(
     http2 = FakeHttp(batch_results=[[]], vuln_records={})
     OsvClient(http2, cache).query_batch([star])
     assert len(http2.posts) == 1
+
+
+def test_distro_ecosystems_join_the_primary_batch(tmp_path: Path) -> None:
+    """Image-derived distro rows (Debian / Ubuntu / Alpine:vX.Y /
+    Red Hat) are OSV-indexed and must be queried — the ecosystem
+    pre-filter silently zeroed every base-image package's advisory
+    lookup when it treated them as unindexed."""
+    deps = [
+        _dep("openssl", version="1.1.0l-1", ecosystem="Debian"),
+        _dep("pam", version="1.1.8-1", ecosystem="Ubuntu"),
+        _dep("musl", version="1.2.3-r0", ecosystem="Alpine:v3.16"),
+        _dep("openssl", version="1:1.1.1k-12", ecosystem="Red Hat"),
+        _dep("someorg/somerepo", version="1.0", ecosystem="GitHub"),
+    ]
+    http = FakeHttp(batch_results=[[], [], [], []], vuln_records={})
+    OsvClient(http, JsonCache(root=tmp_path)).query_batch(deps)
+    # The GitHub row is excluded from the primary batch (it may
+    # still fire a separate OSS-Fuzz fallback post).
+    queried = [
+        q["package"]["ecosystem"] for q in http.posts[0][1]["queries"]
+    ]
+    assert queried == ["Debian", "Ubuntu", "Alpine:v3.16", "Red Hat"]

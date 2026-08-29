@@ -78,7 +78,10 @@ def test_parse_dpkg_emits_only_fully_installed():
     real install with versions OSV can match."""
     pkgs = parse_dpkg_status(_DPKG_FIXTURE)
     names = {p.name for p in pkgs}
-    assert "libc6" in names
+    # libc6 surfaces under its SOURCE package (glibc) — OSV's
+    # Debian / Ubuntu feeds key advisories by source name.
+    assert "glibc" in names
+    assert "libc6" not in names
     assert "openssl" in names
     assert "removed-pkg" not in names
     assert "half-installed" not in names
@@ -87,8 +90,33 @@ def test_parse_dpkg_emits_only_fully_installed():
 def test_parse_dpkg_extracts_version():
     pkgs = parse_dpkg_status(_DPKG_FIXTURE)
     by_name = {p.name: p for p in pkgs}
-    assert by_name["libc6"].version == "2.36-9+deb12u4"
+    assert by_name["glibc"].version == "2.36-9+deb12u4"
     assert by_name["openssl"].version == "3.0.11-1~deb12u2"
+
+
+def test_parse_dpkg_source_name_wins_and_dedups():
+    """Binary packages from one source collapse to one row per
+    (source, version); a versioned Source qualifier is stripped."""
+    fixture = b"""\
+Package: libssl1.1
+Status: install ok installed
+Source: openssl (1.1.0l-1)
+Version: 1.1.0l-1
+
+Package: openssl
+Status: install ok installed
+Source: openssl
+Version: 1.1.0l-1
+
+Package: libssl-dev
+Status: install ok installed
+Source: openssl (1.1.0l-1)
+Version: 1.1.0l-1
+"""
+    pkgs = parse_dpkg_status(fixture)
+    assert [(p.name, p.version) for p in pkgs] == [
+        ("openssl", "1.1.0l-1"),
+    ]
 
 
 def test_parse_dpkg_ecosystem_is_debian():
@@ -465,3 +493,86 @@ def test_continuation_lines_still_join_with_newlines():
     )
     assert fields["Description"] == "first\nsecond\nthird"
     assert fields["Other"] == "x"
+
+
+# ---------------------------------------------------------------------------
+# os-release distro resolution
+# ---------------------------------------------------------------------------
+
+
+def test_parse_os_release_quoted_values():
+    from core.oci.sbom import parse_os_release
+    got = parse_os_release(
+        b'ID=ubuntu\nVERSION_ID="18.04"\n# comment\nBAD LINE\n'
+        b"PRETTY_NAME='Ubuntu 18.04'\n",
+    )
+    assert got["ID"] == "ubuntu"
+    assert got["VERSION_ID"] == "18.04"
+    assert got["PRETTY_NAME"] == "Ubuntu 18.04"
+
+
+def test_dpkg_rows_resolve_to_ubuntu_from_os_release():
+    from core.oci.sbom import packages_from_layer_files
+    res = packages_from_layer_files({
+        "var/lib/dpkg/status": (
+            b"Package: openssl\nStatus: install ok installed\n"
+            b"Version: 1.1.1-1ubuntu2.1~18.04.23\n"
+        ),
+        "etc/os-release": b'ID=ubuntu\nVERSION_ID="18.04"\n',
+    })
+    (pkg,) = res.packages
+    assert pkg.ecosystem == "Ubuntu"
+    assert pkg.name == "openssl"
+
+
+def test_dpkg_rows_stay_debian_without_os_release():
+    from core.oci.sbom import packages_from_layer_files
+    res = packages_from_layer_files({
+        "var/lib/dpkg/status": (
+            b"Package: openssl\nStatus: install ok installed\n"
+            b"Version: 3.0.11-1~deb12u2\n"
+        ),
+    })
+    (pkg,) = res.packages
+    assert pkg.ecosystem == "Debian"
+
+
+def test_apk_rows_get_release_sharded_ecosystem():
+    from core.oci.sbom import packages_from_layer_files
+    res = packages_from_layer_files({
+        "lib/apk/db/installed": (
+            b"P:musl-utils\nV:1.2.3-r0\no:musl\n"
+        ),
+        "etc/os-release": b"ID=alpine\nVERSION_ID=3.16.2\n",
+    })
+    (pkg,) = res.packages
+    # OSV's Alpine index is sharded per release, and advisories key
+    # by the origin (source) package.
+    assert pkg.ecosystem == "Alpine:v3.16"
+    assert pkg.name == "musl"
+
+
+def test_apk_rows_without_release_stay_bare():
+    from core.oci.sbom import packages_from_layer_files
+    res = packages_from_layer_files({
+        "lib/apk/db/installed": b"P:musl\nV:1.2.3-r0\n",
+    })
+    (pkg,) = res.packages
+    assert pkg.ecosystem == "Alpine"
+
+
+def test_dpkg_rows_resolve_ubuntu_derivatives_via_id_like():
+    """Mint / Pop!_OS ship Ubuntu package builds — ID_LIKE carries
+    ``ubuntu`` and must route to the Ubuntu feed, not Debian's."""
+    from core.oci.sbom import packages_from_layer_files
+    res = packages_from_layer_files({
+        "var/lib/dpkg/status": (
+            b"Package: openssl\nStatus: install ok installed\n"
+            b"Version: 1.1.1-1ubuntu2.1\n"
+        ),
+        "etc/os-release": (
+            b'ID=linuxmint\nID_LIKE="ubuntu debian"\nVERSION_ID="21.2"\n'
+        ),
+    })
+    (pkg,) = res.packages
+    assert pkg.ecosystem == "Ubuntu"

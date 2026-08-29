@@ -81,7 +81,7 @@ from core.oci.manifest import (
     select_platform,
 )
 from core.oci.sbom import (
-    LAYER_FILE_PATHS,
+    WANTED_LAYER_PATHS,
     InstalledPackage,
     packages_from_layer_files,
 )
@@ -660,7 +660,7 @@ def fetch_image_sbom(
     layer_files: dict[str, bytes] = {}
     layers_scanned = 0
     layers_failed = 0
-    wanted = set(LAYER_FILE_PATHS)
+    wanted = set(WANTED_LAYER_PATHS)
     for layer in image_manifest.layers:
         if layer.size and layer.size > max_layer_bytes:
             # Deliberate skip, but it still leaves the inventory
@@ -779,8 +779,11 @@ def packages_to_dependencies(
     for pkg in packages:
         if not pkg.name or not pkg.version:
             continue
+        # Release-sharded ecosystems ("Alpine:v3.16") map by their
+        # base name — the purl type is release-independent.
+        eco_base = pkg.ecosystem.split(":", 1)[0]
         purl_type = _PURL_TYPE_BY_ECOSYSTEM.get(
-            pkg.ecosystem, pkg.ecosystem.lower(),
+            eco_base, eco_base.lower(),
         )
         purl = f"pkg:{purl_type}/{pkg.name}@{pkg.version}"
         out.append(Dependency(

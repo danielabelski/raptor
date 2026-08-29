@@ -304,17 +304,21 @@ class OsvClient:
         if uncached and not self._offline:
             # OSV's ``/querybatch`` rejects the WHOLE batch (HTTP 400
             # "Invalid ecosystem") if any single query carries an
-            # ecosystem OSV doesn't index. Most multi-manifest scans
+            # ecosystem OSV doesn't index. Multi-manifest scans
             # surface deps from ecosystems OSV doesn't have an index
-            # for (``GitHub`` from .gitmodules / FetchContent rows,
-            # ``Debian`` from apt-cached Dockerfile installs, etc.) —
+            # for (``GitHub`` from .gitmodules / FetchContent rows) —
             # without filtering, ONE such dep makes the entire batch
             # return empty, and every legitimate PyPI / npm / Maven
             # dep silently misses every advisory. Pre-filter against
             # the known list so unsupported deps fall through to the
             # OSS-Fuzz fallback (pass 1.5) and the offline-DB path
             # without poisoning the primary batch.
-            from .ecosystems import KNOWN_ECOSYSTEMS
+            #
+            # Image-derived distro rows (Debian / Ubuntu / Alpine:vX.Y
+            # / Red Hat) ARE OSV-indexed and join the batch — this
+            # filter silently zeroed every base-image package's
+            # advisory lookup when it treated them as unindexed.
+            from .ecosystems import KNOWN_ECOSYSTEMS, distro_base
             _OSV_QUERYABLE = {
                 e for e in KNOWN_ECOSYSTEMS
                 # OSS-Fuzz is queried only via the dedicated fallback
@@ -322,10 +326,16 @@ class OsvClient:
                 # primary batch.
                 if e != "OSS-Fuzz"
             }
-            queryable = [d for d in uncached
-                         if d.ecosystem in _OSV_QUERYABLE]
+
+            def _osv_indexed(d: Dependency) -> bool:
+                return (
+                    d.ecosystem in _OSV_QUERYABLE
+                    or distro_base(d.ecosystem) is not None
+                )
+
+            queryable = [d for d in uncached if _osv_indexed(d)]
             non_queryable = [d for d in uncached
-                             if d.ecosystem not in _OSV_QUERYABLE]
+                             if not _osv_indexed(d)]
             # Build all chunk-payloads up front so the parallel
             # dispatch below has a flat list to map over.
             chunk_payloads: list[tuple[list[Dependency], list[dict]]] = []

@@ -108,6 +108,7 @@ def parse_dpkg_status(content: bytes) -> list[InstalledPackage]:
     real installs from a CVE-matching perspective.
     """
     out: list[InstalledPackage] = []
+    seen: set[tuple[str, str]] = set()
     text = content.decode("utf-8", errors="replace")
     for stanza in _split_rfc822_stanzas(text):
         fields = _parse_rfc822_stanza(stanza)
@@ -118,9 +119,22 @@ def parse_dpkg_status(content: bytes) -> list[InstalledPackage]:
             continue
         if not _dpkg_status_is_installed(status):
             continue
+        # OSV's Debian / Ubuntu feeds key advisories by SOURCE
+        # package name (DEBIAN-CVE-* for ``openssl``; nothing under
+        # the ``libssl1.1`` binary split). ``Source:`` may carry a
+        # version qualifier (``Source: openssl (1.1.0l-1)``) — strip
+        # it. Binary-only stanzas (no Source field) ARE their own
+        # source. Deduplicate per (source, version): one source
+        # builds many binaries and one advisory row is enough.
+        source = (fields.get("Source") or "").split("(", 1)[0].strip()
+        name = source or package.strip()
+        key = (name, version.strip())
+        if key in seen:
+            continue
+        seen.add(key)
         _check_record_cap(out, "dpkg status")
         out.append(InstalledPackage(
-            ecosystem="Debian", name=package.strip(),
+            ecosystem="Debian", name=name,
             version=version.strip(),
         ))
     return out
@@ -201,19 +215,31 @@ def parse_apk_installed(content: bytes) -> list[InstalledPackage]:
     so every parsed stanza is a real install.
     """
     out: list[InstalledPackage] = []
+    seen: set[tuple[str, str]] = set()
     text = content.decode("utf-8", errors="replace")
     for stanza in _split_rfc822_stanzas(text):
         package: str | None = None
         version: str | None = None
+        origin: str | None = None
         for line in stanza.splitlines():
             if line.startswith("P:"):
                 package = line[2:].strip()
             elif line.startswith("V:"):
                 version = line[2:].strip()
+            elif line.startswith("o:"):
+                # Origin (source) package — Alpine's secdb (and
+                # OSV's ALPINE-CVE mirror) key advisories by it,
+                # not by the subpackage split.
+                origin = line[2:].strip()
         if package and version:
+            name = origin or package
+            key = (name, version)
+            if key in seen:
+                continue
+            seen.add(key)
             _check_record_cap(out, "apk installed db")
             out.append(InstalledPackage(
-                ecosystem="Alpine", name=package, version=version,
+                ecosystem="Alpine", name=name, version=version,
             ))
     return out
 
@@ -425,6 +451,74 @@ LAYER_FILE_PATHS = {
     "var/lib/rpm/rpmdb.sqlite": parse_rpm_sqlite,
 }
 
+# Distro-identity files. Not package databases — they resolve WHICH
+# OSV ecosystem the package rows belong to: dpkg serves both Debian
+# and Ubuntu (disjoint advisory feeds with incompatible version
+# streams — an Ubuntu ``…ubuntu2.1~18.04.23`` version held against a
+# Debian fixed-range is meaningless), and Alpine's OSV index is
+# sharded per release (``Alpine:v3.16``; the unsuffixed ecosystem
+# returns nothing). ``etc/os-release`` is the standard location;
+# ``usr/lib/os-release`` is the documented fallback.
+OS_RELEASE_PATHS = ("etc/os-release", "usr/lib/os-release")
+
+# Every layer path worth extracting — package DBs plus distro
+# identity. Consumers drive :func:`extract_files_from_layer` with
+# this set.
+WANTED_LAYER_PATHS = tuple(LAYER_FILE_PATHS) + OS_RELEASE_PATHS
+
+
+def parse_os_release(content: bytes) -> dict[str, str]:
+    """Parse the ``KEY=value`` lines of an os-release file.
+
+    Values may be double- or single-quoted. Unknown / malformed
+    lines are skipped — the file is target-controlled, so this
+    parser extracts and never trusts.
+    """
+    out: dict[str, str] = {}
+    for line in content.decode("utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        if not key.isidentifier():
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        out[key] = value[:200]
+    return out
+
+
+def _resolve_distro_ecosystem(
+    pkg: InstalledPackage, os_release: dict[str, str],
+) -> str:
+    """Map a package row's parser-assigned ecosystem to the OSV
+    ecosystem the image's distro actually publishes under."""
+    distro_id = (os_release.get("ID") or "").lower()
+    id_like = (os_release.get("ID_LIKE") or "").lower().split()
+    if pkg.ecosystem == "Debian":
+        if distro_id == "ubuntu" or "ubuntu" in id_like:
+            # Ubuntu and Ubuntu derivatives (Mint, Pop!_OS — their
+            # ID_LIKE carries "ubuntu") ship Ubuntu package builds;
+            # holding an Ubuntu version stream against Debian fixed
+            # ranges is meaningless.
+            return "Ubuntu"
+        # Debian proper and Debian-only derivatives fall back to the
+        # Debian feed — best effort for derivatives (their package
+        # sets track Debian's), exact for Debian itself.
+        return "Debian"
+    if pkg.ecosystem == "Alpine":
+        version_id = os_release.get("VERSION_ID") or ""
+        parts = version_id.split(".")
+        if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+            return f"Alpine:v{parts[0]}.{parts[1]}"
+        # Release unknown (edge images carry a snapshot VERSION_ID)
+        # — keep the bare ecosystem; the query returns nothing
+        # rather than wrong-release matches.
+        return "Alpine"
+    return pkg.ecosystem
+
 
 @dataclass(frozen=True)
 class LayerPackagesResult:
@@ -461,17 +555,33 @@ def packages_from_layer_files(
     mapping (and logged at WARNING) so callers can distinguish an
     absent database from a rejected or unparseable one.
     """
+    os_release: dict[str, str] = {}
+    for path in OS_RELEASE_PATHS:
+        if path in layer_files:
+            os_release = parse_os_release(layer_files[path])
+            break
+
     out: list[InstalledPackage] = []
     failures: dict[str, str] = {}
     for path, parser in LAYER_FILE_PATHS.items():
         if path in layer_files:
             try:
-                out.extend(parser(layer_files[path]))
+                parsed = parser(layer_files[path])
             except Exception as e:                  # noqa: BLE001
                 failures[path] = f"{type(e).__name__}: {e}"
                 logger.warning(
                     "core.oci.sbom: parser for %s failed (package "
                     "inventory will be partial): %s", path, e,
+                )
+                continue
+            for pkg in parsed:
+                eco = _resolve_distro_ecosystem(pkg, os_release)
+                out.append(
+                    pkg if eco == pkg.ecosystem
+                    else InstalledPackage(
+                        ecosystem=eco, name=pkg.name,
+                        version=pkg.version,
+                    )
                 )
     return LayerPackagesResult(packages=out, failures=failures)
 
@@ -479,11 +589,14 @@ def packages_from_layer_files(
 __all__ = [
     "LAYER_FILE_PATHS",
     "MAX_PACKAGE_RECORDS",
+    "OS_RELEASE_PATHS",
+    "WANTED_LAYER_PATHS",
     "InstalledPackage",
     "LayerPackagesResult",
     "PackageDbLimitExceeded",
     "packages_from_layer_files",
     "parse_apk_installed",
     "parse_dpkg_status",
+    "parse_os_release",
     "parse_rpm_sqlite",
 ]

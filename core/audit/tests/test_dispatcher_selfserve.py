@@ -81,6 +81,25 @@ def bedrock_config(monkeypatch, tmp_path):
     return config
 
 
+@pytest.fixture(autouse=True)
+def _no_live_model_resolution(monkeypatch):
+    """Keep the anthropic model-alias resolution off the network.
+
+    Building a model list from a config with an anthropic entry
+    triggers ``resolve_anthropic`` — a live models-endpoint request
+    that, in this hermetic environment, burns a full connect timeout
+    (measured: a flat ~5s per affected test, the whole cost of this
+    file's slowest tests) against a fake key. Resolution has its own
+    tests; the dispatcher gate under test here reads the entries, not
+    the resolved snapshots. Identity passthrough keeps the entry
+    shapes intact.
+    """
+    monkeypatch.setattr(
+        "core.llm.detection._apply_anthropic_resolution",
+        lambda entries: entries,
+    )
+
+
 @pytest.fixture
 def stub_selfserve(monkeypatch):
     """Stub the dispatcher start: records the label and exports a fake

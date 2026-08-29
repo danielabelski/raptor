@@ -530,7 +530,14 @@ def pytest_report_header():
 
 _MAX_TEST_SECONDS = os.environ.get("RAPTOR_MAX_TEST_SECONDS")
 _slow_test_threshold = float(_MAX_TEST_SECONDS) if _MAX_TEST_SECONDS else None
-_slow_test_overruns: "list[tuple[str, float]]" = []
+_slow_test_overruns: "list[tuple[str, str, float]]" = []
+
+# Pre-emption band: at HALF the failure budget (5s at the CI default),
+# a test is one load spike away from the cliff — the guard's own
+# incident history is tests discovered AT the threshold, not
+# approaching it. Overruns of the warn band get a loud terminal
+# listing (never a failure) so the drift is visible run-over-run.
+_slow_test_warnings: "list[tuple[str, str, float]]" = []
 
 # Per-TIER wallclock tripwire, companion to the per-test guard above:
 # RAPTOR_MAX_TEST_SECONDS catches one slow test; this catches the
@@ -548,11 +555,25 @@ _session_overrun: "float | None" = None
 
 
 def pytest_runtest_logreport(report):
-    """Record any test whose CALL phase exceeds the threshold."""
+    """Record any test whose SETUP or CALL phase exceeds a band.
+
+    Setup counts the same as call: fixture work is test work (the
+    audit-prep fixtures have historically been the heaviest phase in
+    the tier), and a 10s setup reds a shard exactly like a 10s call.
+    Teardown is deliberately out of both bands — nothing in the tier
+    has a nontrivial teardown today, and adding a new failure surface
+    for cleanup cost should be its own decision.
+    """
     if _slow_test_threshold is None:
         return
-    if report.when == "call" and report.duration > _slow_test_threshold:
-        _slow_test_overruns.append((report.nodeid, report.duration))
+    if report.when not in ("setup", "call"):
+        return
+    if report.duration > _slow_test_threshold:
+        _slow_test_overruns.append(
+            (report.nodeid, report.when, report.duration))
+    elif report.duration > _slow_test_threshold / 2:
+        _slow_test_warnings.append(
+            (report.nodeid, report.when, report.duration))
 
 
 def pytest_sessionfinish(session, exitstatus):
@@ -729,13 +750,30 @@ def pytest_terminal_summary(terminalreporter):
     _git_config_drift_summary(terminalreporter)
     _egress_leak_summary(terminalreporter)
     _session_budget_summary(terminalreporter)
-    if _slow_test_threshold is None or not _slow_test_overruns:
+    if _slow_test_threshold is None:
         return
     tr = terminalreporter
+    if _slow_test_warnings:
+        tr.section("default-tier slow-test guard WARNING", yellow=True,
+                   bold=True)
+        tr.write_line(
+            f"{len(_slow_test_warnings)} test phase(s) exceeded HALF the "
+            f"RAPTOR_MAX_TEST_SECONDS={_slow_test_threshold}s budget — "
+            "one load spike from the failure cliff. Not a failure; "
+            "pre-empt now (mock the I/O, or mark @pytest.mark.slow if "
+            "the cost is genuine) instead of meeting these again at "
+            "the threshold."
+        )
+        for nodeid, phase, dur in sorted(
+                _slow_test_warnings, key=lambda x: -x[2]):
+            tr.write_line(f"  {dur:7.1f}s  {phase:5}  {nodeid}")
+    if not _slow_test_overruns:
+        return
     tr.section("default-tier slow-test guard FAILED", red=True, bold=True)
     tr.write_line(
-        f"{len(_slow_test_overruns)} test(s) exceeded "
-        f"RAPTOR_MAX_TEST_SECONDS={_slow_test_threshold}s in the default tier."
+        f"{len(_slow_test_overruns)} test phase(s) exceeded "
+        f"RAPTOR_MAX_TEST_SECONDS={_slow_test_threshold}s in the default "
+        "tier (setup counts the same as call: fixture work is test work)."
     )
     tr.write_line(
         "A default-tier test this slow is almost always real I/O that "
@@ -743,8 +781,9 @@ def pytest_terminal_summary(terminalreporter):
         "setup). Fix it — or, if the cost is genuine, mark it "
         "@pytest.mark.slow so it runs in the nightly tier instead.",
     )
-    for nodeid, dur in sorted(_slow_test_overruns, key=lambda x: -x[1]):
-        tr.write_line(f"  {dur:7.1f}s  {nodeid}")
+    for nodeid, phase, dur in sorted(
+            _slow_test_overruns, key=lambda x: -x[2]):
+        tr.write_line(f"  {dur:7.1f}s  {phase:5}  {nodeid}")
 
 
 # ---------------------------------------------------------------------------

@@ -100,7 +100,8 @@ jobs:
           from pathlib import Path
           from packages.sca.calibration.project_samples import PROJECT_SAMPLES
           from packages.sca.calibration.stress import (
-              compare_to_baseline, diffs_to_exit_code, render_diffs,
+              compare_to_baseline, confirm_elapsed_regressions,
+              diffs_to_exit_code, render_diffs,
               run_stress_sweep, write_baseline,
           )
 
@@ -129,6 +130,15 @@ jobs:
           )
           baseline = Path(
               "packages/sca/data/calibration/stress_baseline.json"
+          )
+          # Elapsed is one sample of a network-dominated process;
+          # re-measure elapsed-only fails so per-registry throttling
+          # roulette doesn't block the sweep. Genuine code
+          # regressions reproduce on the second sample and still
+          # fail. Count drifts are never re-measured.
+          results = confirm_elapsed_regressions(
+              results, PROJECT_SAMPLES, baseline,
+              git_clone_timeout=300,
           )
           diffs = compare_to_baseline(results, baseline)
           rendered = render_diffs(diffs)

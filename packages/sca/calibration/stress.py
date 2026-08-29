@@ -29,6 +29,16 @@ Per project:
   * vuln_findings (sca:vulnerable_dependency count)
   * eco_breakdown (per-finding-ecosystem distribution)
 
+Elapsed is a single sample of a network-dominated process (identical
+code has produced 30s and 183s cold scans of one project on one host
+within minutes — per-registry throttling roulette). Callers should run
+:func:`confirm_elapsed_regressions` between the sweep and the baseline
+comparison: it re-measures projects whose only fail-level drift is
+elapsed and keeps the better sample, so a genuine code regression
+(which reproduces) still fails while one throttled run doesn't block
+the sweep. Count drifts are never re-measured — they are
+deterministic given upstream data.
+
 What's deliberately NOT measured:
   * Cache hit ratio (fluctuates with TTL eviction)
   * SCA total runtime when including supply-chain / hygiene checks
@@ -351,6 +361,123 @@ def _read_eco_breakdown(findings_path: Path) -> dict[str, int]:
     return breakdown
 
 
+def confirm_elapsed_regressions(
+    results: Sequence[StressResult],
+    samples: Sequence[ProjectSample],
+    baseline_path: Path,
+    *,
+    out_root: Path | None = None,
+    git_clone_timeout: int = 300,
+    max_remeasures: int = 3,
+    vuln_warn_pct: float = DEFAULT_VULN_WARN_PCT,
+    vuln_fail_pct: float = DEFAULT_VULN_FAIL_PCT,
+    deps_warn_pct: float = DEFAULT_DEPS_WARN_PCT,
+    deps_fail_pct: float = DEFAULT_DEPS_FAIL_PCT,
+    elapsed_warn_x: float = DEFAULT_ELAPSED_WARN_X,
+    elapsed_fail_x: float = DEFAULT_ELAPSED_FAIL_X,
+) -> list[StressResult]:
+    """Re-measure projects whose ONLY fail-level drift is elapsed
+    time, and fold the better sample in.
+
+    A scan's wall clock is one sample of a network-dominated
+    process: identical code produced 30s and 183s cold scans of the
+    same project on the same host within minutes (per-registry
+    throttling roulette). Comparing one noisy sample against the
+    baseline's single sample at the fail multiplier turns that
+    roulette into a blocking sweep failure. Counts don't have this
+    problem — they are deterministic given upstream data — so only
+    elapsed-driven fails are re-measured.
+
+    For each such project (bounded by ``max_remeasures``): scan it
+    once more and keep the re-scan result with ``elapsed_seconds =
+    min(first, second)``. Registry stalls only ever ADD time, so the
+    machine's best observed time is the lowest-noise estimate of what
+    the code costs; a genuine code regression slows every sample, so
+    it survives the min and still fails. Thresholds are NOT relaxed
+    and no project is special-cased. A re-scan that itself errors
+    leaves the original result in place (a flaky re-measure must not
+    upgrade a timing fail into a scan-error fail).
+
+    Returns a new results list; the input is not mutated.
+    """
+    baseline = _load_baseline(baseline_path)
+    baseline_projects: dict[str, dict[str, Any]] = (
+        baseline.get("projects") or {}
+    )
+    by_name = {s.name: s for s in samples}
+
+    def _severity(result: StressResult, *, ignore_elapsed: bool) -> str:
+        entry = baseline_projects.get(result.project)
+        if entry is None or result.error:
+            return "fail" if result.error else "new"
+        _issues, severity = _diff_one(
+            entry, result,
+            vuln_warn_pct=vuln_warn_pct, vuln_fail_pct=vuln_fail_pct,
+            deps_warn_pct=deps_warn_pct, deps_fail_pct=deps_fail_pct,
+            elapsed_warn_x=(
+                float("inf") if ignore_elapsed else elapsed_warn_x
+            ),
+            elapsed_fail_x=(
+                float("inf") if ignore_elapsed else elapsed_fail_x
+            ),
+        )
+        return severity
+
+    if out_root is None:
+        from packages.sca import SCA_CACHE_ROOT
+        out_root = SCA_CACHE_ROOT / "stress" / "clones"
+
+    out: list[StressResult] = []
+    remeasured = 0
+    for result in results:
+        elapsed_only_fail = (
+            result.error is None
+            and _severity(result, ignore_elapsed=False) == "fail"
+            and _severity(result, ignore_elapsed=True) != "fail"
+        )
+        if not elapsed_only_fail or remeasured >= max_remeasures:
+            out.append(result)
+            continue
+        sample = by_name.get(result.project)
+        if sample is None:
+            out.append(result)
+            continue
+        remeasured += 1
+        logger.info(
+            "sca.calibration.stress: elapsed-only fail for %s "
+            "(%.1fs) — re-measuring to separate code regression "
+            "from registry-throughput variance",
+            result.project, result.elapsed_seconds,
+        )
+        second = _scan_one(
+            sample, out_root, git_clone_timeout=git_clone_timeout,
+        )
+        if second.error is not None:
+            logger.warning(
+                "sca.calibration.stress: re-measure of %s errored "
+                "(%s); keeping the original sample",
+                result.project, second.error,
+            )
+            out.append(result)
+            continue
+        best = min(result.elapsed_seconds, second.elapsed_seconds)
+        logger.info(
+            "sca.calibration.stress: %s re-measured — samples "
+            "%.1fs / %.1fs, using %.1fs",
+            result.project, result.elapsed_seconds,
+            second.elapsed_seconds, best,
+        )
+        out.append(StressResult(
+            project=second.project,
+            ecosystem=second.ecosystem,
+            elapsed_seconds=best,
+            deps_analysed=second.deps_analysed,
+            vuln_findings=second.vuln_findings,
+            eco_breakdown=second.eco_breakdown,
+        ))
+    return out
+
+
 def compare_to_baseline(
     results: Sequence[StressResult],
     baseline_path: Path,
@@ -648,6 +775,7 @@ __all__ = [
     "DEFAULT_ELAPSED_FAIL_X", "DEFAULT_ELAPSED_WARN_X",
     "DEFAULT_VULN_FAIL_PCT", "DEFAULT_VULN_WARN_PCT",
     "StressDiff", "StressResult",
-    "compare_to_baseline", "diffs_to_exit_code",
+    "compare_to_baseline", "confirm_elapsed_regressions",
+    "diffs_to_exit_code",
     "render_diffs", "run_stress_sweep", "write_baseline",
 ]

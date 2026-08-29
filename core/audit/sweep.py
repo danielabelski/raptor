@@ -3338,6 +3338,7 @@ def run_integer_truncation_sweep(
     function_name: str,
     source: str,
     cwe: str = "",
+    xref_source: str | None = None,
 ) -> SweepResult:
     """Static integer-truncation → undersized-allocation check."""
     if cwe and cwe not in INTEGER_TRUNC_CWES:
@@ -3353,6 +3354,7 @@ def run_integer_truncation_sweep(
         )
         findings = check_integer_truncation(
             function_name, source, file=file_path,
+            xref_source=xref_source,
         )
     except Exception as exc:  # noqa: BLE001
         return SweepResult(
@@ -3381,6 +3383,7 @@ def run_proto_length_sweep(
     function_name: str,
     source: str,
     cwe: str = "",
+    xref_source: str | None = None,
 ) -> SweepResult:
     """Static protocol-parser length discipline check."""
     if cwe and cwe not in PROTO_LENGTH_CWES:
@@ -3394,6 +3397,7 @@ def run_proto_length_sweep(
         from core.audit.proto_length_checker import check_proto_length
         findings = check_proto_length(
             function_name, source, file=file_path,
+            xref_source=xref_source,
         )
     except Exception as exc:  # noqa: BLE001
         return SweepResult(
@@ -3422,6 +3426,8 @@ def run_struct_field_sweep(
     function_name: str,
     source: str,
     cwe: str = "",
+    re_types: list[dict] | None = None,
+    xref_source: str | None = None,
 ) -> SweepResult:
     """Static struct-field-size vs copy-length check."""
     if cwe and cwe not in STRUCT_FIELD_CWES:
@@ -3435,6 +3441,7 @@ def run_struct_field_sweep(
         from core.audit.struct_field_checker import check_struct_field_copy
         findings = check_struct_field_copy(
             function_name, source, file=file_path,
+            re_types=re_types, xref_source=xref_source,
         )
     except Exception as exc:  # noqa: BLE001
         return SweepResult(

@@ -226,19 +226,77 @@ def _infer_field_sizes(
     return sizes
 
 
+def _load_re_type_fields(
+    re_types: List[Dict[str, Any]],
+    source: str,
+) -> Dict[str, Dict[int, Dict[str, Any]]]:
+    """Build known_fields from REDatabase type definitions.
+
+    Each REType dict has name, kind, size, fields (list of dicts with
+    offset, name, type, size).  We register fields keyed by any local
+    variable whose type matches the struct name in the decompiled source.
+    """
+    known: Dict[str, Dict[int, Dict[str, Any]]] = {}
+    for t in re_types:
+        if t.get("kind") != "struct" or not t.get("fields"):
+            continue
+        struct_name = t.get("name", "")
+        if not struct_name:
+            continue
+        for fld in t["fields"]:
+            offset = fld.get("offset")
+            fsize = fld.get("size")
+            if not isinstance(offset, int) or not isinstance(fsize, int):
+                continue
+            if fsize <= 0:
+                continue
+            local_re = re.compile(
+                r'\b(\w+)\s*=\s*(?:\([^)]*\)\s*)?'
+                + re.escape(struct_name) + r'\b',
+            )
+            for m in local_re.finditer(source):
+                var = m.group(1)
+                if var not in known:
+                    known[var] = {}
+                known[var][offset] = {
+                    "name": str(fld.get("name", f"field_at_{offset:#x}")),
+                    "size": fsize,
+                    "struct": struct_name,
+                }
+    return known
+
+
 def check_struct_field_copy(
     function_name: str,
     source: str,
     *,
     file: str = "",
+    re_types: Optional[List[Dict[str, Any]]] = None,
+    xref_source: Optional[str] = None,
 ) -> List[StructFieldFinding]:
-    """Analyse one function for struct-field vs copy-length mismatches."""
-    findings: List[StructFieldFinding] = []
+    """Analyse one function for struct-field vs copy-length mismatches.
 
-    layouts = _extract_struct_layouts(source)
-    offset_accesses = _extract_offset_accesses(source)
+    When *re_types* is provided (from REDatabase), uses Ghidra's typed
+    field offsets/sizes directly — more reliable than regex extraction.
+    Falls through to regex for any structs not covered by re_types.
+
+    When *xref_source* is provided, extends the search space to include
+    caller/callee decompilation for cross-function patterns.
+    """
+    findings: List[StructFieldFinding] = []
+    primary_len = len(source)
+
+    search_source = source
+    if xref_source:
+        search_source = source + xref_source
+
+    layouts = _extract_struct_layouts(search_source)
+    offset_accesses = _extract_offset_accesses(search_source)
 
     known_fields: Dict[str, Dict[int, Dict[str, Any]]] = {}
+
+    if re_types:
+        known_fields = _load_re_type_fields(re_types, search_source)
 
     for struct_name, fields in layouts.items():
         for f in fields:
@@ -246,15 +304,16 @@ def check_struct_field_copy(
                 r'\b(\w+)\s*=\s*(?:\([^)]*\)\s*)?'
                 + re.escape(struct_name) + r'\b',
             )
-            for m in local_re.finditer(source):
+            for m in local_re.finditer(search_source):
                 var = m.group(1)
                 if var not in known_fields:
                     known_fields[var] = {}
-                known_fields[var][f["offset"]] = {
-                    "name": f["name"],
-                    "size": f["size"],
-                    "struct": struct_name,
-                }
+                if f["offset"] not in known_fields[var]:
+                    known_fields[var][f["offset"]] = {
+                        "name": f["name"],
+                        "size": f["size"],
+                        "struct": struct_name,
+                    }
 
     for base_ptr, accs in offset_accesses.items():
         inferred = _infer_field_sizes(accs)
@@ -271,7 +330,7 @@ def check_struct_field_copy(
     if not known_fields:
         return findings
 
-    for m in _COPY_INTO_OFFSET_RE.finditer(source):
+    for m in _COPY_INTO_OFFSET_RE.finditer(search_source):
         copy_fn = m.group(1)
         base_ptr = m.group(2)
         offset_str = m.group(3)
@@ -287,6 +346,7 @@ def check_struct_field_copy(
         if field_info is None:
             continue
 
+        is_xref = m.start() >= primary_len
         field_size = field_info["size"]
         copy_len_int = _parse_int(copy_len)
 
@@ -295,7 +355,7 @@ def check_struct_field_copy(
                 findings.append(StructFieldFinding(
                     function=function_name,
                     file=file,
-                    line=_find_line(source, m.start()),
+                    line=0 if is_xref else _find_line(source, m.start()),
                     struct_type=field_info.get("struct", ""),
                     field_name=field_info["name"],
                     field_offset=offset,
@@ -307,14 +367,15 @@ def check_struct_field_copy(
                         f"(field '{field_info['name']}', {field_size} "
                         f"bytes) with constant length {copy_len_int} — "
                         f"overflows by {copy_len_int - field_size} bytes"
+                        + (" [cross-function]" if is_xref else "")
                     ),
-                    confidence="high",
+                    confidence="medium" if is_xref else "high",
                 ))
         else:
             findings.append(StructFieldFinding(
                 function=function_name,
                 file=file,
-                line=_find_line(source, m.start()),
+                line=0 if is_xref else _find_line(source, m.start()),
                 struct_type=field_info.get("struct", ""),
                 field_name=field_info["name"],
                 field_offset=offset,
@@ -326,6 +387,7 @@ def check_struct_field_copy(
                     f"(field '{field_info['name']}', {field_size} bytes) "
                     f"with variable length '{copy_len}' — "
                     f"verify bounded to {field_size}"
+                    + (" [cross-function]" if is_xref else "")
                 ),
                 confidence="medium",
             ))

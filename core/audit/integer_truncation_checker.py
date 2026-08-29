@@ -161,13 +161,23 @@ def check_integer_truncation(
     source: str,
     *,
     file: str = "",
+    xref_source: str | None = None,
 ) -> List[TruncationFinding]:
-    """Analyse one decompiled function for integer truncation bugs."""
+    """Analyse one decompiled function for integer truncation bugs.
+
+    When *xref_source* is provided, extends the search for alloc/copy
+    patterns into caller/callee decompilation (cross-function chains).
+    """
     findings: List[TruncationFinding] = []
+    primary_len = len(source)
+
+    search_source = source
+    if xref_source:
+        search_source = source + xref_source
 
     narrows: Dict[str, Dict[str, str]] = {}
 
-    for m in _EXPLICIT_CAST_RE.finditer(source):
+    for m in _EXPLICIT_CAST_RE.finditer(search_source):
         narrow_var = m.group(1)
         narrow_type = m.group(2)
         wide_var = m.group(3)
@@ -177,7 +187,7 @@ def check_integer_truncation(
             "pos": str(m.start()),
         }
 
-    for m in _IMPLICIT_NARROW_DECL_RE.finditer(source):
+    for m in _IMPLICIT_NARROW_DECL_RE.finditer(search_source):
         narrow_type = m.group(1)
         narrow_var = m.group(2)
         wide_var = m.group(3)
@@ -192,7 +202,7 @@ def check_integer_truncation(
         return findings
 
     allocs: Dict[str, Dict[str, Any]] = {}
-    for m in _ALLOC_RE.finditer(source):
+    for m in _ALLOC_RE.finditer(search_source):
         buf_var = m.group(1).strip()
         alloc_fn = m.group(2)
         size_arg = m.group(3).strip()
@@ -213,7 +223,7 @@ def check_integer_truncation(
             if narrow_var not in alloc["size_vars"]:
                 continue
 
-            for m in _COPY_RE.finditer(source):
+            for m in _COPY_RE.finditer(search_source):
                 dst = m.group(2).strip()
                 copy_len = m.group(4).strip()
                 dst_base = dst.split('[')[0].split('+')[0].strip()
@@ -222,9 +232,21 @@ def check_integer_truncation(
 
                 copy_vars = re.findall(r'\b(\w+)\b', copy_len)
                 if wide_var in copy_vars:
-                    net_tainted = _is_network_tainted(source, wide_var)
-                    confidence = "high" if net_tainted else "medium"
-                    line = _find_line(source, narrow_pos)
+                    is_xref = (
+                        narrow_pos >= primary_len
+                        or alloc["pos"] >= primary_len
+                        or m.start() >= primary_len
+                    )
+                    if is_xref:
+                        confidence = "medium"
+                    else:
+                        net_tainted = _is_network_tainted(
+                            source, wide_var)
+                        confidence = "high" if net_tainted else "medium"
+                    line = (
+                        0 if narrow_pos >= primary_len
+                        else _find_line(source, narrow_pos)
+                    )
 
                     findings.append(TruncationFinding(
                         function=function_name,
@@ -242,6 +264,7 @@ def check_integer_truncation(
                             f"then {m.group(1)} copies {copy_len} bytes "
                             f"(using original wide '{wide_var}') "
                             f"into the undersized buffer"
+                            + (" [cross-function]" if is_xref else "")
                         ),
                         confidence=confidence,
                     ))

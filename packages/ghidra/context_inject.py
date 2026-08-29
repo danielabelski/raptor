@@ -517,6 +517,40 @@ def _find_related_types(func: REFunction, db: REDatabase) -> list:
     return [t for t in db.types if t.name in words]
 
 
+def lookup_function_context(
+    repo_path: str | Path,
+    function_name: str,
+) -> Tuple[Optional[REFunction], Optional[REDatabase]]:
+    """Look up a function's REFunction and owning REDatabase from cache.
+
+    Returns (None, None) on cache miss, no match, or any error.
+    Callers use this for mechanical enrichment (struct types, xrefs)
+    without reaching into private cache internals.
+    """
+    try:
+        key = str(Path(repo_path).resolve())
+    except (OSError, ValueError):
+        return None, None
+
+    with _GHIDRA_LOCK:
+        func_index = _GHIDRA_FUNC_INDEX.get(key)
+        databases = _GHIDRA_CACHE.get(key)
+
+    if not func_index or not databases:
+        return None, None
+
+    if not isinstance(function_name, str) or not function_name:
+        return None, None
+
+    matches = func_index.get(function_name)
+    if not matches:
+        return None, None
+
+    matched = matches[0]
+    owning_db = _find_owning_db(databases, matched)
+    return matched, owning_db
+
+
 def clear_ghidra_cache() -> None:
     """Drop every cached REDatabase."""
     with _GHIDRA_LOCK:

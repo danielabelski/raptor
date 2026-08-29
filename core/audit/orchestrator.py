@@ -15378,6 +15378,69 @@ def _joern_budget_timeout_s(config: OrchestratorConfig) -> int | None:
     return max(1, min(default, int(remaining)))
 
 
+_MAX_XREF_BYTES = 16384
+_MAX_XREF_NEIGHBORS = 16
+
+
+def _ghidra_re_context(
+    config: Any,
+    function_name: str,
+) -> tuple[list[dict] | None, str | None]:
+    """Extract REDatabase types and xref decompilation for a function.
+
+    Returns (re_types, xref_source) from the Ghidra cache.  Best-effort:
+    returns (None, None) when Ghidra is unavailable or no match is found.
+    """
+    try:
+        from packages.ghidra.context_inject import lookup_function_context
+        func, db = lookup_function_context(
+            config.target_path, function_name)
+    except Exception:  # noqa: BLE001
+        return None, None
+    if func is None or db is None:
+        return None, None
+
+    re_types = None
+    related = [t for t in db.types
+               if t.kind == "struct" and t.fields]
+    if related:
+        re_types = [t.to_dict() for t in related[:20]]
+
+    parts: list[str] = []
+    total = 0
+    seen_addrs: set[int] = set()
+    for x in db.xrefs:
+        if x.kind != "call":
+            continue
+        neighbor = None
+        label = ""
+        if x.to_addr == func.address:
+            neighbor = db.function_containing_address(x.from_addr)
+            label = "caller"
+        else:
+            owner = db.function_containing_address(x.from_addr)
+            if owner is not None and owner.address == func.address:
+                neighbor = db.function_by_address(x.to_addr)
+                label = "callee"
+        if (neighbor is None or not neighbor.decompilation
+                or neighbor.address in seen_addrs):
+            continue
+        seen_addrs.add(neighbor.address)
+        chunk = (
+            f"\n// --- {label}: {neighbor.name} ---\n"
+            f"{neighbor.decompilation}"
+        )
+        if total + len(chunk) > _MAX_XREF_BYTES:
+            break
+        parts.append(chunk)
+        total += len(chunk)
+        if len(parts) >= _MAX_XREF_NEIGHBORS:
+            break
+
+    xref_source = "".join(parts) if parts else None
+    return re_types, xref_source
+
+
 def _run_tool_chain(
     chain: list[dict[str, Any]],
     *,
@@ -16450,106 +16513,67 @@ def _run_tool_chain(
                         tier_counters, "coccinelle_flow", "inconclusive",
                     )
 
-            elif tool_type == "integer_truncation":
-                from .sweep import run_integer_truncation_sweep
+            elif tool_type in (
+                "integer_truncation", "proto_length", "struct_field",
+            ):
+                _re_types, _xref_src = _ghidra_re_context(
+                    config, function_name)
 
-                it_res = run_integer_truncation_sweep(
-                    file_path=file_path,
-                    function_name=function_name,
-                    source=source or "",
-                    cwe=cwe,
-                )
-                if it_res.outcome == "confirmed":
+                if tool_type == "integer_truncation":
+                    from .sweep import run_integer_truncation_sweep
+
+                    _bc_res = run_integer_truncation_sweep(
+                        file_path=file_path,
+                        function_name=function_name,
+                        source=source or "",
+                        cwe=cwe,
+                        xref_source=_xref_src,
+                    )
+                elif tool_type == "proto_length":
+                    from .sweep import run_proto_length_sweep
+
+                    _bc_res = run_proto_length_sweep(
+                        file_path=file_path,
+                        function_name=function_name,
+                        source=source or "",
+                        cwe=cwe,
+                        xref_source=_xref_src,
+                    )
+                else:
+                    from .sweep import run_struct_field_sweep
+
+                    _bc_res = run_struct_field_sweep(
+                        file_path=file_path,
+                        function_name=function_name,
+                        source=source or "",
+                        cwe=cwe,
+                        re_types=_re_types,
+                        xref_source=_xref_src,
+                    )
+
+                if _bc_res.outcome == "confirmed":
                     confirmed.append(
-                        f"integer_truncation:{it_res.rule_id}")
+                        f"{tool_type}:{_bc_res.rule_id}")
                     if tier_counters:
                         _increment_tier_dict(
-                            tier_counters, "integer_truncation",
+                            tier_counters, tool_type,
                             "confirmed",
                         )
-                elif it_res.outcome == "error":
+                elif _bc_res.outcome == "error":
                     logger.debug(
-                        "tool_chain integer_truncation error "
-                        "%s:%s: %s",
-                        file_path, function_name, it_res.errors,
+                        "tool_chain %s error %s:%s: %s",
+                        tool_type,
+                        file_path, function_name, _bc_res.errors,
                     )
                     if errored_types is not None:
                         errored_types.add(tool_type)
                     if tier_counters:
                         _increment_tier_dict(
-                            tier_counters, "integer_truncation",
-                            "errors",
+                            tier_counters, tool_type, "errors",
                         )
                 elif tier_counters:
                     _increment_tier_dict(
-                        tier_counters, "integer_truncation",
-                        "refuted",
-                    )
-
-            elif tool_type == "proto_length":
-                from .sweep import run_proto_length_sweep
-
-                pl_res = run_proto_length_sweep(
-                    file_path=file_path,
-                    function_name=function_name,
-                    source=source or "",
-                    cwe=cwe,
-                )
-                if pl_res.outcome == "confirmed":
-                    confirmed.append(
-                        f"proto_length:{pl_res.rule_id}")
-                    if tier_counters:
-                        _increment_tier_dict(
-                            tier_counters, "proto_length",
-                            "confirmed",
-                        )
-                elif pl_res.outcome == "error":
-                    logger.debug(
-                        "tool_chain proto_length error %s:%s: %s",
-                        file_path, function_name, pl_res.errors,
-                    )
-                    if errored_types is not None:
-                        errored_types.add(tool_type)
-                    if tier_counters:
-                        _increment_tier_dict(
-                            tier_counters, "proto_length", "errors",
-                        )
-                elif tier_counters:
-                    _increment_tier_dict(
-                        tier_counters, "proto_length", "refuted",
-                    )
-
-            elif tool_type == "struct_field":
-                from .sweep import run_struct_field_sweep
-
-                sf_res = run_struct_field_sweep(
-                    file_path=file_path,
-                    function_name=function_name,
-                    source=source or "",
-                    cwe=cwe,
-                )
-                if sf_res.outcome == "confirmed":
-                    confirmed.append(
-                        f"struct_field:{sf_res.rule_id}")
-                    if tier_counters:
-                        _increment_tier_dict(
-                            tier_counters, "struct_field",
-                            "confirmed",
-                        )
-                elif sf_res.outcome == "error":
-                    logger.debug(
-                        "tool_chain struct_field error %s:%s: %s",
-                        file_path, function_name, sf_res.errors,
-                    )
-                    if errored_types is not None:
-                        errored_types.add(tool_type)
-                    if tier_counters:
-                        _increment_tier_dict(
-                            tier_counters, "struct_field", "errors",
-                        )
-                elif tier_counters:
-                    _increment_tier_dict(
-                        tier_counters, "struct_field", "refuted",
+                        tier_counters, tool_type, "refuted",
                     )
 
 

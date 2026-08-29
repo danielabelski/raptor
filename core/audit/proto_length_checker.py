@@ -145,20 +145,30 @@ def check_proto_length(
     source: str,
     *,
     file: str = "",
+    xref_source: str | None = None,
 ) -> List[ProtoLengthFinding]:
-    """Analyse one decompiled function for unbounded protocol lengths."""
+    """Analyse one decompiled function for unbounded protocol lengths.
+
+    When *xref_source* is provided, extends the search for recv/alloc/copy
+    patterns into caller/callee decompilation (cross-function chains).
+    """
     findings: List[ProtoLengthFinding] = []
+    primary_len = len(source)
+
+    search_source = source
+    if xref_source:
+        search_source = source + xref_source
 
     length_candidates: Dict[str, Dict[str, Any]] = {}
 
-    for m in _BYTE_EXTRACT_RE.finditer(source):
+    for m in _BYTE_EXTRACT_RE.finditer(search_source):
         var = m.group(1)
         length_candidates[var] = {
             "source": "byte-order conversion",
             "pos": m.start(),
         }
 
-    for m in _FIELD_READ_RE.finditer(source):
+    for m in _FIELD_READ_RE.finditer(search_source):
         var = m.group(1)
         if var not in length_candidates:
             length_candidates[var] = {
@@ -170,7 +180,7 @@ def check_proto_length(
         return findings
 
     allocs: Dict[str, Dict[str, Any]] = {}
-    for m in _ALLOC_RE.finditer(source):
+    for m in _ALLOC_RE.finditer(search_source):
         buf_var = m.group(1).strip()
         alloc_fn = m.group(2)
         size_arg = m.group(3).strip()
@@ -189,11 +199,12 @@ def check_proto_length(
             if alloc["pos"] < len_info["pos"]:
                 continue
 
-            bound = _var_has_upper_bound(source, len_var, alloc["pos"])
+            bound = _var_has_upper_bound(
+                search_source, len_var, alloc["pos"])
             if bound is not None:
                 continue
 
-            for m in _COPY_RE.finditer(source):
+            for m in _COPY_RE.finditer(search_source):
                 dst = m.group(2).strip()
                 copy_len = m.group(4).strip()
                 dst_base = dst.split('[')[0].split('+')[0].strip()
@@ -203,7 +214,15 @@ def check_proto_length(
                 if len_var not in copy_len_vars:
                     continue
 
-                line = _find_line(source, len_info["pos"])
+                is_xref = (
+                    len_info["pos"] >= primary_len
+                    or alloc["pos"] >= primary_len
+                    or m.start() >= primary_len
+                )
+                line = (
+                    0 if len_info["pos"] >= primary_len
+                    else _find_line(source, len_info["pos"])
+                )
                 findings.append(ProtoLengthFinding(
                     function=function_name,
                     file=file,
@@ -217,11 +236,12 @@ def check_proto_length(
                         f"{alloc['fn']}({alloc['size_arg']}) with no "
                         f"upper-bound check, then {m.group(1)} copies "
                         f"{copy_len} bytes into the buffer"
+                        + (" [cross-function]" if is_xref else "")
                     ),
-                    confidence="high",
+                    confidence="medium" if is_xref else "high",
                 ))
 
-            for m in _SECOND_RECV_RE.finditer(source):
+            for m in _SECOND_RECV_RE.finditer(search_source):
                 if m.start() < alloc["pos"]:
                     continue
                 recv_buf = m.group(3).strip()
@@ -233,7 +253,15 @@ def check_proto_length(
                 if len_var not in recv_len_vars:
                     continue
 
-                line = _find_line(source, len_info["pos"])
+                is_xref = (
+                    len_info["pos"] >= primary_len
+                    or alloc["pos"] >= primary_len
+                    or m.start() >= primary_len
+                )
+                line = (
+                    0 if len_info["pos"] >= primary_len
+                    else _find_line(source, len_info["pos"])
+                )
                 findings.append(ProtoLengthFinding(
                     function=function_name,
                     file=file,
@@ -247,12 +275,13 @@ def check_proto_length(
                         f"{alloc['fn']}({alloc['size_arg']}) with no "
                         f"upper-bound check, then {m.group(1)}() reads "
                         f"{recv_len} bytes into the buffer"
+                        + (" [cross-function]" if is_xref else "")
                     ),
-                    confidence="high",
+                    confidence="medium" if is_xref else "high",
                 ))
 
     for len_var, len_info in length_candidates.items():
-        for m in _COPY_RE.finditer(source):
+        for m in _COPY_RE.finditer(search_source):
             if m.start() < len_info["pos"]:
                 continue
             copy_len = m.group(4).strip()
@@ -265,11 +294,19 @@ def check_proto_length(
             if dst_base in allocs:
                 continue
 
-            bound = _var_has_upper_bound(source, len_var, m.start())
+            bound = _var_has_upper_bound(
+                search_source, len_var, m.start())
             if bound is not None:
                 continue
 
-            line = _find_line(source, len_info["pos"])
+            is_xref = (
+                len_info["pos"] >= primary_len
+                or m.start() >= primary_len
+            )
+            line = (
+                0 if len_info["pos"] >= primary_len
+                else _find_line(source, len_info["pos"])
+            )
             findings.append(ProtoLengthFinding(
                 function=function_name,
                 file=file,
@@ -282,6 +319,7 @@ def check_proto_length(
                     f"{m.group(1)} length with no upper-bound check; "
                     f"destination is not a freshly allocated buffer "
                     f"(stack/global/parameter)"
+                    + (" [cross-function]" if is_xref else "")
                 ),
                 confidence="medium",
             ))

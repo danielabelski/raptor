@@ -70,11 +70,35 @@ jobs:
           # at volume, and without the wheels they all skip.
           uv pip install -r requirements-grammars.txt
 
+      # Parallelism: ``-n auto --dist loadfile`` (4 workers on
+      # ubuntu-latest). The tier's purpose is ORDER-DEPENDENCE
+      # detection, so the trade is stated here, not buried:
+      #   * loadfile keeps every FILE on one worker, so the seeded
+      #     shuffle's scope grouping (root conftest) still bounds each
+      #     module/class fixture to one setup (loadscope was measured
+      #     re-running module fixtures once per worker that hosted one
+      #     of the module's classes), and intra-file order stays fully
+      #     randomised per the seed;
+      #   * file ORDER remains seeded-random, but files split across N
+      #     workers — a given cross-file pair co-locates on a worker
+      #     with ~1/N probability per iteration. Three iterations per
+      #     night with distinct seeds (and fresh seeds nightly) keep
+      #     accumulating cross-file coverage; the single-process shape
+      #     stays one flag away (drop -n) when chasing a specific
+      #     order bug;
+      #   * the egress-leak guard is xdist-ENFORCED (workers report
+      #     through the controller's marker dir — root conftest), so
+      #     parallelism costs no guard power.
+      #
       # Tier wallclock tripwire (root conftest): flags the session —
-      # with a named summary instead of an opaque runner kill — when a
-      # single-process shuffled iteration exceeds the budget. Baseline
-      # at the time this was set: ~28 min per iteration on ubuntu-latest
-      # (42k tests); the budget carries ~60% headroom. If it fires
+      # with a named summary instead of an opaque runner kill — when
+      # an iteration exceeds the budget. Baseline at the time this was
+      # set: ~19 min single-process locally / ~21.5 min on
+      # ubuntu-latest (42k tests); measured 4.3x on 4 local workers
+      # under loadfile (19:07 → 4:29 — the sleep-bound fat tail
+      # parallelises cleanly), so the expected CI iteration is
+      # ~6-9 min. The 1800s budget carries ~3x headroom over that —
+      # re-baseline after the first few nightly runs. If it fires
       # without a starved runner, the tier has structurally drifted:
       # re-measure, fix the drift or consciously raise the budget with
       # the new baseline.
@@ -84,8 +108,9 @@ jobs:
           seed="${{ github.run_id }}-${{ matrix.iteration }}"
           echo "seed=${seed}"
           RAPTOR_RANDOMISE_TESTS="$seed" \
-          RAPTOR_MAX_SESSION_SECONDS=2700 \
+          RAPTOR_MAX_SESSION_SECONDS=1800 \
             python -m pytest core packages \
+            -n auto --dist loadfile \
             -q --durations=25 --tb=short \
             --junitxml="$RUNNER_TEMP/fast-iter-${{ matrix.iteration }}.xml"
 

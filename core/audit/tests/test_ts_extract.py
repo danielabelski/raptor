@@ -625,11 +625,29 @@ class TestDataclasses:
 
 class TestDeepNesting:
     """CST depth tracks source nesting depth — the descendant walker
-    must not recurse per level (regression: a 20k-deep parenthesised
-    expression raised RecursionError)."""
+    must not recurse per level (regression: a deeply parenthesised
+    expression raised RecursionError).
+
+    4000 levels with the recursion limit pinned to the 1000 default
+    means a per-level-recursing walker fails loudly regardless of what
+    any third-party import did to the process-global limit, while the
+    parse drops from ~5-6s (20k levels — parse cost grows superlinearly
+    with depth) to ~0.3s. Same doctrine as the condition-extraction
+    deep-nesting pins."""
+
+    @pytest.fixture(autouse=True)
+    @staticmethod
+    def _default_recursion_limit():
+        import sys
+        prior = sys.getrecursionlimit()
+        sys.setrecursionlimit(1000)
+        try:
+            yield
+        finally:
+            sys.setrecursionlimit(prior)
 
     def test_string_literal_survives_deep_nesting(self):
-        n = 20000
+        n = 4000
         src = (
             "int f(void) { const char *s = " + "(" * n + '"deep"'
             + ")" * n + "; return 0; }\n"

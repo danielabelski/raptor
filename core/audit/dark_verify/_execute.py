@@ -48,7 +48,7 @@ from ._types import (
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -1133,6 +1133,75 @@ def _toolchain_read_paths(binary: str | None) -> list[str]:
     return paths
 
 
+def _sandbox_exec_path(binary: str, granted: Sequence[str]) -> str:
+    """Invocation path for *binary* that resolves inside the sandbox view.
+
+    The mount-namespace backend resolves argv[0] LITERALLY inside the
+    new rootfs: only the system prefixes, target/output, and the
+    ``tool_paths`` grants exist there, and host /tmp is shadowed by a
+    private tmpfs. ``shutil.which`` (and the rustc sysroot probe) can
+    hand back a symlink that lives outside every one of those roots yet
+    points into a covered one — a rustup-style toolchain dir symlinking
+    the distro compiler, a version-manager shim dir symlinking the real
+    install. The symlink file itself is then invisible in-sandbox
+    (ENOENT at exec, "exec: ...: not found") while its target would run
+    fine, and :func:`_toolchain_read_paths` grants nothing extra
+    because it (correctly) reasons about the RESOLVED location. Invoke
+    the resolved binary directly in that case.
+
+    Narrowing-only, and never a grant change: the rewrite target must
+    already be covered (a system prefix, or one of the *granted* roots
+    the caller is about to pass as ``tool_paths``) and must keep the
+    same basename (argv[0]-dispatching multi-call binaries — busybox
+    applets, rustup proxy hardlinks — must not be invoked under the
+    wrong name). A chain that ends anywhere else is returned unchanged
+    and stays subject to the sandbox's own denial. Scope that
+    guarantee honestly for the real call sites: ``granted`` is derived
+    FROM the resolved target by :func:`_toolchain_read_paths`, so a
+    chain ending in an ordinary user-local install root (a version
+    manager under a ``$HOME`` subdirectory — the intended case) IS
+    covered and WILL run, exactly as the operator's PATH directed and
+    exactly as the Landlock lane always ran it (Landlock resolves
+    symlinks to the final file). What stays refused is what the grant
+    derivation itself refuses — ``$HOME`` itself and its ancestors,
+    ``/`` — plus basename-changing chains. The security property is
+    therefore not "hostile destinations are blocked" (argv[0] never
+    derives from scanned-repo content in the first place: it comes
+    from the operator's PATH, the sysroot probe of the operator's own
+    toolchain, or ``sys.executable``); it is "no new grants": this
+    helper only picks WHICH already-covered path names the tool, and
+    the mount and Landlock rule sets are computed exactly as before.
+    The running Python interpreter is exempt: a venv python derives
+    ``sys.prefix`` from its literal symlink path, and
+    ``python_runtime_tool_paths`` already grants that literal location.
+    """
+    if not binary or not os.path.isabs(binary):
+        return binary
+    resolved = os.path.realpath(binary)
+    if resolved == binary:
+        return binary
+    if resolved == os.path.realpath(sys.executable):
+        return binary
+
+    def _covered(path: str) -> bool:
+        if any(path.startswith(p) for p in _SYSTEM_TOOLCHAIN_PREFIXES):
+            return True
+        for root in granted:
+            if not root:
+                continue
+            root = root.rstrip("/")
+            if root and (path == root or path.startswith(root + "/")):
+                return True
+        return False
+
+    if _covered(binary):
+        return binary
+    if (_covered(resolved)
+            and os.path.basename(resolved) == os.path.basename(binary)):
+        return resolved
+    return binary
+
+
 def _sandboxed_compile(
     sandbox_run: Callable,
     compile_cmd: list[str],
@@ -1173,9 +1242,10 @@ def _sandboxed_compile(
     if env is not None:
         kwargs["env"] = env
         kwargs["strict_env"] = True
+    tool_reads = [str(work_dir), *_toolchain_read_paths(compile_cmd[0])]
     return _sandbox_run_capped(
         sandbox_run,
-        compile_cmd,
+        [_sandbox_exec_path(compile_cmd[0], tool_reads), *compile_cmd[1:]],
         # work_dir doubles as the capture dir — it is the compile's
         # output= channel (writable inside the sandbox, parent-visible).
         cap_dir=work_dir,
@@ -1185,7 +1255,7 @@ def _sandboxed_compile(
         output=str(work_dir),
         timeout=_COMPILE_TIMEOUT_S,
         caller_label=caller_label,
-        tool_paths=[str(work_dir), *_toolchain_read_paths(compile_cmd[0])],
+        tool_paths=tool_reads,
         **kwargs,
     )
 
@@ -1229,9 +1299,12 @@ def _run_script_witness(
         cap_dir = Path(tempfile.mkdtemp(
             prefix="raptor_dark_cap_", dir=exec_workdir()))
         try:
+            tool_reads = [str(script_dir),
+                          *_toolchain_read_paths(cmd_prefix[0])]
             proc = _sandbox_run_capped(
                 sandbox_run,
-                cmd_prefix + [str(script_file)],
+                [_sandbox_exec_path(cmd_prefix[0], tool_reads),
+                 *cmd_prefix[1:], str(script_file)],
                 cap_dir=cap_dir,
                 block_network=True,
                 restrict_reads=True,
@@ -1241,8 +1314,7 @@ def _run_script_witness(
                 output=str(cap_dir),
                 timeout=timeout_s,
                 caller_label=f"audit-dark-verify-{language}",
-                tool_paths=[str(script_dir),
-                            *_toolchain_read_paths(cmd_prefix[0])],
+                tool_paths=tool_reads,
             )
         finally:
             shutil.rmtree(cap_dir, ignore_errors=True)
@@ -2148,8 +2220,10 @@ def _execute_java(
                     ),
                 )
 
+            run_tool_reads = [str(work_dir),
+                              *_toolchain_read_paths(java_bin)]
             run_cmd = [
-                java_bin, "-cp",
+                _sandbox_exec_path(java_bin, run_tool_reads), "-cp",
                 f"{work_dir}:{source_file.parent}:{target_root}",
                 "DarkWitnessHarness",
             ]
@@ -2167,8 +2241,7 @@ def _execute_java(
                     output=str(cap_dir),
                     timeout=timeout_s,
                     caller_label="audit-dark-verify-java",
-                    tool_paths=[str(work_dir),
-                                *_toolchain_read_paths(java_bin)],
+                    tool_paths=run_tool_reads,
                 )
             finally:
                 shutil.rmtree(cap_dir, ignore_errors=True)

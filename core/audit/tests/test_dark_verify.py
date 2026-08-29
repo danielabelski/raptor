@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import inspect
 import json
+import os
 import shutil
 import sys
 import subprocess
@@ -18,6 +19,7 @@ from core.audit.dark_verify import _execute as ex
 from core.audit.dark_verify._execute import (
     _run_native_binary,
     _run_script_witness,
+    _sandbox_exec_path,
     _sandboxed_compile,
     _toolchain_read_paths,
 )
@@ -2111,6 +2113,39 @@ class TestRealExecutionJs:
         r = execute_witness(spec, tmp_path)
         assert r.verdict == "refuted"
 
+    def test_confirms_through_symlinked_shim_layout(
+        self, tmp_path, monkeypatch,
+    ):
+        """Version-manager shim dirs symlink the interpreter from a
+        directory the sandbox never mounts (same stranded-argv[0] class
+        as the rustup proxy layout: the literal which() path is
+        invisible inside the mount namespace while its resolved target
+        is). The executor must invoke the resolved binary."""
+        node_bin = shutil.which("node")
+        if os.path.basename(os.path.realpath(node_bin)) != "node":
+            pytest.skip("node resolves to a renamed binary on this host")
+        shim_dir = tmp_path / "shims"
+        shim_dir.mkdir()
+        (shim_dir / "node").symlink_to(node_bin)
+        monkeypatch.setenv(
+            "PATH", f"{shim_dir}:{os.environ.get('PATH', '')}")
+
+        target = tmp_path / "target"
+        target.mkdir()
+        (target / "math.js").write_text(textwrap.dedent("""\
+            function triple(x) { return x * 3; }
+            module.exports = { triple };
+        """), encoding="utf-8")
+        spec = DarkWitnessSpec(
+            finding_key="f1", file="math.js", function="triple",
+            language="javascript",
+            args=[5],
+            expected_return="15",
+            lang_config={"require_path": "./math"},
+        )
+        r = execute_witness(spec, target)
+        assert r.verdict == "confirmed", r.match_detail
+
 
 @pytest.mark.slow
 @pytest.mark.skipif(not shutil.which("ruby"), reason="Ruby not available")
@@ -3626,6 +3661,156 @@ class TestToolchainReadPaths:
         paths = _toolchain_read_paths(str(tool))
         assert str(bin_dir) in paths
         assert str(root) in paths
+
+
+class TestSandboxExecPath:
+    """The mount-ns backend resolves argv[0] literally inside the new
+    rootfs — a which()-resolved symlink outside every mounted root is
+    ENOENT there even when its target is mounted. `_sandbox_exec_path`
+    swaps in the resolved target ONLY when the literal path is
+    uncovered, the target is already covered (system prefix or an
+    explicit grant), and the basename is unchanged. It never adds a
+    grant."""
+
+    @staticmethod
+    def _system_env() -> str:
+        env_bin = shutil.which("env")
+        assert env_bin and any(
+            env_bin.startswith(p) for p in ex._SYSTEM_TOOLCHAIN_PREFIXES)
+        if os.path.basename(os.path.realpath(env_bin)) != "env":
+            pytest.skip(
+                "multi-call env binary; basename-changing rewrite is "
+                "refused by design")
+        return env_bin
+
+    def test_rewrites_out_of_tree_symlink_to_system_target(self, tmp_path):
+        env_bin = self._system_env()
+        shim = tmp_path / "shims" / "env"
+        shim.parent.mkdir()
+        shim.symlink_to(env_bin)
+        assert _sandbox_exec_path(str(shim), []) == os.path.realpath(env_bin)
+
+    def test_rewrites_multi_hop_chain_to_system_target(self, tmp_path):
+        # rustup-style: toolchain bin/ symlinks a system compiler that
+        # is itself a symlink (/usr/bin/X -> ../lib/.../X). Every hop
+        # collapses to the final real file under the system prefix.
+        env_bin = self._system_env()
+        hop = tmp_path / "hop" / "env"
+        hop.parent.mkdir()
+        hop.symlink_to(env_bin)
+        shim = tmp_path / "shims" / "env"
+        shim.parent.mkdir()
+        shim.symlink_to(hop)
+        assert _sandbox_exec_path(str(shim), []) == os.path.realpath(env_bin)
+
+    def test_rewrites_symlink_into_granted_root(self, tmp_path):
+        # Version-manager shape: a shim dir symlinks the real install;
+        # _toolchain_read_paths grants the RESOLVED bin dir + parent,
+        # so the target is covered while the shim dir is not.
+        real_bin = tmp_path / "real" / "bin"
+        real_bin.mkdir(parents=True)
+        real = real_bin / "node"
+        real.write_text("#!/bin/sh\n")
+        shim = tmp_path / "shims" / "node"
+        shim.parent.mkdir()
+        shim.symlink_to(real)
+        granted = [str(real_bin), str(real_bin.parent)]
+        assert _sandbox_exec_path(str(shim), granted) == str(real)
+
+    def test_keeps_literal_system_path(self):
+        # A system-prefix literal is always visible in-sandbox; it is
+        # never rewritten — even when it resolves elsewhere (merged-usr
+        # /bin/sh, argv[0]-dispatching proxies under /usr).
+        assert _sandbox_exec_path("/bin/sh", []) == "/bin/sh"
+
+    def test_keeps_covered_literal_symlink(self, tmp_path):
+        # A symlink inside a granted root is visible in-sandbox as-is;
+        # keep the literal path (argv[0] semantics preserved).
+        env_bin = shutil.which("env")
+        assert env_bin
+        shim_dir = tmp_path / "shims"
+        shim_dir.mkdir()
+        shim = shim_dir / "env"
+        shim.symlink_to(env_bin)
+        assert _sandbox_exec_path(str(shim), [str(shim_dir)]) == str(shim)
+
+    def test_hostile_chain_outside_grants_unchanged(self, tmp_path):
+        # Unit form: a chain ending outside system prefixes AND every
+        # grant is returned unchanged — no rewrite ever points at an
+        # uncovered file. (Real call sites derive `granted` from the
+        # resolved target; the call-site-shaped pins follow.)
+        evil = tmp_path / "elsewhere" / "tool"
+        evil.parent.mkdir()
+        evil.write_text("#!/bin/sh\n")
+        shim = tmp_path / "shims" / "tool"
+        shim.parent.mkdir()
+        shim.symlink_to(evil)
+        assert _sandbox_exec_path(str(shim), []) == str(shim)
+
+    def test_home_resident_target_unchanged_with_call_site_grants(
+        self, tmp_path, monkeypatch,
+    ):
+        # Call-site shape: `granted` comes from _toolchain_read_paths,
+        # which refuses $HOME itself and its ancestors. A chain ending
+        # directly in $HOME therefore earns no grant and is never
+        # rewritten — the grant derivation, not this helper, is the
+        # refusing authority.
+        home = tmp_path / "home" / "user"
+        home.mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(home))
+        target = home / "node"
+        target.write_text("#!/bin/sh\n")
+        shim = tmp_path / "shims" / "node"
+        shim.parent.mkdir()
+        shim.symlink_to(target)
+        granted = _toolchain_read_paths(str(shim))
+        assert granted == []
+        assert _sandbox_exec_path(str(shim), granted) == str(shim)
+
+    def test_call_site_grants_cover_version_manager_target(
+        self, tmp_path, monkeypatch,
+    ):
+        # Call-site shape, positive direction: the grant derivation
+        # approves an ordinary user-local install root (version manager
+        # under a $HOME subdirectory), so the rewrite proceeds — to the
+        # same file the operator's PATH already designated, under
+        # grants identical to the pre-rewrite ones. The property pinned
+        # here is "no new grants", not "user-local chains are blocked".
+        home = tmp_path / "home" / "user"
+        install_bin = home / ".mgr" / "versions" / "v1" / "bin"
+        install_bin.mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(home))
+        real = install_bin / "node"
+        real.write_text("#!/bin/sh\n")
+        shim = tmp_path / "shims" / "node"
+        shim.parent.mkdir()
+        shim.symlink_to(real)
+        granted = _toolchain_read_paths(str(shim))
+        assert str(install_bin) in granted
+        assert _sandbox_exec_path(str(shim), granted) == str(real)
+
+    def test_no_rewrite_on_basename_change(self, tmp_path):
+        # busybox-applet shape: /shims/gzip -> multi-call binary. The
+        # target dispatches on argv[0]; invoking it under the resolved
+        # name would run the wrong tool.
+        env_bin = shutil.which("env")
+        assert env_bin
+        shim = tmp_path / "shims" / "gzip"
+        shim.parent.mkdir()
+        shim.symlink_to(env_bin)
+        assert _sandbox_exec_path(str(shim), []) == str(shim)
+
+    def test_keeps_running_interpreter_symlink(self, tmp_path):
+        # venv shape: python derives sys.prefix from the literal
+        # symlink location, and python_runtime_tool_paths grants it.
+        shim = tmp_path / "venv-bin" / "python"
+        shim.parent.mkdir()
+        shim.symlink_to(sys.executable)
+        assert _sandbox_exec_path(str(shim), []) == str(shim)
+
+    def test_relative_and_empty_unchanged(self):
+        assert _sandbox_exec_path("", []) == ""
+        assert _sandbox_exec_path("node", []) == "node"
 
 
 class TestSourcePathContainment:

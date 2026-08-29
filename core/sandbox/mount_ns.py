@@ -591,6 +591,105 @@ def _copy_etc_tree(src: str, dst: str) -> None:
             queue.append((src_sub, dst_sub))
 
 
+def _mount_etc_tmpfs_copy(root: str, host_dir: str, inside: str,
+                          etc_overlay) -> None:
+    """Serve /etc from a private tmpfs populated by a budgeted copy of
+    the host /etc, then remount it read-only.
+
+    Used in two situations, both of which make the plain non-recursive
+    bind of /etc unusable:
+
+      * etc_overlay entries target paths that don't exist on the host —
+        the bind mount's underlying FS permissions block stub creation
+        (EACCES: namespace uid != host root) and MNT_LOCKED (kernel
+        >= 5.12) blocks remounting RW.
+      * The bind itself is refused with EINVAL because /etc carries
+        locked child mounts. Container runtimes bind files into /etc
+        (resolv.conf, hostname, hosts); those mounts are MNT_LOCKED in
+        our fresh user namespace, and the kernel refuses a
+        NON-recursive bind of a subtree with locked children (it would
+        unmask them). Every standard docker/containerd container hits
+        this, so without the tmpfs copy the whole mount-ns backend was
+        unavailable inside containers.
+
+    The copy is O(entries-in-etc) with a hard bytes/entry budget (see
+    _copy_etc_tree) and is strictly narrowing versus the bind: the
+    child sees a private, read-only snapshot; writes can never reach
+    host /etc, and the container's locked submounts are not dragged
+    into the sandbox.
+    """
+    _phase_trace(b"etc tmpfs mount: start")
+    _mount("tmpfs", inside, "tmpfs", 0, "mode=755")
+    _phase_trace(b"etc tmpfs mount: done; etc copy: start")
+    _copy_etc_tree(host_dir, inside)
+    _phase_trace(b"etc copy: done; stub pre-create: start")
+    # Pre-create mount-point stubs for overlay targets that
+    # don't exist on the host.
+    for ns_target in (etc_overlay or {}):
+        if not isinstance(ns_target, str):
+            continue
+        # Same normalized-absolute-key rule as the 8d bind
+        # loop: startswith("/etc/") alone would still pass
+        # "/etc/../..."-style keys into the {root} concat.
+        if (not ns_target.startswith("/etc/")
+                or os.path.normpath(ns_target) != ns_target):
+            continue
+        stub = f"{root}{ns_target}"
+        if not os.path.exists(stub):
+            try:
+                host_source = etc_overlay[ns_target]
+                if isinstance(host_source, str) and os.path.isdir(host_source):
+                    os.makedirs(stub, exist_ok=True)
+                else:
+                    os.makedirs(os.path.dirname(stub), exist_ok=True)
+                    fd = os.open(
+                        stub,
+                        os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW,
+                        0o600,
+                    )
+                    os.close(fd)
+            except OSError as exc:
+                warn_post_fork(
+                    b"sandbox: mount_ns: etc_overlay pre-create "
+                    b"failed (errno=%d)\n" % (exc.errno or 0,)
+                )
+    _phase_trace(b"stub pre-create: done; etc ro remount: start")
+    _mount("tmpfs", inside, None,
+           MS_REMOUNT | MS_BIND | MS_RDONLY)
+    _phase_trace(b"etc ro remount: done")
+
+
+def _bind_system_ro_dir(d: str, root: str, host_dir: str, inside: str,
+                        etc_overlay,
+                        etc_has_missing_targets: bool) -> None:
+    """Bind one host system dir read-only into the new root (step 4
+    unit). /etc routes to the tmpfs+copy lane when overlay targets are
+    missing on the host, or when the non-recursive bind is refused with
+    EINVAL (locked child mounts — the container-runtime shape described
+    on _mount_etc_tmpfs_copy). Any other bind failure, and EINVAL on a
+    non-/etc dir, propagates: those are not the known-benign container
+    shape, and mounting on regardless would hide a genuinely broken
+    system-dir view from the operator.
+    """
+    if d == "etc" and etc_has_missing_targets:
+        _mount_etc_tmpfs_copy(root, host_dir, inside, etc_overlay)
+        return
+    try:
+        _mount(host_dir, inside, None, MS_BIND)
+    except OSError as exc:
+        if d != "etc" or exc.errno != _EINVAL:
+            raise
+        warn_post_fork(
+            b"sandbox: mount_ns: non-recursive /etc bind refused "
+            b"(EINVAL: locked child mounts, typical inside container "
+            b"runtimes) -- serving a private read-only tmpfs copy of "
+            b"/etc instead\n"
+        )
+        _mount_etc_tmpfs_copy(root, host_dir, inside, etc_overlay)
+        return
+    _mount(host_dir, inside, None, _ro_remount_flags(inside))
+
+
 def _ro_remount_flags(path: str) -> int:
     """MS_* flags for a read-only bind remount of *path* that PRESERVE
     the source mount's locked attributes.
@@ -818,49 +917,8 @@ def setup_mount_ns(target: str | None, output: str | None,
         if not os.path.isdir(host_dir):
             continue
         inside = f"{root}/{d}"
-        if d == "etc" and _etc_has_missing_targets:
-            _phase_trace(b"etc tmpfs mount: start")
-            _mount("tmpfs", inside, "tmpfs", 0, "mode=755")
-            _phase_trace(b"etc tmpfs mount: done; etc copy: start")
-            _copy_etc_tree(host_dir, inside)
-            _phase_trace(b"etc copy: done; stub pre-create: start")
-            # Pre-create mount-point stubs for overlay targets that
-            # don't exist on the host.
-            for ns_target in etc_overlay:
-                if not isinstance(ns_target, str):
-                    continue
-                # Same normalized-absolute-key rule as the 8d bind
-                # loop: startswith("/etc/") alone would still pass
-                # "/etc/../..."-style keys into the {root} concat.
-                if (not ns_target.startswith("/etc/")
-                        or os.path.normpath(ns_target) != ns_target):
-                    continue
-                stub = f"{root}{ns_target}"
-                if not os.path.exists(stub):
-                    try:
-                        host_source = etc_overlay[ns_target]
-                        if isinstance(host_source, str) and os.path.isdir(host_source):
-                            os.makedirs(stub, exist_ok=True)
-                        else:
-                            os.makedirs(os.path.dirname(stub), exist_ok=True)
-                            fd = os.open(
-                                stub,
-                                os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW,
-                                0o600,
-                            )
-                            os.close(fd)
-                    except OSError as exc:
-                        warn_post_fork(
-                            b"sandbox: mount_ns: etc_overlay pre-create "
-                            b"failed (errno=%d)\n" % (exc.errno or 0,)
-                        )
-            _phase_trace(b"stub pre-create: done; etc ro remount: start")
-            _mount("tmpfs", inside, None,
-                   MS_REMOUNT | MS_BIND | MS_RDONLY)
-            _phase_trace(b"etc ro remount: done")
-        else:
-            _mount(host_dir, inside, None, MS_BIND)
-            _mount(host_dir, inside, None, _ro_remount_flags(inside))
+        _bind_system_ro_dir(d, root, host_dir, inside, etc_overlay,
+                            _etc_has_missing_targets)
 
     # 5. /dev and /sys: recursive bind from host. A minimal /dev would
     # be more conservative but real tools (ASAN, glibc, curl) need

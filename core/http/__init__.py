@@ -221,12 +221,19 @@ class HttpClient(Protocol):
         total_timeout: int = DEFAULT_TOTAL_TIMEOUT,
         retries: int = DEFAULT_RETRIES,
         follow_redirects: bool = True,
+        stream: bool = False,
+        raise_on_status: bool = True,
     ) -> Response:
         """Low-level request — returns :class:`Response` with status, headers, body.
 
         Use for arbitrary HTTP methods (DELETE/PUT/PATCH/HEAD) and when
         response metadata (ETag, Last-Modified) is needed for the next
         conditional request.
+
+        ``stream`` and ``raise_on_status`` mirror the backend's
+        requests-API-compatible knobs (the OCI client passes both);
+        the protocol must declare every parameter callers rely on or
+        type-checked call sites report phantom call-arg errors.
         """
         ...
 

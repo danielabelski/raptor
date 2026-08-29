@@ -90,7 +90,8 @@ class TestE2ENetworkBlocking(unittest.TestCase):
         result = sandbox_run(
             ["python3", "-c",
              "import socket; s=socket.socket(); s.settimeout(2); s.connect(('1.1.1.1', 80))"],
-            block_network=True, capture_output=True, text=True, timeout=10,
+            block_network=True, allow_path_divergence=True,
+            capture_output=True, text=True, timeout=10,
         )
         self.assertNotEqual(result.returncode, 0)
 
@@ -98,7 +99,8 @@ class TestE2ENetworkBlocking(unittest.TestCase):
         """DNS resolution inside sandbox fails."""
         result = sandbox_run(
             ["python3", "-c", "import socket; socket.getaddrinfo('example.com', 80)"],
-            block_network=True, capture_output=True, text=True, timeout=10,
+            block_network=True, allow_path_divergence=True,
+            capture_output=True, text=True, timeout=10,
         )
         self.assertNotEqual(result.returncode, 0)
 
@@ -406,7 +408,7 @@ class TestE2EResourceLimits(unittest.TestCase):
         """CPU time limit kills runaway process."""
         result = sandbox_run(
             ["python3", "-c", "while True: pass"],
-            block_network=True,
+            block_network=True, allow_path_divergence=True,
             limits={"cpu_seconds": 2},
             capture_output=True, text=True, timeout=10,
         )
@@ -418,7 +420,7 @@ class TestE2EResourceLimits(unittest.TestCase):
             sandbox_run(
                 ["python3", "-c",
                  f"f=open('{d}/big','wb'); f.write(b'A'*200*1024*1024); f.close()"],
-                block_network=True,
+                block_network=True, allow_path_divergence=True,
                 limits={"max_file_mb": 100},
                 capture_output=True, text=True, timeout=15,
             )
@@ -1753,12 +1755,45 @@ class TestE2EHomeToolchainSeam(unittest.TestCase):
         os.environ["PATH"] = f"{self.proxy_dir}{os.pathsep}{old_path}"
         self.addCleanup(os.environ.__setitem__, "PATH", old_path)
 
-    def test_undeclared_home_tool_fails_visibly(self):
-        """Without the declaration the exec fails and SAYS so — the
-        pid1-shim errno line, not a silent empty-output run."""
+    def test_undeclared_home_tool_refused_by_name(self):
+        """Without the declaration the run is refused BEFORE spawn by
+        the PATH-divergence gate, naming the caller-side resolution and
+        the remedy — a bare name must never quietly exec a different
+        binary (or nothing) inside the sandbox."""
+        from core.sandbox import SandboxSetupError
+        with TemporaryDirectory() as out:
+            with self.assertRaises(SandboxSetupError) as ctx:
+                sandbox_run(
+                    ["seamtool", "hi"],
+                    block_network=True, target=out, output=out,
+                    capture_output=True, text=True, timeout=30,
+                )
+            msg = str(ctx.exception)
+            self.assertIn("seamtool", msg)
+            self.assertIn(str(self.proxy_dir), msg)
+            self.assertIn("tool_paths", msg)
+
+    def test_absolute_path_invocation_untouched_by_gate(self):
+        """Absolute-path invocations never consult PATH, so the
+        divergence gate does not apply — a system binary by absolute
+        path runs normally even while the caller PATH carries a
+        home-resident toolchain the scrub will drop."""
         with TemporaryDirectory() as out:
             r = sandbox_run(
-                ["seamtool", "hi"],
+                ["/bin/echo", "abs-ok"],
+                block_network=True, target=out, output=out,
+                capture_output=True, text=True, timeout=30,
+            )
+            self.assertEqual(r.returncode, 0, r.stderr[:300])
+            self.assertIn("abs-ok", r.stdout)
+
+    def test_nowhere_resolvable_tool_keeps_errno_diagnostic(self):
+        """A name the CALLER cannot resolve either skips the gate
+        (nothing to diverge from) and fails at exec with the named
+        pid1-shim errno line — not silently."""
+        with TemporaryDirectory() as out:
+            r = sandbox_run(
+                ["seamtool-missing-everywhere", "hi"],
                 block_network=True, target=out, output=out,
                 capture_output=True, text=True, timeout=30,
             )
@@ -1863,6 +1898,36 @@ class TestE2EBuildToolCompatibility(unittest.TestCase):
             _add(os.path.join(cargo_home, "bin"))
         return dirs or None
 
+    def _pip_tool_paths(self):
+        """Declaration for a possibly venv-resident pip.
+
+        python_runtime_tool_paths() covers the interpreter closure
+        (venv prefix + base runtime + executable dir); with the venv
+        prefix declared, the venv's pip stays PATH-resolvable and
+        visible inside the sandbox, so the SAME pip the caller's
+        environment names is the one that runs — pre-declaration the
+        home-scrub silently fell through to a same-named system pip.
+        System-pip environments return [] → None (undeclared run,
+        byte-identical to before)."""
+        from core.sandbox import python_runtime_tool_paths
+        return python_runtime_tool_paths() or None
+
+    def _assert_caller_pip_ran(self, stdout):
+        """`pip --version` prints its site-packages origin — when the
+        caller's pip is the venv's, the venv prefix must appear (proof
+        the declared binary ran, not a silent system fallback)."""
+        import shutil
+        import sys
+        pip_path = shutil.which("pip") or ""
+        in_venv = sys.prefix != getattr(sys, "base_prefix", sys.prefix)
+        if not (in_venv and os.path.realpath(pip_path).startswith(
+                os.path.realpath(sys.prefix) + os.sep)):
+            return  # system pip — nothing venv-specific to prove
+        self.assertTrue(
+            sys.prefix in stdout
+            or os.path.realpath(sys.prefix) in stdout,
+            f"venv pip declared but a different pip ran: {stdout!r}")
+
     def test_pip_version(self):
         self._require("pip")
         with TemporaryDirectory() as out:
@@ -1870,11 +1935,13 @@ class TestE2EBuildToolCompatibility(unittest.TestCase):
                 ["pip", "--version"],
                 block_network=True,
                 target=out, output=out,
+                tool_paths=self._pip_tool_paths(),
                 capture_output=True, text=True, timeout=30,
             )
             self.assertEqual(r.returncode, 0,
                              f"pip under sandbox failed: stderr={r.stderr[:200]!r}")
             self.assertIn("pip", r.stdout)
+            self._assert_caller_pip_ran(r.stdout)
 
     def test_pip_list(self):
         """pip list reads site-packages — a realistic read path."""
@@ -1884,6 +1951,7 @@ class TestE2EBuildToolCompatibility(unittest.TestCase):
                 ["pip", "list", "--disable-pip-version-check"],
                 block_network=True,
                 target=out, output=out,
+                tool_paths=self._pip_tool_paths(),
                 capture_output=True, text=True, timeout=30,
             )
             self.assertEqual(r.returncode, 0,
@@ -2244,7 +2312,8 @@ class TestE2ESandboxSummaryRecording(unittest.TestCase):
                 sandbox_run(
                     ["python3", "-c",
                      "import socket; s=socket.socket(); s.settimeout(2); s.connect(('1.1.1.1', 80))"],
-                    block_network=True, capture_output=True, text=True, timeout=10,
+                    block_network=True, allow_path_divergence=True,
+                    capture_output=True, text=True, timeout=10,
                 )
 
                 complete_run(run_dir)
@@ -2824,6 +2893,7 @@ class TestDegradedModeTcpDeny(unittest.TestCase):
                 # Net-only ruleset (no target/output → no fs handling).
                 r = sandbox_run(
                     self._connect_cmd(port), block_network=True,
+                    allow_path_divergence=True,
                     capture_output=True, text=True, timeout=15,
                 )
                 self.assertNotEqual(r.returncode, 0,
@@ -2834,6 +2904,7 @@ class TestDegradedModeTcpDeny(unittest.TestCase):
                 with TemporaryDirectory() as d:
                     r2 = sandbox_run(
                         self._connect_cmd(port), block_network=True,
+                        allow_path_divergence=True,
                         output=d,
                         capture_output=True, text=True, timeout=15,
                     )
@@ -2853,6 +2924,7 @@ class TestDegradedModeTcpDeny(unittest.TestCase):
                        return_value=False):
                 r = sandbox_run(
                     self._connect_cmd(port), block_network=True,
+                    allow_path_divergence=True,
                     degraded_net_deny=False,
                     capture_output=True, text=True, timeout=15,
                 )
@@ -2866,7 +2938,7 @@ class TestDegradedModeTcpDeny(unittest.TestCase):
                     ["python3", "-c",
                      ("import socket; b = socket.socket(); "
                       "b.bind(('127.0.0.1', 0)); b.listen(1); print('bound')")],
-                    block_network=True,
+                    block_network=True, allow_path_divergence=True,
                     capture_output=True, text=True, timeout=15,
                 )
                 self.assertEqual(r2.returncode, 0,

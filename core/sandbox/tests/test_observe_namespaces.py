@@ -207,6 +207,7 @@ class TestObserveUnderBlockNetwork(unittest.TestCase):
                 ["python3", "-c", probe],
                 target=str(run_dir), output=str(run_dir),
                 block_network=True,
+                allow_path_divergence=True,
                 observe=True,
                 capture_output=True, text=True, timeout=10,
             )

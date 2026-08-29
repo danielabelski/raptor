@@ -392,6 +392,7 @@ class TestSandboxNetworkIsolation(unittest.TestCase):
             result = run(
                 ["python3", "-c",
                  "import urllib.request; urllib.request.urlopen('http://1.1.1.1', timeout=2)"],
+                allow_path_divergence=True,
                 capture_output=True, text=True, timeout=10,
             )
         self.assertNotEqual(result.returncode, 0)
@@ -402,6 +403,7 @@ class TestSandboxNetworkIsolation(unittest.TestCase):
             result = run(
                 ["python3", "-c",
                  "import socket; s=socket.socket(); s.settimeout(1); s.connect(('127.0.0.1', 1))"],
+                allow_path_divergence=True,
                 capture_output=True, text=True, timeout=5,
             )
         self.assertNotEqual(result.returncode, 0)
@@ -724,7 +726,9 @@ class TestSeccompBlocklist(unittest.TestCase):
         with TemporaryDirectory() as d:
             if not force_preexec_tier:
                 return sandbox_run(["python3", "-c", code],
-                                   target=d, output=d, **run_kwargs)
+                                   target=d, output=d,
+                                   allow_path_divergence=True,
+                                   **run_kwargs)
             # Force the no-mount-ns tier the way the observe-latency
             # test does: the AF_UNIX block is tier-dependent (see
             # _spawn's _allow_unix rationale — with mount-ns + netns
@@ -738,7 +742,9 @@ class TestSeccompBlocklist(unittest.TestCase):
                  patch("core.sandbox.context.check_mount_available",
                        return_value=False):
                 return sandbox_run(["python3", "-c", code],
-                                   target=d, output=d, **run_kwargs)
+                                   target=d, output=d,
+                                   allow_path_divergence=True,
+                                   **run_kwargs)
 
     def test_af_unix_blocked_in_full(self):
         """AF_UNIX socket creation is blocked on the preexec tier —
@@ -944,6 +950,7 @@ class TestForkBombBounded(unittest.TestCase):
             result = sandbox_run(
                 ["python3", "-c", probe],
                 block_network=True, target=d, output=d,
+                allow_path_divergence=True,
                 limits={"nproc": 5},
                 capture_output=True, text=True, timeout=15,
             )
@@ -983,6 +990,7 @@ class TestPidNamespace(unittest.TestCase):
                     f"print('rc', ret, 'errno', ctypes.get_errno())"
                 )],
                 block_network=True, target=d, output=d,
+                allow_path_divergence=True,
                 capture_output=True, text=True, timeout=5,
             )
         # kill returns -1 with errno=3 (ESRCH) when the PID isn't visible.
@@ -1005,6 +1013,7 @@ class TestPidNamespace(unittest.TestCase):
             r = sandbox_run(
                 ["python3", "-c", "import os; print(os.getpid())"],
                 block_network=True, target=d, output=d,
+                allow_path_divergence=True,
                 capture_output=True, text=True, timeout=5,
             )
         self.assertIn(r.stdout.strip(), ("1", "2", "3"),
@@ -1083,6 +1092,7 @@ class TestFdIsolation(unittest.TestCase):
                 )
                 r = run(
                     ["python3", "-c", probe],
+                    allow_path_divergence=True,
                     capture_output=True, text=True, timeout=5,
                 )
             self.assertIn("closed", r.stdout)

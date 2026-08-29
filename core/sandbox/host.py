@@ -228,6 +228,14 @@ class SandboxHost:
                     etc_overlay=etc_overlay,
                     env=env or None,
                     env_caller_filtered=True,
+                    # Declared intent for the PATH-divergence gate: the
+                    # daemon is stdlib-only (-S, no site imports) and
+                    # runs under WHATEVER python3 the sandbox view
+                    # resolves — the caller's venv interpreter is
+                    # deliberately not required, so a venv-active
+                    # caller diverging from the child's system python3
+                    # is fine here.
+                    allow_path_divergence=True,
                     capture_output=True,
                     text=False,
                     timeout=None,
@@ -534,6 +542,10 @@ def one_shot_call(
             etc_overlay=etc_overlay,
             env=env or None,
             env_caller_filtered=True,
+            # Same declared intent as the persistent-daemon spawn: the
+            # stdlib-only daemon runs under the sandbox view's python3;
+            # caller-venv divergence is fine here.
+            allow_path_divergence=True,
             input=frame,
             capture_output=True,
             text=False,

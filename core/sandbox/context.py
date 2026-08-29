@@ -2414,6 +2414,18 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         fixed by the enclosing context and CANNOT be overridden per-call —
         passing block_network=, target=, output=, profile=, etc. here raises
         TypeError. To change isolation, open a new `sandbox()` context.
+
+        PATH-divergence gate: when run() builds the child env itself
+        (no caller env=), a BARE command name that would resolve to a
+        different binary inside the sandbox than in the caller's
+        environment — the child-env scrub drops home-rooted PATH
+        entries, so a venv/rustup tool silently falls through to a
+        same-named system binary or to nothing — raises
+        SandboxSetupError naming both resolutions. Remedies, in
+        preference order: declare the toolchain via tool_paths= (run
+        the caller's binary inside the sandbox), invoke by absolute
+        path, or pass allow_path_divergence=True to state that the
+        child SHOULD resolve the name against its own PATH.
         """
         from core.config import RaptorConfig
 
@@ -2539,6 +2551,16 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         # get_safe_env path (see core/config.py); the caller path
         # is "you know what you're doing".
         strict_env = kwargs.pop("strict_env", False)
+        # allow_path_divergence: opt-out for the PATH-divergence gate
+        # below. Default False — a bare command that resolves to a
+        # DIFFERENT binary inside the sandbox than in the caller's
+        # environment (because the child-env home-scrub dropped the
+        # caller's venv/toolchain PATH entry) is refused with a named
+        # error instead of quietly execing the wrong binary. True is an
+        # explicit statement of intent: "the sandboxed child SHOULD
+        # resolve this name against its own (scrubbed) PATH even when
+        # that picks a different binary than my shell would".
+        allow_path_divergence = kwargs.pop("allow_path_divergence", False)
         # ``strip_trust_markers``: opt-in from run_untrusted() /
         # run_untrusted_networked(). CLAUDECODE / _RAPTOR_TRUSTED pass
         # through get_safe_env() because the sandbox setup chain
@@ -2726,6 +2748,63 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                     ]
                     if _kept:
                         _scrubbed["PATH"] = os.pathsep.join(_kept)
+                    # PATH-divergence gate. The home-scrub above can
+                    # change what a BARE command name resolves to: the
+                    # caller's shell would run the venv/toolchain copy
+                    # (~/.venv/bin/pip, ~/.cargo/bin/cargo) while the
+                    # child's scrubbed PATH resolves a same-named
+                    # SYSTEM binary — or nothing. Execing a different
+                    # binary than the caller's environment names is
+                    # silent wrongness (results attributed to the
+                    # wrong tool version); refuse with the remedy
+                    # spelled out instead. Scope: bare names only
+                    # (path-carrying invocations never consult PATH),
+                    # only when the scrub actually changed PATH, and
+                    # only when the caller's PATH resolves the name at
+                    # all (otherwise the run fails not-found on its
+                    # own, unchanged). Caller-supplied env= is exempt
+                    # by construction — this branch only builds envs.
+                    # rootfs mode is exempt: cmd[0] resolves inside the
+                    # IMAGE filesystem, so a host-side which() over
+                    # either PATH names binaries the child will never
+                    # exec — host divergence is meaningless there and
+                    # refusing on it would reject valid image commands.
+                    _child_path_val = _scrubbed.get("PATH")
+                    if (not allow_path_divergence
+                            and rootfs is None
+                            and cmd and cmd[0]
+                            and os.sep not in cmd[0]
+                            and _child_path_val != _path_val):
+                        _caller_res = shutil.which(cmd[0], path=_path_val)
+                        _child_res = (
+                            shutil.which(cmd[0], path=_child_path_val)
+                            if _caller_res is not None else None)
+                        if _caller_res is not None and (
+                                _child_res is None
+                                or os.path.realpath(_child_res)
+                                != os.path.realpath(_caller_res)):
+                            from .errors import SandboxSetupError
+                            msg_0 = (
+                                f"sandbox run(): target {cmd[0]!r} "
+                                f"resolves to {_caller_res!r} in the "
+                                f"caller environment but "
+                                f"{_child_res!r} inside the sandbox "
+                                f"(the child-env scrub drops "
+                                f"home-rooted PATH entries) — "
+                                f"refusing to exec a different binary "
+                                f"than the caller's environment names."
+                            )
+                            raise SandboxSetupError(
+                                msg_0,
+                                "declare the toolchain dir via "
+                                "tool_paths=[...] so it stays visible "
+                                "and PATH-resolvable inside the "
+                                "sandbox, invoke the binary by "
+                                "absolute path, or pass "
+                                "allow_path_divergence=True if the "
+                                "sandboxed child is MEANT to resolve "
+                                "the name against its own PATH.",
+                            )
                 kwargs["env"] = _scrubbed
         else:
             # Promote to WARNING — pre-fix this was INFO, which meant
@@ -5912,6 +5991,15 @@ def run_untrusted(cmd: list[str], *, target: str | None = None, output: str | No
         "observe", "exclude_tmp_baseline",
         "tool_paths",
         "profile",
+        # PATH-divergence gate opt-out. Allowed through because it is
+        # a CORRECTNESS declaration, not an isolation control: the
+        # alternatively-resolved binary still runs under the full
+        # untrusted contract. Default False — an untrusted run whose
+        # bare command would resolve to a different binary inside the
+        # sandbox than in the caller's environment is refused with the
+        # named remedy (tool_paths= / absolute path) unless the caller
+        # states divergence is intended.
+        "allow_path_divergence",
         # Anti-fingerprint persona: STRENGTHENS the untrusted
         # contract (identity surfaces get masked), so it passes the
         # ratchet the other rejections enforce. run_untrusted always

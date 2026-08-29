@@ -287,6 +287,7 @@ class TestProfileDebugDoesNotBreakPtrace(_ConsumerE2EBase):
             ["python3", "-c", py_script],
             profile="debug",
             target=self.tmp.name, output=self.tmp.name,
+            allow_path_divergence=True,
             capture_output=True, text=True, timeout=15,
             sanitise_host_fingerprint=True,
         )

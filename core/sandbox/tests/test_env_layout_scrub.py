@@ -151,6 +151,107 @@ class TestSandboxedChildLayoutScrub(unittest.TestCase):
         self.assertEqual(env.get("USER"), "sandbox")
         self.assertEqual(env.get("LOGNAME"), "sandbox")
 
+    def test_gate_divergent_bare_name_refused_naming_both(self):
+        """venv-shaped divergence: ~/.venv-style pip in the caller PATH
+        plus a same-named system-side pip in the child's surviving PATH
+        must REFUSE with both resolutions named — never quietly exec
+        the system copy."""
+        from core.sandbox import SandboxSetupError, sandbox
+        venv_bin, sys_bin = self._divergent_pip_dirs()
+        with sandbox(output=self.out) as run:
+            with pytest.raises(SandboxSetupError) as exc:
+                run(["pip", "--version"],
+                    capture_output=True, text=True, timeout=60)
+        msg = str(exc.value)
+        assert os.path.join(venv_bin, "pip") in msg
+        assert os.path.join(sys_bin, "pip") in msg
+        assert "tool_paths" in msg
+
+    def test_gate_declared_tool_paths_runs_the_caller_pip(self):
+        """Declared via tool_paths= the DECLARED (venv-shaped) pip runs
+        — proven by its marker, not just a zero exit."""
+        from core.sandbox import sandbox
+        venv_bin, _sys_bin = self._divergent_pip_dirs()
+        with sandbox(output=self.out, tool_paths=[venv_bin]) as run:
+            r = run(["pip", "--version"],
+                    capture_output=True, text=True, timeout=60)
+        assert r.returncode == 0, (r.returncode, r.stderr[-300:])
+        assert "venv-pip-marker" in r.stdout
+
+    def test_gate_opt_out_runs_the_child_resolution(self):
+        """allow_path_divergence=True is the explicit intent statement:
+        the child's own (scrubbed) PATH resolution runs."""
+        from core.sandbox import sandbox
+        _venv_bin, _sys_bin = self._divergent_pip_dirs()
+        with sandbox(output=self.out) as run:
+            r = run(["pip", "--version"], allow_path_divergence=True,
+                    capture_output=True, text=True, timeout=60)
+        assert r.returncode == 0, (r.returncode, r.stderr[-300:])
+        assert "system-pip-marker" in r.stdout
+
+    def test_gate_absolute_path_untouched(self):
+        """Absolute-path invocations never consult PATH — no gate."""
+        from core.sandbox import sandbox
+        venv_bin, sys_bin = self._divergent_pip_dirs()
+        with sandbox(output=self.out) as run:
+            r = run([os.path.join(sys_bin, "pip"), "--version"],
+                    capture_output=True, text=True, timeout=60)
+        assert r.returncode == 0, (r.returncode, r.stderr[-300:])
+        assert "system-pip-marker" in r.stdout
+
+    def test_gate_same_resolution_untouched(self):
+        """A bare name resolving identically on both sides passes."""
+        from core.sandbox import sandbox
+        _venv_bin, sys_bin = self._divergent_pip_dirs()
+        with sandbox(output=self.out) as run:
+            r = run(["sametool"],
+                    capture_output=True, text=True, timeout=60)
+        assert r.returncode == 0, (r.returncode, r.stderr[-300:])
+        assert "same-tool-marker" in r.stdout
+
+    def test_gate_untrusted_refuses_by_default(self):
+        """run_untrusted: divergence refusal is on by default."""
+        from core.sandbox import SandboxSetupError, check_net_available
+        from core.sandbox.context import run_untrusted
+        if not check_net_available():
+            pytest.skip("User namespaces not available")
+        self._divergent_pip_dirs()
+        with pytest.raises(SandboxSetupError, match="resolves to"):
+            run_untrusted(["pip", "--version"],
+                          target=self.out, output=self.out,
+                          capture_output=True, text=True, timeout=60)
+
+    def _divergent_pip_dirs(self):
+        """Build the venv-shaped divergence: a home-resident bin dir
+        (scrubbed from the child PATH) and a sandbox-visible bin dir
+        (under the output dir, which is bound at its original path),
+        each holding a marker `pip`; PATH = venv:system:original."""
+        home = os.path.expanduser("~")
+        try:
+            holder = tempfile.TemporaryDirectory(
+                prefix=".venvseam-", dir=home)
+        except OSError:
+            pytest.skip("home directory not writable")
+        self.addCleanup(holder.cleanup)
+        venv_bin = os.path.join(holder.name, "venv", "bin")
+        os.makedirs(venv_bin)
+        sys_bin = os.path.join(self.out, "sysbin")
+        os.makedirs(sys_bin, exist_ok=True)
+        for d, marker in ((venv_bin, "venv-pip-marker"),
+                          (sys_bin, "system-pip-marker")):
+            p = os.path.join(d, "pip")
+            with open(p, "w", encoding="utf-8") as f:
+                f.write(f"#!/bin/sh\necho {marker}\n")
+            os.chmod(p, 0o755)
+        same = os.path.join(sys_bin, "sametool")
+        with open(same, "w", encoding="utf-8") as f:
+            f.write("#!/bin/sh\necho same-tool-marker\n")
+        os.chmod(same, 0o755)
+        old_path = os.environ.get("PATH", "")
+        os.environ["PATH"] = os.pathsep.join([venv_bin, sys_bin, old_path])
+        self.addCleanup(os.environ.__setitem__, "PATH", old_path)
+        return venv_bin, sys_bin
+
     def test_caller_env_still_verbatim(self):
         """Caller-supplied env= is documented pass-through — the scrub
         must not touch it."""

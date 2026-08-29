@@ -584,6 +584,14 @@ def pytest_sessionfinish(session, exitstatus):
     _check_git_config_drift(session)
     _check_egress_leak(session)
     _check_session_budget(session)
+    # The leak-marker dir has served its purpose once the controller's
+    # check above merged it (workers never remove it — their controller
+    # still needs it). Findings live on in _egress_leaks for the
+    # terminal summary. SIGKILLed sessions leak one reaper-prefixed
+    # dir, reclaimed by tmp_reaper past the age floor.
+    if _egress_leak_dir_owner and _egress_leak_dir:
+        import shutil as _shutil
+        _shutil.rmtree(_egress_leak_dir, ignore_errors=True)
     if _slow_test_threshold is None or not _slow_test_overruns:
         return
     if session.exitstatus == 0:
@@ -698,15 +706,53 @@ def _git_config_drift_summary(terminalreporter):
 # tests tunnelling via a long-gone upstream and mocked-client tests
 # burning connect timeouts. The per-directory conftests fix known
 # constructors; this guard makes the NEXT uncovered directory fail
-# loudly at session end instead of poisoning combined runs. Under
-# xdist the leak is per-worker and worker exitstatus propagation is
-# weak, so workers still print the summary section unconditionally;
-# the controller enforces for non-distributed runs. Cost: one env
-# scan per session; core.llm.egress is looked up via sys.modules,
-# never imported, so sessions that never touch LLM code pay nothing.
+# loudly at session end instead of poisoning combined runs.
+#
+# ENFORCED under xdist too: worker exitstatus propagation is weak, so
+# a leaking worker additionally drops a marker file into a directory
+# the spawning (controller) process created and published through the
+# environment (same handoff pattern as the ambient-git-env snapshot).
+# The controller reads the markers at ITS sessionfinish — which runs
+# after every worker has completed — merges them into its own
+# findings, and fails the run. Every non-worker pytest process creates
+# a FRESH dir and re-publishes it, so nested pytest sessions (tests
+# that spawn pytest) never write into an outer session's dir. Cost:
+# one env scan per session + one empty-dir listing on the controller;
+# core.llm.egress is looked up via sys.modules, never imported, so
+# sessions that never touch LLM code pay nothing.
 # ---------------------------------------------------------------------------
 
 _egress_leaks: "list[str]" = []
+
+_EGRESS_LEAK_DIR_ENV = "RAPTOR_EGRESS_LEAK_DIR"
+_egress_leak_dir: "str | None" = None
+_egress_leak_dir_owner = False
+
+
+def pytest_configure(config):
+    """Mint or adopt the egress-guard marker dir.
+
+    Worker-ness is decided from ``config.workerinput`` — authoritative
+    for THIS session — never from the inheritable PYTEST_XDIST_WORKER
+    env var: a pytest child spawned from inside an xdist worker's test
+    inherits that var, and an env-based check made such a child adopt
+    (and its own workers contaminate) the OUTER session's guard dir.
+    With workerinput, any non-worker session — top-level or a nested
+    controller spawned by a test, under any parent shape — mints a
+    fresh dir and re-publishes it, so marker files can only ever flow
+    worker → own controller. xdist spawns workers after the
+    controller's configure, so the published dir is always this
+    controller's. The reaper-listed raptor-pytest- prefix covers the
+    SIGKILL-leak case (normal exits remove it in sessionfinish).
+    """
+    global _egress_leak_dir, _egress_leak_dir_owner
+    if getattr(config, "workerinput", None) is not None:
+        _egress_leak_dir = os.environ.get(_EGRESS_LEAK_DIR_ENV)
+        _egress_leak_dir_owner = False
+    else:
+        _egress_leak_dir = _tempfile.mkdtemp(prefix="raptor-pytest-egress-")
+        os.environ[_EGRESS_LEAK_DIR_ENV] = _egress_leak_dir
+        _egress_leak_dir_owner = True
 
 
 def _check_egress_leak(session):
@@ -719,6 +765,38 @@ def _check_egress_leak(session):
     egress_mod = _sys.modules.get("core.llm.egress")
     if egress_mod is not None and getattr(egress_mod, "_enabled", False):
         _egress_leaks.append("core.llm.egress._enabled is still True")
+
+    is_worker = getattr(session.config, "workerinput", None) is not None
+    if is_worker:
+        # Report to the controller — its sessionfinish runs after every
+        # worker completes and is the one whose exit status the run
+        # keeps. Best-effort: a write failure degrades to the old
+        # print-only worker behaviour rather than masking the tests.
+        if _egress_leaks and _egress_leak_dir:
+            worker_id = os.environ.get("PYTEST_XDIST_WORKER", "gw?")
+            try:
+                marker = Path(_egress_leak_dir) / f"{worker_id}-{os.getpid()}.leak"
+                marker.write_text(
+                    "".join(f"{line}\n" for line in _egress_leaks),
+                    encoding="utf-8",
+                )
+            except (OSError, ValueError):
+                # ValueError covers UnicodeEncodeError from a
+                # surrogate-bearing env value; degrade to the old
+                # print-only worker behaviour, never mask tests.
+                pass
+    else:
+        # Controller: merge every worker's report before deciding.
+        if _egress_leak_dir:
+            try:
+                for marker in sorted(Path(_egress_leak_dir).glob("*.leak")):
+                    worker_id = marker.name.rsplit("-", 1)[0]
+                    for line in marker.read_text(
+                            encoding="utf-8").splitlines():
+                        _egress_leaks.append(f"[worker {worker_id}] {line}")
+            except OSError:
+                pass
+
     if not _egress_leaks:
         return
     if session.exitstatus == 0:

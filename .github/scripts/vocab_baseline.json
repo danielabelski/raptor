@@ -3,6 +3,18 @@
     "count": 10,
     "kind": "literal"
   },
+  "core/audit/integer_truncation_checker.py::_WIDE_TYPES": {
+    "count": 17,
+    "kind": "literal",
+    "note": "Fixed C/decompiler integer TYPE names (width classes for the truncation checker) - language constants like the libc/POSIX allowance, not learnable target-API vocabulary; new type spellings are additions to the language surface, not to a target's API.",
+    "reviewed": "2026-08-29"
+  },
+  "core/audit/struct_field_checker.py::_TYPE_SIZES": {
+    "count": 30,
+    "kind": "literal",
+    "note": "Fixed C/decompiler TYPE-name -> byte-size table (Ghidra undefinedN spellings included) - language constants like the libc/POSIX allowance, not learnable target-API vocabulary.",
+    "reviewed": "2026-08-29"
+  },
   "core/analysis/binary_oracle_precision.py::to_dict": {
     "count": 12,
     "kind": "literal"

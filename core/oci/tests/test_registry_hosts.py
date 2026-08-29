@@ -105,9 +105,9 @@ def test_ecr_public_single_host():
 # ---------------------------------------------------------------------------
 
 
-def test_gcr_returns_self():
+def test_gcr_returns_self_plus_gcs_blob_host():
     hosts = registry_hosts_for("gcr.io/myproj/img:v1")
-    assert hosts == ["gcr.io"]
+    assert hosts == ["gcr.io", "storage.googleapis.com"]
 
 
 def test_artifact_registry_regional():
@@ -115,7 +115,9 @@ def test_artifact_registry_regional():
     hosts = registry_hosts_for(
         "us-central1-docker.pkg.dev/myproj/repo/img:v1",
     )
-    assert hosts == ["us-central1-docker.pkg.dev"]
+    assert hosts == [
+        "us-central1-docker.pkg.dev", "storage.googleapis.com",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -501,3 +503,34 @@ def test_client_refuses_registry_resolving_to_nat64_metadata(monkeypatch):
     with pytest.raises(RegistryError,
                        match="rebinding|not globally routable"):
         client.resolve_digest(ref)
+
+
+# ---------------------------------------------------------------------------
+# Region-sharded CDN families
+# ---------------------------------------------------------------------------
+
+
+def test_mcr_family_includes_data_cdn_pattern():
+    """MCR blobs redirect to region-prefixed data endpoints; the
+    region follows the CLIENT's location, so the family carries the
+    documented suffix pattern rather than an unmaintainable region
+    enumeration."""
+    hosts = registry_hosts_for("mcr.microsoft.com/powershell:7.4")
+    assert hosts == ["mcr.microsoft.com", "*.data.mcr.microsoft.com"]
+
+
+def test_mcr_pattern_is_curated():
+    from core.oci.registry_hosts import KNOWN_CDN_SUFFIX_PATTERNS
+    assert "*.data.mcr.microsoft.com" in KNOWN_CDN_SUFFIX_PATTERNS
+
+
+def test_gcr_families_include_gcs_blob_host():
+    assert registry_hosts_for("gcr.io/istio-release/pilot:1.4.0") == [
+        "gcr.io", "storage.googleapis.com",
+    ]
+    assert registry_hosts_for("k8s.gcr.io/pause:3.1") == [
+        "k8s.gcr.io", "storage.googleapis.com",
+    ]
+    assert registry_hosts_for(
+        "us-docker.pkg.dev/proj/repo/img:1",
+    ) == ["us-docker.pkg.dev", "storage.googleapis.com"]

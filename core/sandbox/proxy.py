@@ -927,6 +927,23 @@ def _parse_no_proxy(value: str | None) -> list:
     return patterns
 
 
+def _host_matches_allowlist(host: str, entries) -> bool:
+    """Exact-or-suffix-pattern allowlist membership (host lowercased
+    by the caller; entries lowercased at insertion).
+
+    A ``*.``-prefixed entry matches any host ending with the entry's
+    remainder — which keeps the leading dot, so the match is
+    label-boundary safe and the bare suffix host itself is NOT
+    matched (that host must be allowlisted explicitly if wanted).
+    """
+    if host in entries:
+        return True
+    return any(
+        e.startswith("*.") and host.endswith(e[1:])
+        for e in entries
+    )
+
+
 def _host_in_no_proxy(host: str, patterns: list) -> bool:
     """Check if a host matches any NO_PROXY pattern (suffix match)."""
     h = host.lower()
@@ -1712,9 +1729,21 @@ class EgressProxy:
                 self._unix_tasks.discard(task)
 
     def is_host_allowed(self, host: str) -> bool:
-        """Check if a host is in the allowlist (case-insensitive)."""
+        """Check if a host is in the allowlist (case-insensitive).
+
+        Entries with a leading ``*.`` are suffix patterns for
+        region-sharded registry CDNs (the only current producer is
+        the curated OCI registry-family table via
+        ``KNOWN_CDN_SUFFIX_PATTERNS`` — repo-derived host values are
+        grammar-validated and cannot carry ``*``). Matching is
+        label-boundary safe: ``*.data.mcr.microsoft.com`` admits
+        ``centralus.data.mcr.microsoft.com`` but neither the bare
+        suffix host nor ``evildata.mcr.microsoft.com``.
+        """
         with self._hosts_lock:
-            return host.lower() in self._allowed_hosts
+            return _host_matches_allowlist(
+                host.lower(), self._allowed_hosts,
+            )
 
     def register_sandbox(self, caller_label: str | None = None,
                          lane_key: "str | int | None" = None,
@@ -2788,7 +2817,9 @@ class EgressProxy:
         _lane_blocked = (
             lane is not None
             and lane.allowed_hosts is not None
-            and host.lower() not in lane.allowed_hosts
+            and not _host_matches_allowlist(
+                host.lower(), lane.allowed_hosts,
+            )
         )
         if not self.is_host_allowed(host) or _lane_blocked:
             _reason = ("host not in lane allowlist" if _lane_blocked

@@ -331,3 +331,16 @@ class TestComposeProxyHostsRepoDerived:
             compose_proxy_hosts(None)
         assert not [r for r in caplog.records
                     if "repo-derived hosts added" in r.getMessage()]
+
+
+def test_repo_host_validator_accepts_only_curated_patterns() -> None:
+    """A ``*.`` entry passes only when it is verbatim in the curated
+    CDN-pattern set — hostile manifests cannot mint wildcards."""
+    from packages.sca import _normalise_repo_host
+    assert (_normalise_repo_host("*.data.mcr.microsoft.com")
+            == "*.data.mcr.microsoft.com")
+    assert _normalise_repo_host("*.DATA.mcr.microsoft.com") \
+        == "*.data.mcr.microsoft.com"
+    assert _normalise_repo_host("*.evil.example") is None
+    assert _normalise_repo_host("*.com") is None
+    assert _normalise_repo_host("*") is None

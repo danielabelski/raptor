@@ -242,6 +242,16 @@ def _normalise_repo_host(raw: object) -> str | None:
         return None
     if any(c in raw for c in "/@\\?#,"):
         return None
+    # Suffix patterns (region-sharded registry CDNs) pass ONLY when
+    # they appear verbatim in the curated family table — a hostile
+    # manifest value like ``*.com`` or ``*.evil.example`` must never
+    # mint a wildcard. Image-ref / chart-URL grammars can't produce
+    # ``*`` anyway; this keeps that structural even if a new host
+    # source is wired in later.
+    if raw.startswith("*."):
+        from core.oci.registry_hosts import KNOWN_CDN_SUFFIX_PATTERNS
+        low = raw.lower()
+        return low if low in KNOWN_CDN_SUFFIX_PATTERNS else None
     host, sep, port = raw.partition(":")
     if sep and port not in _ALLOWED_HOST_PORTS \
             and port not in _operator_extra_ports():

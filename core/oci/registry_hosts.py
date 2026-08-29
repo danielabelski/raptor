@@ -339,11 +339,26 @@ _REGISTRY_FAMILIES: list[tuple[Callable[[str], bool], list[str]]] = [
     (lambda r: r == "quay.io",
      ["quay.io", "cdn01.quay.io", "cdn02.quay.io", "cdn03.quay.io"]),
 
-    # Google Container Registry / Artifact Registry.
-    (lambda r: r in {"gcr.io", "us.gcr.io", "eu.gcr.io", "asia.gcr.io"},
-     [None]),     # fill the registry-name as the host (see below)
+    # Microsoft Container Registry — manifests on mcr.microsoft.com,
+    # layer blobs redirected to region-prefixed data endpoints
+    # (observed: centralus.data.mcr.microsoft.com; Microsoft's client
+    # firewall guidance documents the family as
+    # *.data.mcr.microsoft.com). The region prefix follows the
+    # CLIENT's Azure geography, so it cannot be enumerated statically
+    # — this is the one family that needs a suffix pattern. Patterns
+    # are only honoured when they appear in
+    # KNOWN_CDN_SUFFIX_PATTERNS (curated here, never target-derived).
+    (lambda r: r == "mcr.microsoft.com",
+     ["mcr.microsoft.com", "*.data.mcr.microsoft.com"]),
+
+    # Google Container Registry / Artifact Registry — layer blobs
+    # redirect to Google Cloud Storage (documented GCR behaviour;
+    # istio-era k8s.gcr.io images share it).
+    (lambda r: r in {"gcr.io", "us.gcr.io", "eu.gcr.io", "asia.gcr.io",
+                     "k8s.gcr.io"},
+     [None, "storage.googleapis.com"]),
     (lambda r: r.endswith("-docker.pkg.dev"),
-     [None]),     # Artifact Registry: <region>-docker.pkg.dev
+     [None, "storage.googleapis.com"]),
 
     # Azure Container Registry — ``<name>.azurecr.io``.
     (lambda r: r.endswith(".azurecr.io"), [None]),
@@ -362,6 +377,17 @@ _REGISTRY_FAMILIES: list[tuple[Callable[[str], bool], list[str]]] = [
     (lambda r: r == "docker.elastic.co",
      ["docker.elastic.co", "docker-auth.elastic.co"]),
 ]
+
+
+# Suffix patterns the egress allowlist honours. Curated HERE only:
+# consumers that validate repo-derived host values accept a "*."
+# entry solely when it appears verbatim in this set, so a hostile
+# scanned tree (Chart.yaml repository URLs, FROM refs) can never mint
+# its own wildcard — image-ref and chart-host grammars reject "*"
+# anyway, and the validator's allowlist makes that structural.
+KNOWN_CDN_SUFFIX_PATTERNS = frozenset({
+    "*.data.mcr.microsoft.com",
+})
 
 
 def registry_hosts_for(image: str | ImageRef) -> list[str]:
@@ -388,10 +414,11 @@ def registry_hosts_for(image: str | ImageRef) -> list[str]:
         matched_family = True
         if hosts == []:                            # ECR private special-case
             out.extend(_aws_ecr_hosts(registry))
-        elif hosts == [None]:                      # registry name IS the host
-            out.append(registry)
         else:
-            out.extend(hosts)
+            # ``None`` is the registry-name placeholder — families
+            # whose registry is its own host can still add fixed
+            # side hosts (e.g. the GCS blob host next to gcr.io).
+            out.extend(registry if h is None else h for h in hosts)
         break
 
     if not matched_family:
@@ -466,6 +493,7 @@ def api_endpoint_for(registry: str) -> str:
 
 
 __all__ = [
+    "KNOWN_CDN_SUFFIX_PATTERNS",
     "api_endpoint_for",
     "registry_hosts_for",
     "validate_resolved_registry_addresses",

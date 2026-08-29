@@ -4533,6 +4533,44 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                             "require_sanitisation= to accept "
                             "host-real identity surfaces on degrade.",
                         )
+                    # Landlock recheck (fail-closed). The construction-
+                    # time "confinement requested but Landlock
+                    # unavailable" refusal only runs when the mount
+                    # backend was ruled out at setup (`not use_mount`).
+                    # A call that CHOSE mount-ns and was then demoted
+                    # here lands on the Landlock-only subprocess path,
+                    # where the requested filesystem/TCP policy is
+                    # enforced by Landlock ALONE — and _make_preexec_fn
+                    # silently skips its Landlock arm when the kernel
+                    # lacks it. Without this recheck the demoted call
+                    # ran to completion with NO confinement at all
+                    # (rc=0, host /tmp writable, target not read-only)
+                    # while the caller had explicitly requested
+                    # target/output/allowed_tcp_ports/restrict_reads.
+                    # Mirrors the construction-time gate: same policy
+                    # kwargs, same refusal, per-call.
+                    if ((target or output or allowed_tcp_ports
+                            or restrict_reads)
+                            and not check_landlock_available()):
+                        from .errors import SandboxSetupError
+                        _demote_why = (
+                            _mount_ns_degraded or _b_fallback_reason
+                            or "pass_fds= demoted this call from the "
+                               "mount-ns backend")
+                        raise SandboxSetupError(
+                            "sandbox: this call was demoted from the "
+                            f"mount-ns backend ({_demote_why}) and "
+                            "Landlock is unavailable on this kernel — "
+                            "the Landlock-only path would enforce NONE "
+                            "of the requested target/output/"
+                            "allowed_tcp_ports/restrict_reads policy.",
+                            "fix the demotion cause so the mount "
+                            "namespace can enforce the policy, run on "
+                            "a kernel with Landlock (>= 5.13), or drop "
+                            "the confinement kwargs to explicitly "
+                            "accept an unconfined run. RAPTOR will not "
+                            "silently downgrade for you.",
+                        )
                     if restrict_reads and not exclude_tmp_baseline:
                         import tempfile as _tempfile_dem
                         _demoted_scratch = _tempfile_dem.mkdtemp(

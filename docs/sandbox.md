@@ -143,7 +143,11 @@ outside the bind tree, and callers can opt tool directories in
 `python_runtime_tool_paths()` auto-discovering the running Python's
 runtime roots for Python tools). If a bind set turns out insufficient,
 the call automatically retries at Landlock-only and caches the result
-for the rest of the process.
+for the rest of the process — provided Landlock can actually enforce
+the call's declared policy: on a kernel without Landlock, a demoted
+call that requested target/output/allowed_tcp_ports/restrict_reads
+refuses (`SandboxSetupError`) instead of retrying, because the
+Landlock-only path would enforce none of it.
 
 Declaring a directory via `tool_paths` is also how `$HOME`-resident
 toolchains stay runnable: the sandboxed child's environment scrub

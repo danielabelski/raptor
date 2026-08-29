@@ -339,5 +339,113 @@ class TestTargetRemountRoFailClosed(_Base):
         self.assertNotIn("ALIVE", r.stdout)
 
 
+class TestDemotionLandlockRecheck(_Base):
+    """A per-call mount-ns demotion on a Landlock-less kernel must
+    refuse, not run unconfined.
+
+    The construction-time "confinement requested but Landlock
+    unavailable" refusal only fires when the mount backend was ruled
+    out at setup. A call that chose mount-ns and was then demoted
+    (pass_fds= kwarg, a mid-setup spawn error, an M/X setup status)
+    lands on the Landlock-only path — where every byte of the requested
+    target/output/allowed_tcp_ports/restrict_reads policy is enforced
+    by Landlock alone, and the preexec silently skips its Landlock arm
+    when the kernel lacks it. Pre-fix the demoted call returned rc=0
+    with NO filesystem or TCP confinement at all.
+    """
+
+    def _devnull_fd(self):
+        fd = os.open("/dev/null", os.O_RDONLY)
+        self.addCleanup(os.close, fd)
+        return fd
+
+    def _patch_landlock_unavailable(self):
+        from unittest.mock import patch
+
+        import core.sandbox.landlock as _ll
+        return patch.object(_ll, "check_landlock_available",
+                            return_value=False)
+
+    def _sandbox_run_or_skip(self, **sandbox_kwargs):
+        """Enter a mount-backend sandbox context, or skip.
+
+        The demotion chokepoint under test only exists when the context
+        actually chose the mount backend. On hosts where it cannot
+        engage (no unprivileged userns: the construction-time gates own
+        the refusal instead) or where a probe run cannot complete (no
+        Landlock: the spawn child fails its install loudly), these
+        tests have nothing to exercise — skip with the reason rather
+        than asserting against whichever OTHER gate fired first.
+        block_network=False keeps the network-deny gates out of the
+        picture entirely.
+        """
+        from core.sandbox import sandbox
+        from core.sandbox.errors import SandboxSetupError
+        ctx = sandbox(block_network=False, target=self.tgt,
+                      output=self.out, **sandbox_kwargs)
+        try:
+            run = ctx.__enter__()
+        except SandboxSetupError as exc:
+            self.skipTest(f"sandbox cannot engage here: {exc}")
+        self.addCleanup(ctx.__exit__, None, None, None)
+        try:
+            probe = run(["true"], capture_output=True, timeout=30)
+        except SandboxSetupError as exc:
+            self.skipTest(f"probe run cannot engage here: {exc}")
+        if not (probe.returncode == 0
+                and (getattr(probe, "sandbox_info", None) or {})
+                .get("mount_ns_active")):
+            self.skipTest("mount backend not engaging on this host")
+        return run
+
+    def test_pass_fds_demotion_without_landlock_refuses(self):
+        from core.sandbox.errors import SandboxSetupError
+        run = self._sandbox_run_or_skip()
+        fd = self._devnull_fd()
+        with self._patch_landlock_unavailable():
+            with self.assertRaises(SandboxSetupError) as cm:
+                run(["true"], pass_fds=(fd,), capture_output=True,
+                    timeout=30)
+        self.assertIn("Landlock is unavailable", str(cm.exception))
+        self.assertIn("demoted", str(cm.exception))
+
+    def test_restrict_reads_demotion_without_landlock_refuses(self):
+        from core.sandbox.errors import SandboxSetupError
+        run = self._sandbox_run_or_skip(restrict_reads=True)
+        fd = self._devnull_fd()
+        with self._patch_landlock_unavailable():
+            with self.assertRaises(SandboxSetupError):
+                run(["true"], pass_fds=(fd,), capture_output=True,
+                    timeout=30)
+
+    def test_spawn_error_demotion_without_landlock_refuses(self):
+        # A mid-setup spawn failure rides the degradation ladder to the
+        # Landlock-only path — the recheck must fire there too.
+        from unittest.mock import patch
+
+        from core.sandbox import _spawn
+        from core.sandbox.errors import SandboxSetupError
+        run = self._sandbox_run_or_skip()
+        with self._patch_landlock_unavailable(), \
+                patch.object(_spawn, "run_sandboxed",
+                             side_effect=RuntimeError(
+                                 "forced spawn setup failure")):
+            with self.assertRaises(SandboxSetupError) as cm:
+                run(["true"], capture_output=True, timeout=30)
+        self.assertIn("Landlock is unavailable", str(cm.exception))
+
+    def test_demotion_with_landlock_still_degrades(self):
+        # Control: with Landlock genuinely available the demoted lane
+        # keeps its designed graceful-degradation behaviour.
+        from core.sandbox.landlock import check_landlock_available
+        if not check_landlock_available():
+            self.skipTest("Landlock unavailable")
+        run = self._sandbox_run_or_skip()
+        fd = self._devnull_fd()
+        r = run(["true"], pass_fds=(fd,), capture_output=True,
+                timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr[-300:])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -55,12 +55,14 @@ Graceful degrade:
 
 from __future__ import annotations
 
+import array
 import contextlib
 import errno
 import logging
 import os
 import platform
 import signal
+import socket as _socket_mod
 import subprocess
 import sys
 import threading
@@ -72,6 +74,7 @@ from typing import TYPE_CHECKING
 
 from . import _pathpin, state
 from ._fork_safe_warn import warn_post_fork
+from ._unix_scope import UnixScopeSupervisor as _UnixScopeSupervisor
 from .landlock import _make_landlock_preexec
 from .mount_ns import _ESTALE as _PIN_TAMPER_ERRNO
 from .mount_ns import setup_mount_ns
@@ -1669,7 +1672,6 @@ def run_sandboxed(
         if _allow_unix and seccomp_profile and not _audit_engaged:
             from ._unix_scope import probe_unix_scope
             if probe_unix_scope():
-                import socket as _socket_mod
                 (_unix_scope_parent_sock,
                  _unix_scope_child_sock) = _socket_mod.socketpair()
             else:
@@ -2699,8 +2701,15 @@ def run_sandboxed(
         _unix_scope_child_sock.close()
 
         def _unix_scope_receiver() -> None:
-            import array as _array
-            import socket as _socket_mod2
+            # array/socket are module-level imports — a lazy import in
+            # this daemon thread is the same hazard class as the spawn
+            # child's former post-fork imports: it races the import
+            # machinery against concurrent forks and fails outright in
+            # import-starved processes, killing the supervisor before
+            # it ever receives the notify fd (the child's NOTIFY filter
+            # then sits unserviced — fail-closed but undiagnosed).
+            _array = array
+            _socket_mod2 = _socket_mod
             sp = _unix_scope_parent_sock
             try:
                 sp.settimeout(120)
@@ -2751,7 +2760,6 @@ def run_sandboxed(
                         "arrived with the notify fd — pathname "
                         "AF_UNIX connects will be limited to the "
                         "allowlisted instance sockets (fail closed).")
-                from ._unix_scope import UnixScopeSupervisor
                 _allowed = [p for p in ([proxy_unix_socket]
                                         + [b[1] for b in
                                            (extra_unix_bridges or [])])
@@ -2763,7 +2771,7 @@ def run_sandboxed(
                 # re-apply the declared TCP port policy itself, and may
                 # treat abstract names as netns-scoped only when this
                 # run actually unshared a netns for the child.
-                sup = UnixScopeSupervisor(
+                sup = _UnixScopeSupervisor(
                     notify_fd, allowed_socket_paths=_allowed,
                     label=f"spawn-{child_pid}",
                     allowed_tcp_ports=(list(allowed_tcp_ports)
@@ -3421,9 +3429,8 @@ def run_sandboxed(
         if _unix_scope_parent_sock is not None:
             # shutdown() BEFORE close(): it wakes a receiver thread
             # still blocked in recvmsg (close alone does not).
-            import socket as _socket_mod3
             with contextlib.suppress(OSError):
-                _unix_scope_parent_sock.shutdown(_socket_mod3.SHUT_RDWR)
+                _unix_scope_parent_sock.shutdown(_socket_mod.SHUT_RDWR)
             with contextlib.suppress(OSError):
                 _unix_scope_parent_sock.close()
         # Audit-mode tracer cleanup: target has exited (or been killed

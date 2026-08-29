@@ -15,10 +15,12 @@ so processes fail gracefully — connect() returns -1, caller can handle it,
 and _check_blocked can suggest --sandbox debug / network-only if needed.
 """
 
+import array
 import ctypes
 import ctypes.util
 import logging
 import os
+import socket
 
 from . import state
 
@@ -1151,8 +1153,22 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
                                      b" -- refusing to exec\n")
                         os._exit(126)
                     try:
-                        import array as _array
-                        import socket as _socket
+                        # array/socket are imported at MODULE level —
+                        # deliberately not here. This block runs in the
+                        # post-fork spawn child, and `import` post-fork
+                        # is doubly unsafe: (a) the parent is threaded
+                        # (unix-scope receiver, proxy lanes), so import
+                        # machinery state can be mid-flight at fork;
+                        # (b) by this point the child has pivoted into
+                        # the sandbox root — an interpreter whose
+                        # stdlib lives OUTSIDE the bound system dirs
+                        # (hostedtoolcache/uv-managed builds under
+                        # /opt or $HOME) cannot load a not-yet-cached
+                        # module from the filesystem at all, and the
+                        # resulting ImportError aborted the run as an
+                        # anonymous "seccomp enforcement failed".
+                        _array = array
+                        _socket = socket
                         # Pin the private-tmpfs device ids NOW — after
                         # setup_mount_ns (step 9) and before the target
                         # ever runs — and ship them with the notify fd.
@@ -1200,13 +1216,22 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
                     os._exit(126)
             finally:
                 lib.seccomp_release(ctx)
-        except BaseException:  # noqa: BLE001 — fail-closed: abort child on ANY install error
+        except BaseException as _exc:  # noqa: BLE001 — fail-closed: abort child on ANY install error
             # Fail-closed on any unexpected exception -- same reason.
             # BaseException so SystemExit / KeyboardInterrupt also
             # route through the safe-exit path rather than letting
-            # the child continue with no seccomp.
-            _os_write(2, b"sandbox: seccomp enforcement failed -- "
-                         b"refusing to exec without filter\n")
+            # the child continue with no seccomp. Name the exception in
+            # the one-line reason: this catch-all used to swallow it,
+            # which made a runner-only install failure undiagnosable
+            # from CI logs (the child is post-fork — stderr is the only
+            # channel out). repr() only — no traceback machinery in a
+            # dying fork child.
+            try:
+                _detail = repr(_exc)[:200].encode("utf-8", "replace")
+            except BaseException:  # noqa: BLE001 — diagnostics must never mask the fail-closed exit
+                _detail = b"<unprintable>"
+            _os_write(2, b"sandbox: seccomp enforcement failed (%s) -- "
+                         b"refusing to exec without filter\n" % _detail)
             os._exit(126)
 
     return _apply_seccomp

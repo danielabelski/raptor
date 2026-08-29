@@ -294,17 +294,31 @@ def validate_resolved_registry_addresses(registry: str) -> None:
 # registry (e.g. "docker.io" or "1234.dkr.ecr.us-east-1.amazonaws.com")
 # and returns True if this family applies. First match wins.
 _REGISTRY_FAMILIES: list[tuple[Callable[[str], bool], list[str]]] = [
-    # Docker Hub: manifests on registry-1, tokens on auth.
+    # Docker Hub: manifests on registry-1, tokens on auth, layer
+    # blobs 307-redirected to the CDN (the pre-signed query string
+    # is the authorisation; the registry credential never goes
+    # there). Without the CDN host on the egress allowlist every
+    # layer fetch dies at the proxy chokepoint even though the
+    # client follows the redirect correctly.
+    # Hub has served layers from both a CloudFront and a Cloudflare
+    # distribution (observed 307 targets); allow both — each is
+    # Docker-operated and still passes the resolved-address gate at
+    # request time.
     (lambda r: r == "docker.io",
-     ["registry-1.docker.io", "auth.docker.io"]),
+     ["registry-1.docker.io", "auth.docker.io",
+      "production.cloudfront.docker.com",
+      "production.cloudflare.docker.com"]),
 
-    # GitHub Container Registry: single host, anonymous OK for public.
-    (lambda r: r == "ghcr.io", ["ghcr.io"]),
+    # GitHub Container Registry: anonymous OK for public; blobs
+    # 307-redirect to the packages CDN.
+    (lambda r: r == "ghcr.io",
+     ["ghcr.io", "pkg-containers.githubusercontent.com"]),
 
     # GitHub Packages (legacy npm/maven, not OCI but operators
     # sometimes write ``docker.pkg.github.com/...``).
     (lambda r: r == "docker.pkg.github.com",
-     ["docker.pkg.github.com"]),
+     ["docker.pkg.github.com",
+      "pkg-containers.githubusercontent.com"]),
 
     # AWS ECR private — host shape ``<acct>.dkr.ecr.<region>.amazonaws.com``.
     # ECR auth uses STS-issued tokens; the host itself plus the STS
@@ -321,8 +335,9 @@ _REGISTRY_FAMILIES: list[tuple[Callable[[str], bool], list[str]]] = [
     # AWS ECR public — ``public.ecr.aws``.
     (lambda r: r == "public.ecr.aws", ["public.ecr.aws"]),
 
-    # Quay.io.
-    (lambda r: r == "quay.io", ["quay.io"]),
+    # Quay.io — blob GETs redirect to its cdn0N edge hosts.
+    (lambda r: r == "quay.io",
+     ["quay.io", "cdn01.quay.io", "cdn02.quay.io", "cdn03.quay.io"]),
 
     # Google Container Registry / Artifact Registry.
     (lambda r: r in {"gcr.io", "us.gcr.io", "eu.gcr.io", "asia.gcr.io"},

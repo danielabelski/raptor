@@ -20,19 +20,29 @@ from core.oci.registry_hosts import registry_hosts_for
 # ---------------------------------------------------------------------------
 
 
-def test_docker_hub_returns_two_hosts():
+def test_docker_hub_returns_manifest_auth_and_cdn_hosts():
     """Docker Hub splits manifests + auth across two hosts. Both
-    must be on the allowlist or the bearer-token dance fails."""
+    must be on the allowlist or the bearer-token dance fails; the
+    CDN host must be on it or every layer blob's 307 redirect dies
+    at the egress chokepoint."""
     # Set-equality (rather than ``"x" in hosts``) because the
     # latter pattern trips CodeQL's incomplete-URL-substring
     # heuristic on string-shaped hostnames.
     hosts = registry_hosts_for("python:3.11")
-    assert set(hosts) == {"registry-1.docker.io", "auth.docker.io"}
+    assert set(hosts) == {
+        "registry-1.docker.io", "auth.docker.io",
+        "production.cloudfront.docker.com",
+        "production.cloudflare.docker.com",
+    }
 
 
 def test_docker_hub_works_with_explicit_registry_prefix():
     hosts = registry_hosts_for("docker.io/library/alpine:3")
-    assert set(hosts) == {"registry-1.docker.io", "auth.docker.io"}
+    assert set(hosts) == {
+        "registry-1.docker.io", "auth.docker.io",
+        "production.cloudfront.docker.com",
+        "production.cloudflare.docker.com",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -40,12 +50,12 @@ def test_docker_hub_works_with_explicit_registry_prefix():
 # ---------------------------------------------------------------------------
 
 
-def test_ghcr_single_host():
-    """ghcr.io serves manifests + auth from one host. A single-host
-    family stays single-host."""
+def test_ghcr_hosts_include_blob_cdn():
+    """ghcr.io serves manifests + auth from one host; layer blobs
+    307-redirect to the packages CDN."""
     assert registry_hosts_for(
         "ghcr.io/anthropics/claude-code:0.1",
-    ) == ["ghcr.io"]
+    ) == ["ghcr.io", "pkg-containers.githubusercontent.com"]
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +188,9 @@ def test_accepts_imageref_object_too():
     :class:`ImageRef` so consumers that already hold the parsed form
     don't pay double-parsing cost."""
     parsed = parse_image_ref("ghcr.io/x/y:1")
-    assert registry_hosts_for(parsed) == ["ghcr.io"]
+    assert registry_hosts_for(parsed) == [
+        "ghcr.io", "pkg-containers.githubusercontent.com",
+    ]
 
 
 def test_dedup_preserves_order():

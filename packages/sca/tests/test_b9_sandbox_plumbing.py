@@ -32,11 +32,13 @@ def test_dockerhub_short_form_yields_two_hosts(tmp_path):
     assert "auth.docker.io" in hosts
 
 
-def test_ghcr_single_host(tmp_path):
+def test_ghcr_hosts_include_blob_cdn(tmp_path):
     (tmp_path / "Dockerfile").write_text(
         "FROM ghcr.io/anthropics/claude-code:0.1\n"
     )
-    assert dockerfile_registry_hosts(tmp_path) == ["ghcr.io"]
+    assert dockerfile_registry_hosts(tmp_path) == [
+        "ghcr.io", "pkg-containers.githubusercontent.com",
+    ]
 
 
 def test_multiple_dockerfiles_unioned(tmp_path):
@@ -78,7 +80,11 @@ def test_intra_stage_reuse_skipped(tmp_path):
     )
     hosts = set(dockerfile_registry_hosts(tmp_path))
     # Only python:3.11's hosts; no host added for the bare ``base``.
-    assert hosts == {"registry-1.docker.io", "auth.docker.io"}
+    assert hosts == {
+        "registry-1.docker.io", "auth.docker.io",
+        "production.cloudfront.docker.com",
+        "production.cloudflare.docker.com",
+    }
 
 
 def test_excluded_dirs_skipped(tmp_path):
@@ -100,7 +106,9 @@ def test_unparseable_image_ref_skipped_silently(tmp_path):
     (tmp_path / "Dockerfile.good").write_text("FROM ghcr.io/x/y:1\n")
     hosts = set(dockerfile_registry_hosts(tmp_path))
     # Bad Dockerfile contributes nothing; good one still does.
-    assert hosts == {"ghcr.io"}
+    assert hosts == {
+        "ghcr.io", "pkg-containers.githubusercontent.com",
+    }
 
 
 def test_dedup_across_multiple_dockerfiles_with_same_registry(tmp_path):
@@ -111,7 +119,11 @@ def test_dedup_across_multiple_dockerfiles_with_same_registry(tmp_path):
     (tmp_path / "Dockerfile.c").write_text("FROM alpine:3.18\n")
     hosts = dockerfile_registry_hosts(tmp_path)
     assert hosts == sorted(set(hosts))           # deduplicated
-    assert set(hosts) == {"registry-1.docker.io", "auth.docker.io"}
+    assert set(hosts) == {
+        "registry-1.docker.io", "auth.docker.io",
+        "production.cloudfront.docker.com",
+        "production.cloudflare.docker.com",
+    }
 
 
 def test_output_is_sorted(tmp_path):

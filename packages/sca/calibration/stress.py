@@ -137,6 +137,40 @@ class StressDiff:
     current: StressResult | None = None
 
 
+def configure_sweep_logging(debug_log: Path) -> None:
+    """Console + debug-file logging for a sweep driver process.
+
+    Exactly ONE console handler (RAPTOR's canonical
+    ``[LEVEL] message`` form, INFO) plus one DEBUG file handler.
+
+    The driver must NOT call ``logging.basicConfig`` itself: the
+    pipeline import happens lazily per sample (``_scan_one``), and
+    RAPTOR's logging bootstrap attaches its own root console handler
+    as an import side effect. A driver-installed bare handler then
+    coexists with it — every record printed twice (bare + prefixed),
+    which is exactly the duplication a stress-sweep run exhibited on
+    every line of its log. Attaching RAPTOR's handler EAGERLY here
+    (its sentinel guard makes the later import a no-op) keeps the
+    console single-voiced and level-prefixed.
+    """
+    import logging
+
+    from core.logging import get_logger
+
+    get_logger()   # attaches the canonical [LEVEL] console handler
+    root = logging.getLogger()
+    # The file handler wants everything; the console handler stays
+    # at INFO (set by the bootstrap).
+    root.setLevel(logging.DEBUG)
+    debug_log.parent.mkdir(parents=True, exist_ok=True)
+    fh = logging.FileHandler(debug_log, encoding="utf-8")
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)s %(name)s: %(message)s",
+    ))
+    root.addHandler(fh)
+
+
 def run_stress_sweep(
     *,
     samples: Sequence[ProjectSample] | None = None,
@@ -775,7 +809,8 @@ __all__ = [
     "DEFAULT_ELAPSED_FAIL_X", "DEFAULT_ELAPSED_WARN_X",
     "DEFAULT_VULN_FAIL_PCT", "DEFAULT_VULN_WARN_PCT",
     "StressDiff", "StressResult",
-    "compare_to_baseline", "confirm_elapsed_regressions",
+    "compare_to_baseline", "configure_sweep_logging",
+    "confirm_elapsed_regressions",
     "diffs_to_exit_code",
     "render_diffs", "run_stress_sweep", "write_baseline",
 ]

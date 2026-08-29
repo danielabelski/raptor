@@ -100,27 +100,20 @@ jobs:
           from pathlib import Path
           from packages.sca.calibration.project_samples import PROJECT_SAMPLES
           from packages.sca.calibration.stress import (
-              compare_to_baseline, confirm_elapsed_regressions,
+              compare_to_baseline, configure_sweep_logging,
+              confirm_elapsed_regressions,
               diffs_to_exit_code, render_diffs,
               run_stress_sweep, write_baseline,
           )
 
-          import logging
-          debug_log = Path.home() / ".raptor/cache/sca/stress/debug.log"
-          debug_log.parent.mkdir(parents=True, exist_ok=True)
-          logging.basicConfig(
-              level=logging.DEBUG, format="%(message)s",
+          # One console handler ([LEVEL] form) + one DEBUG file
+          # handler. Do NOT basicConfig here — RAPTOR's logging
+          # bootstrap attaches its own root console handler at first
+          # pipeline import, and a driver-installed bare handler then
+          # printed every record twice (see configure_sweep_logging).
+          configure_sweep_logging(
+              Path.home() / ".raptor/cache/sca/stress/debug.log",
           )
-          root = logging.getLogger()
-          fh = logging.FileHandler(debug_log, encoding="utf-8")
-          fh.setLevel(logging.DEBUG)
-          fh.setFormatter(logging.Formatter(
-              "%(asctime)s %(levelname)s %(name)s: %(message)s",
-          ))
-          root.addHandler(fh)
-          for h in root.handlers:
-              if isinstance(h, logging.StreamHandler) and h is not fh:
-                  h.setLevel(logging.INFO)
           print(f"running {len(PROJECT_SAMPLES)} samples...", flush=True)
           results = run_stress_sweep(
               samples=PROJECT_SAMPLES,

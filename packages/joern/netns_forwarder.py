@@ -262,9 +262,15 @@ class Forwarder:
             ).start()
 
     def _handle(self, conn: socket.socket) -> None:
-        self._track(conn)
         upstream: socket.socket | None = None
         try:
+            # Inside the try: _track deliberately raises when a racing
+            # stop() already swept the active set (the socket is closed
+            # and refused). Pre-fix that raise escaped this thread as
+            # an unhandled exception — the refusal is a clean outcome,
+            # the same "racing stop() closed a socket under us" class
+            # the except below already documents.
+            self._track(conn)
             upstream = socket.create_connection(
                 self._upstream, timeout=_UPSTREAM_CONNECT_TIMEOUT_S,
             )

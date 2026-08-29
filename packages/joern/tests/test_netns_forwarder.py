@@ -286,6 +286,29 @@ class TestForwarderStop:
                 except OSError:
                     pass
 
+    def test_handle_after_stop_returns_cleanly(self, uds_dir):
+        # The accept loop can hand _handle a connection accepted just
+        # before stop(); _track's deliberate refusal must be a clean
+        # handler exit, not an exception escaping the handler thread
+        # (observed as PytestUnhandledThreadExceptionWarning under
+        # shuffled full runs). Called synchronously so a regression is
+        # a direct test failure instead of a thread-exception warning.
+        upstream = _EchoServer()
+        fwd, _path = _forwarder_to(upstream.port, uds_dir)
+        fwd.stop()
+        upstream.close()
+        a, b = socket.socketpair()
+        try:
+            fwd._handle(a)  # must not raise
+            b.settimeout(2)
+            assert b.recv(1) == b""  # refused socket was closed: EOF
+        finally:
+            for s in (a, b):
+                try:
+                    s.close()
+                except OSError:
+                    pass
+
     def test_stop_closes_inflight_connections(self, uds_dir):
         upstream = _EchoServer()
         fwd, path = _forwarder_to(upstream.port, uds_dir)

@@ -29,6 +29,8 @@ from __future__ import annotations
 
 import importlib
 import multiprocessing as mp
+import shutil
+import tempfile
 import time
 from typing import Any
 
@@ -43,19 +45,62 @@ GRACE_SECONDS = 15.0
 _KILL_GRACE_SECONDS = 5.0
 
 
-def _apply_symex_sandbox() -> None:
-    """Install Landlock: deny filesystem writes + deny TCP connect.
+def _apply_symex_sandbox(private_tmp: str | None = None) -> None:
+    """Install Landlock: deny filesystem writes outside a private
+    per-child temp directory + deny TCP connect.
 
     Best-effort — if Landlock is unavailable (old kernel, container),
     logs a warning and returns. The process isolation (timeout +
     SIGKILL) is the primary defence; Landlock adds defence-in-depth
     against hostile binaries that try to write to disk or phone home.
 
+    The temp-directory write grant is load-bearing, not a
+    convenience: ``import angr`` needs it. pyvex resolves
+    ``tempfile.gettempdir()`` at import time (which PROBES candidate
+    directories by creating a file) and unconditionally writes its
+    ffi-parser cache there when absent. Under a blanket write deny
+    that import raises, the availability guard reports angr as
+    uninstalled, and every isolated primitive — this sandbox's own
+    beneficiaries — degrades to an 'unavailable' result.
+
+    The grant covers only ``private_tmp`` — the empty directory
+    :func:`run_isolated` creates for this child and removes after it
+    exits — never the shared system temp directory: a lifter/solver
+    compromise must not be able to tamper with other same-user temp
+    content. ``tempfile.tempdir`` is pinned to it here, pre-restrict,
+    so pyvex's cache write and any later scratch use land inside the
+    grant (cost: a per-child ffi-cache regeneration, ~0.1s). Writes
+    everywhere else (home, the repo, the analysed binary's tree, the
+    shared temp dir) stay denied, as does outbound TCP.
+
+    If the grant cannot be installed (``private_tmp`` is None or
+    unusable), the restrict is SKIPPED rather than engaged as a
+    blanket deny — a blanket deny disables the very primitives this
+    sandbox protects; hard-kill process isolation remains in force.
+
     Must be called BEFORE importing angr / the target module.
     """
     import ctypes
     import ctypes.util
+    import os
     import platform
+
+    # Pin the process's temp directory to the private grant target
+    # while writes are still allowed, so no later caller (pyvex's
+    # import-time cache write included) probes or writes the shared
+    # system temp dir. Deliberately ABOVE the Landlock gates: the
+    # parent creates and cleans the directory on every host, so the
+    # scratch-goes-to-the-managed-dir behaviour must not depend on
+    # whether Landlock can engage.
+    tmpdir: str | None = None
+    if private_tmp is not None:
+        try:
+            resolved = os.path.realpath(private_tmp)
+            if os.path.isdir(resolved):
+                tmpdir = resolved
+                tempfile.tempdir = resolved
+        except OSError:
+            tmpdir = None
 
     if platform.machine() not in (
         "x86_64", "aarch64", "riscv64", "loongarch64", "s390x",
@@ -63,8 +108,10 @@ def _apply_symex_sandbox() -> None:
         return
 
     SYS_CREATE = 444
+    SYS_ADD_RULE = 445
     SYS_RESTRICT = 446
     PR_SET_NO_NEW_PRIVS = 38
+    RULE_PATH_BENEATH = 1
 
     WRITE_FILE = 1 << 1
     REMOVE_DIR = 1 << 4
@@ -83,6 +130,12 @@ def _apply_symex_sandbox() -> None:
             ("handled_access_fs", ctypes.c_uint64),
             ("handled_access_net", ctypes.c_uint64),
             ("scoped", ctypes.c_uint64),
+        ]
+
+    class PathBeneathAttr(ctypes.Structure):
+        _fields_ = [
+            ("allowed_access", ctypes.c_uint64),
+            ("parent_fd", ctypes.c_int),
         ]
 
     lib_path = ctypes.util.find_library("c")
@@ -119,9 +172,44 @@ def _apply_symex_sandbox() -> None:
     if fd < 0:
         return
 
-    # No rules added — every handled access is denied.
+    # One allow rule: write access beneath the private per-child temp
+    # directory (see the docstring — angr's import chain requires
+    # it). If the grant cannot be installed, skip the restrict rather
+    # than engage a ruleset that breaks the primitive this sandbox
+    # protects; hard-kill process isolation remains in force either
+    # way.
+    def _grant_tmpdir_write() -> bool:
+        if tmpdir is None:
+            return False
+        try:
+            dfd = os.open(
+                tmpdir, os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC,
+            )
+        except OSError:
+            return False
+        try:
+            rule = PathBeneathAttr(
+                allowed_access=write_mask, parent_fd=dfd,
+            )
+            ret = libc.syscall(
+                SYS_ADD_RULE, fd, RULE_PATH_BENEATH,
+                ctypes.byref(rule), 0,
+            )
+            return ret == 0
+        finally:
+            os.close(dfd)
+
+    if not _grant_tmpdir_write():
+        os.close(fd)
+        import logging
+        logging.getLogger(__name__).warning(
+            "symex sandbox: temp-dir write grant failed — skipping "
+            "Landlock (process isolation still enforced)",
+        )
+        return
+
+    # Every other handled access is denied.
     libc.prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)
-    import os
     ret = libc.syscall(SYS_RESTRICT, fd, 0)
     os.close(fd)
     if ret < 0:
@@ -131,11 +219,40 @@ def _apply_symex_sandbox() -> None:
         )
 
 
-def _child_entry(conn, module_name: str, func_name: str, kwargs: dict) -> None:
+def _remove_private_tmp(path: str) -> None:
+    """Remove the child's private temp dir after the child exits.
+
+    Defeats permission griefing: a compromised child can leave a
+    mode-0 subdirectory inside its grant, which makes a plain
+    ``rmtree(ignore_errors=True)`` fail silently — the per-call dirs
+    would then accumulate without bound. Restore traversal
+    permissions top-down first (the walk chmods each subdirectory
+    before descending into it), then remove. Never raises.
+    """
+    import os
+    try:
+        for root, dirs, _files in os.walk(path):
+            for name in dirs:
+                try:
+                    os.chmod(os.path.join(root, name), 0o700)
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    shutil.rmtree(path, ignore_errors=True)
+
+
+def _child_entry(
+    conn,
+    module_name: str,
+    func_name: str,
+    kwargs: dict,
+    private_tmp: str | None = None,
+) -> None:
     """Child-side runner. Everything heavyweight imports here."""
     import logging
 
-    _apply_symex_sandbox()
+    _apply_symex_sandbox(private_tmp)
 
     # angr logs an ERROR at import when optional acceleration is
     # missing; that is operator noise, not a result channel.
@@ -170,32 +287,45 @@ def run_isolated(
     """Run ``module_name.func_name(**kwargs)`` in a spawned child with
     a hard kill at ``timeout + GRACE_SECONDS``."""
     t0 = time.monotonic()
-    ctx = mp.get_context("spawn")
-    parent_conn, child_conn = ctx.Pipe(duplex=False)
-    proc = ctx.Process(
-        target=_child_entry,
-        args=(child_conn, module_name, func_name, kwargs),
-        daemon=True,
-    )
-    proc.start()
-    child_conn.close()
+    # The child's entire writable world (see _apply_symex_sandbox).
+    # Created here so the parent can remove it after the child exits
+    # — the sandboxed child cannot unlink a directory that sits in
+    # the shared temp dir, outside its own write grant.
+    private_tmp: str | None
+    try:
+        private_tmp = tempfile.mkdtemp(prefix="raptor-symex-")
+    except OSError:
+        private_tmp = None
+    try:
+        ctx = mp.get_context("spawn")
+        parent_conn, child_conn = ctx.Pipe(duplex=False)
+        proc = ctx.Process(
+            target=_child_entry,
+            args=(child_conn, module_name, func_name, kwargs, private_tmp),
+            daemon=True,
+        )
+        proc.start()
+        child_conn.close()
 
-    budget = timeout + GRACE_SECONDS
-    result: SymbolicResult | None = None
-    if parent_conn.poll(budget):
-        try:
-            result = parent_conn.recv()
-        except (EOFError, OSError):
-            result = None
-    parent_conn.close()
+        budget = timeout + GRACE_SECONDS
+        result: SymbolicResult | None = None
+        if parent_conn.poll(budget):
+            try:
+                result = parent_conn.recv()
+            except (EOFError, OSError):
+                result = None
+        parent_conn.close()
 
-    proc.join(timeout=0.5)
-    if proc.is_alive():
-        proc.terminate()
-        proc.join(timeout=_KILL_GRACE_SECONDS)
+        proc.join(timeout=0.5)
         if proc.is_alive():
-            proc.kill()
+            proc.terminate()
             proc.join(timeout=_KILL_GRACE_SECONDS)
+            if proc.is_alive():
+                proc.kill()
+                proc.join(timeout=_KILL_GRACE_SECONDS)
+    finally:
+        if private_tmp is not None:
+            _remove_private_tmp(private_tmp)
 
     if result is not None:
         return result

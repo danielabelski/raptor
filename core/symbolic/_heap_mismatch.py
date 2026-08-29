@@ -31,9 +31,11 @@ Security
 ~~~~~~~~
 
 - Runs in a spawned child with hard-kill timeout (``_isolate``).
-- Child installs Landlock (read-only: binary + Python/angr libs;
-  no network) before importing angr, confining the VEX lifter and
-  z3 solver against hostile binaries.
+- Child installs Landlock (writes denied outside a private
+  per-child temp directory; no outbound TCP) before importing angr,
+  confining the VEX lifter and z3 solver against hostile binaries.
+  The temp-dir carve-out is what lets angr import at all — see
+  :func:`core.symbolic._isolate._apply_symex_sandbox`.
 - Pointer comparison is SYMBOLIC (``solver.satisfiable``), not
   concretised — a crafted binary cannot evade by making the pointer
   multi-valued.

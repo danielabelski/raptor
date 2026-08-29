@@ -483,8 +483,31 @@ class OsvClient:
         }
         vuln_records: dict[str, Advisory] = {}
         corridor_records: dict[str, OsvRecord] = {}
-        for vid in all_ids:
-            record = self._inner.get_vuln(vid)
+
+        def _hydrated() -> Iterable[tuple[str, OsvRecord | None]]:
+            # Sequential hydration priced one RTT per advisory —
+            # image-derived distro rows routinely reference 1,000+
+            # unique advisories per scan, turning a cold pass 2 into
+            # minutes of wall clock. Parallelise at the same worker
+            # cap as the pass-1 chunk dispatch (4 — keeps the request
+            # rate well inside OSV's posture; the per-host circuit
+            # breaker catches genuine 429 storms). Offline mode is a
+            # pure cache walk — no benefit, keep it sequential.
+            if self._offline or len(all_ids) < 16:
+                for vid in all_ids:
+                    yield vid, self._inner.get_vuln(vid)
+                return
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(
+                max_workers=4, thread_name_prefix="sca-osv-vulns",
+            ) as pool:
+                yield from zip(
+                    all_ids,
+                    pool.map(self._inner.get_vuln, all_ids),
+                    strict=True,
+                )
+
+        for vid, record in _hydrated():
             if record is None:
                 continue
             try:

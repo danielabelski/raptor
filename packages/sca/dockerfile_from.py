@@ -395,17 +395,39 @@ class ImageSbom:
 _OCI_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
+# Extraction-semantics version for the forever-cached per-digest
+# SBOMs. The image bytes behind a digest are immutable, but what WE
+# derive from them is not: package rows changed shape when dpkg/apk
+# extraction moved to source-package names and os-release-resolved
+# ecosystems ("Ubuntu" / "Alpine:vX.Y" instead of blanket "Debian" /
+# "Alpine"). A shared cache carrying pre-change SBOMs served
+# binary-named "Debian" rows for Ubuntu images FOREVER — those rows
+# match nothing in OSV's source-keyed feeds, silently zeroing every
+# affected image's advisories on any host with a warm cache (while
+# fresh-cache hosts saw the true counts — a per-host split that
+# poisoned baseline reconciliation).
+#
+# BUMP THIS whenever layer-extraction semantics change what an
+# ImageSbom contains (parser fields, name canonicalisation, ecosystem
+# resolution). Old entries orphan under the previous key and are
+# reaped by clean-cache; each image re-extracts once.
+_SBOM_EXTRACTION_VERSION = 2
+
+
 def _sbom_cache_key(registry_host: str, digest: str) -> str:
-    """Cache key for a per-digest SBOM, namespaced by registry host.
+    """Cache key for a per-digest SBOM, namespaced by registry host
+    and extraction-semantics version.
 
     Without the namespace, a digest *claimed* by one registry could
     serve cached content when the same digest string is later claimed
     by a different registry — the digest is only content-addressed if
     the content was verified, which the cache layer can't assume.
-    Note: this key shape orphans pre-namespacing cache entries (bare
-    ``<digest>`` keys); those simply re-fetch once.
+    Without the version, semantics changes serve stale-shaped rows
+    forever (see _SBOM_EXTRACTION_VERSION). Note: this key shape
+    orphans pre-namespacing / pre-versioning cache entries; those
+    simply re-fetch once.
     """
-    return f"sbom/{registry_host}/{digest}"
+    return f"sbom/{registry_host}/v{_SBOM_EXTRACTION_VERSION}/{digest}"
 
 
 def fetch_image_sbom(

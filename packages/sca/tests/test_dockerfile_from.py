@@ -912,9 +912,11 @@ def test_valid_digest_cached_under_registry_namespaced_key(
     sbom = fetch_image_sbom(
         "ubuntu:24.04", client=client, disk_cache=cache)
     assert sbom is not None and sbom.packages
-    # Namespaced key present; bare-digest key absent.
+    # Namespaced + versioned key present; bare-digest key absent.
+    from packages.sca.dockerfile_from import _sbom_cache_key
     assert isinstance(
-        cache.get(f"sbom/docker.io/{digest}", ttl_seconds=TTL_FOREVER),
+        cache.get(_sbom_cache_key("docker.io", digest),
+                  ttl_seconds=TTL_FOREVER),
         dict,
     )
     assert cache.get(digest, ttl_seconds=TTL_FOREVER) is None
@@ -926,6 +928,55 @@ def test_sbom_cache_key_distinct_per_registry():
     digest = "sha256:" + "9" * 64
     assert (_sbom_cache_key("docker.io", digest)
             != _sbom_cache_key("ghcr.io", digest))
+
+
+def test_sbom_cache_key_carries_extraction_version():
+    """Forever-cached SBOMs must orphan when extraction semantics
+    change — a warm cache carrying pre-source-name, pre-os-release
+    rows served 'Debian'-labeled binary-named packages for Ubuntu
+    images forever, matching nothing in OSV's source-keyed feeds."""
+    import re
+
+    from packages.sca.dockerfile_from import (
+        _SBOM_EXTRACTION_VERSION,
+        _sbom_cache_key,
+    )
+    digest = "sha256:" + "9" * 64
+    key = _sbom_cache_key("docker.io", digest)
+    assert f"/v{_SBOM_EXTRACTION_VERSION}/" in key
+    assert re.search(r"/v\d+/", key)
+    # The exact pre-versioning key shape must NOT be reachable — old
+    # entries written under it stay orphaned.
+    assert key != f"sbom/docker.io/{digest}"
+
+
+def test_stale_preversion_sbom_entry_is_ignored(tmp_path):
+    """A cache seeded with an old-shape SBOM under the pre-versioning
+    key must be a MISS for current code (fresh extraction), never a
+    hit serving stale-shaped rows."""
+    from core.json.cache import TTL_FOREVER, JsonCache
+
+    from packages.sca.dockerfile_from import fetch_image_sbom
+
+    cache = JsonCache(root=tmp_path)
+    digest = "sha256:" + "9" * 64
+    # Old-shape rows: binary name, blanket-Debian ecosystem.
+    cache.put(f"sbom/docker.io/{digest}", {
+        "image_ref": "ubuntu:24.04", "digest": digest,
+        "packages": [{"ecosystem": "Debian", "name": "libpam-runtime",
+                      "version": "1.1.8"}],
+        "layer_count_scanned": 1,
+    }, ttl_seconds=TTL_FOREVER)
+    cache.put("tag-digest:ubuntu:24.04", digest,
+              ttl_seconds=TTL_FOREVER)
+    manifest, blobs = _dpkg_manifest(digest)
+    client = _make_client(
+        manifests={"24.04": manifest, digest: manifest}, blobs=blobs)
+    sbom = fetch_image_sbom(
+        "ubuntu:24.04", client=client, disk_cache=cache)
+    assert sbom is not None and sbom.packages
+    # Fresh extraction, not the stale rows.
+    assert all(p.name != "libpam-runtime" for p in sbom.packages)
 
 
 # ---------------------------------------------------------------------------

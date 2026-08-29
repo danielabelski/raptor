@@ -271,8 +271,10 @@ def test_disk_cache_populated_after_first_fetch(tmp_path):
     # Cache hit on the registry-namespaced digest key — second-run
     # lookup pre-population.
     from core.json.cache import TTL_FOREVER
+    from packages.sca.dockerfile_from import _sbom_cache_key
     cached = cache.get(
-        "sbom/docker.io/sha256:" + "d" * 64, ttl_seconds=TTL_FOREVER,
+        _sbom_cache_key("docker.io", "sha256:" + "d" * 64),
+        ttl_seconds=TTL_FOREVER,
     )
     assert cached is not None
     assert cached["digest"] == "sha256:" + "d" * 64

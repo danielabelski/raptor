@@ -90,6 +90,16 @@ def test_extract_via_api_accepts_dotted_repo_names(monkeypatch) -> None:
         "cve_diff.diffing.extract_via_api.github_client.get_commit",
         fake_get_commit,
     )
+    # The bundle build also classifies repo shape, whose fetch is
+    # github_client.get_languages — the ONE unmocked leg here made
+    # this test reach the live GitHub API whenever it ran before the
+    # tests that warm the classifier's cache: green-and-fast usually,
+    # a full network timeout under shuffled order (observed 10s and
+    # 20s call phases — straight into the slow-test guard).
+    monkeypatch.setattr(
+        "cve_diff.diffing.extract_via_api.github_client.get_languages",
+        lambda slug: {"JavaScript": 1000},
+    )
     ref = _ref(repo="https://github.com/socketio/engine.io", sha=sha)
     # Should NOT raise — the dotted repo name must round-trip through
     # the slug extractor and reach the API client unchanged.

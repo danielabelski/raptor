@@ -43,7 +43,14 @@ jobs:
   sweep:
     if: github.repository == 'gadievron/raptor' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Base-image layer scanning joined the sweep (blob redirects +
+    # distro matching), and CI runners start cold every week — the
+    # 51-project sweep now runs ~30 min wallclock, and the previous
+    # 30-minute budget canceled a run AFTER the summary printed but
+    # before the step could exit (losing the rc output and skipping
+    # the baseline-refresh step). 60 leaves the same relative
+    # headroom the old budget gave the pre-image-scanning sweep.
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1

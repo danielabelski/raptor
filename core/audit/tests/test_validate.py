@@ -325,6 +325,10 @@ class TestBuildPrompt:
         assert "false positives" in prompt
 
 
+# Dispatch in these two classes is mocked (gate-chain shapes are under
+# test) — the transport kill switch the root conftest sets would fire
+# as the first gate and mask the reasons they pin, so it is cleared.
+@pytest.mark.usefixtures("cc_spawn_machinery_enabled")
 class TestDispatchValidate:
     def test_skipped_without_claude(self, tmp_path, monkeypatch):
         monkeypatch.setattr("shutil.which", lambda _: None)
@@ -380,6 +384,7 @@ class TestDispatchValidate:
         assert "RuntimeError" in postpass.skipped_reason
 
 
+@pytest.mark.usefixtures("cc_spawn_machinery_enabled")
 class TestDispatchGates:
     """Consolidation fixes: the audit handoff shares /agentic's gate
     chain and truncation policy via core.orchestration.skill_dispatch."""

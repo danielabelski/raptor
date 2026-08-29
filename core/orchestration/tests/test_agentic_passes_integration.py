@@ -22,6 +22,12 @@ from core.orchestration.understand_bridge import (
     find_understand_output,
     load_understand_context,
 )
+import pytest
+
+# Dispatch here is stubbed/mocked — pass wiring is under test, so the
+# transport kill switch the root conftest sets is cleared for this
+# module.
+pytestmark = pytest.mark.usefixtures("cc_spawn_machinery_enabled")
 
 # Assume interactive — these tests exercise pass mechanics, not Rule of Two.
 _interactive_patch = None

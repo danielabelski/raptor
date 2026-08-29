@@ -30,6 +30,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+# Dispatch here is stubbed/mocked — pass wiring is under test, so the
+# transport kill switch the root conftest sets is cleared for this
+# module.
+pytestmark = pytest.mark.usefixtures("cc_spawn_machinery_enabled")
+
 
 @pytest.fixture(autouse=True)
 def _isolated_active_project(tmp_path_factory, monkeypatch):

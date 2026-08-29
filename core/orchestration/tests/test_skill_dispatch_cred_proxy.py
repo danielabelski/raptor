@@ -14,6 +14,11 @@ import pytest
 
 import core.orchestration.skill_dispatch as sd
 
+# Dispatch here is stubbed/mocked — pass wiring is under test, so the
+# transport kill switch the root conftest sets is cleared for this
+# module.
+pytestmark = pytest.mark.usefixtures("cc_spawn_machinery_enabled")
+
 
 class TestCredentialModeKnob:
 

@@ -75,6 +75,28 @@ os.environ.setdefault(
     str(Path(_conftest_dir) / ".pytest-no-operator-models.json"),
 )
 
+# The claude CLI transport is the models.json analog for hosts running
+# inside (or alongside) a live claude session: with ``CLAUDECODE`` set
+# or ``claude`` on PATH, ``LLMClient()`` happily selects the
+# claudecode transport, and any test that reaches a real dispatch —
+# observed: run_orchestrator's IRIS refine loop building its
+# "library callers and tests" fallback client — spawns the OPERATOR'S
+# live CLI and spends real model budget as a side effect of running a
+# tier. Live-LLM invocation from tests is explicit opt-in: export
+# RAPTOR_TEST_LIVE_LLM=1 to run deliberately-live tests; everything
+# else gets the spawn-time kill switch (billed claude spawns raise a
+# named error; detection, selection and mock-driven transport-shape
+# tests are unaffected). Subprocesses inherit the switch, so
+# CLI-invoking e2e tests are covered without per-file plumbing.
+# Force-assigned, not setdefault: an ambient RAPTOR_CC_TRANSPORT_
+# DISABLED=0 (the documented spelling for keeping the transport live
+# in production) would otherwise defeat the hermetic default silently.
+# RAPTOR_TEST_LIVE_LLM=1 is the ONE spelling that makes test sessions
+# live; per-module spawn-machinery opt-outs go through the
+# cc_spawn_machinery_enabled fixture below.
+if os.environ.get("RAPTOR_TEST_LIVE_LLM") != "1":
+    os.environ["RAPTOR_CC_TRANSPORT_DISABLED"] = "1"
+
 # Semgrep phones home on any invocation (semgrep.dev version check,
 # anonymous metrics) unless suppressed; tests that shell out to a real
 # semgrep — directly or through libexec — otherwise burn connect
@@ -302,6 +324,19 @@ def _llm_egress_env_hermetic():
             else:
                 _os.environ[k] = v
         _egress._reset_for_tests()
+
+
+@pytest.fixture
+def cc_spawn_machinery_enabled(monkeypatch):
+    """Clear the claude-CLI transport kill switch for tests that
+    exercise the SPAWN MACHINERY itself against test-local fake
+    children (``python -c`` scripts, mocked ``subprocess.run``) — no
+    real ``claude`` is reachable from them. The root conftest sets
+    ``RAPTOR_CC_TRANSPORT_DISABLED`` for every test session unless the
+    operator opts into live LLM tests; files that opt out via this
+    fixture must never dispatch the real CLI (declare fakes in the
+    module docstring)."""
+    monkeypatch.delenv("RAPTOR_CC_TRANSPORT_DISABLED", raising=False)
 
 
 _SESSIONS_DIR_SEQ = _itertools.count()

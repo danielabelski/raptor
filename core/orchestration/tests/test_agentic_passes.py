@@ -6,6 +6,7 @@ routes by argv[0] program name — lifecycle helpers go through
 subprocess.run, claude calls through sandbox_run.
 """
 
+import pytest
 import contextlib
 import json
 import unittest
@@ -19,6 +20,11 @@ from core.orchestration.agentic_passes import (
     run_understand_prepass,
     run_validate_postpass,
 )
+
+# Dispatch here is mocked (run_untrusted_networked patched throughout)
+# — the pass wiring is under test, so the transport kill switch the
+# root conftest sets is cleared for this module.
+pytestmark = pytest.mark.usefixtures("cc_spawn_machinery_enabled")
 
 # proxy_hosts_for_cc_dispatch is provider-aware: on a host whose ambient
 # env selects Bedrock/Vertex/Foundry it returns that cloud's endpoints,

@@ -21,6 +21,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+# Dispatch here is mocked (run_untrusted_networked patched throughout)
+# — the sandbox plumbing is under test, so the transport kill switch
+# the root conftest sets is cleared for this module.
+pytestmark = pytest.mark.usefixtures("cc_spawn_machinery_enabled")
+
 
 @pytest.fixture(autouse=True)
 def _disable_calibrate(monkeypatch):

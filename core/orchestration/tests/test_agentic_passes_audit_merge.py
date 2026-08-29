@@ -23,6 +23,12 @@ from core.orchestration.tests.test_agentic_passes import (
     _make_lifecycle_dispatcher,
     _patch_passes,
 )
+import pytest
+
+# Dispatch here is stubbed/mocked — pass wiring is under test, so the
+# transport kill switch the root conftest sets is cleared for this
+# module.
+pytestmark = pytest.mark.usefixtures("cc_spawn_machinery_enabled")
 
 
 def _audit_finding(n: int = 1, **kw) -> dict:

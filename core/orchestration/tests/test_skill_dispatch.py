@@ -19,6 +19,13 @@ from core.orchestration.skill_dispatch import (
     truncate_findings_by_signal,
 )
 
+import pytest
+
+# Dispatch here is mocked (run_untrusted_networked patched throughout)
+# — the gate/staging logic is under test, so the transport kill switch
+# the root conftest sets is cleared for this module.
+pytestmark = pytest.mark.usefixtures("cc_spawn_machinery_enabled")
+
 _FIRST_PARTY_PROVIDER_ENV = {
     "CLAUDE_CODE_USE_BEDROCK": "",
     "CLAUDE_CODE_USE_VERTEX": "",

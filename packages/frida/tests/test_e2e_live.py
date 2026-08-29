@@ -253,7 +253,8 @@ class TestBbCoverageLive:
     """
 
     @pytest.fixture(scope="class")
-    def sleeper_binary(self, tmp_path_factory):
+    @staticmethod
+    def sleeper_binary(tmp_path_factory):
         build_dir = tmp_path_factory.mktemp("sleeper")
         src = build_dir / "sleeper.c"
         src.write_text(_SLEEPER_C)
@@ -324,7 +325,8 @@ class TestPatchOracleLive:
     Closed."""
 
     @pytest.fixture(scope="class")
-    def patch_pair(self, tmp_path_factory):
+    @staticmethod
+    def patch_pair(tmp_path_factory):
         build_dir = tmp_path_factory.mktemp("patchpair")
         pair = []
         for name, src_text in (("vuln", _PATCH_VULN_C),
@@ -397,7 +399,8 @@ class TestHeapTraceLive:
     plus leak-candidate sites in the summary."""
 
     @pytest.fixture(scope="class")
-    def heap_victim(self, tmp_path_factory):
+    @staticmethod
+    def heap_victim(tmp_path_factory):
         build_dir = tmp_path_factory.mktemp("heapvictim")
         src = build_dir / "victim.c"
         src.write_text(_HEAP_VICTIM_C)

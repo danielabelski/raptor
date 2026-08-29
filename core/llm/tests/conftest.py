@@ -89,3 +89,16 @@ def _scrub_dispatcher_route(monkeypatch):
     on purpose set the var with ``monkeypatch.setenv`` inside the test
     body, which runs after this autouse scrub and wins."""
     monkeypatch.delenv("RAPTOR_LLM_SOCKET", raising=False)
+
+
+@pytest.fixture
+def cc_spawn_machinery_enabled(monkeypatch):
+    """Clear the claude-CLI transport kill switch for tests that
+    exercise the SPAWN MACHINERY itself against test-local fake
+    children (``python -c`` scripts, mocked ``subprocess.run``) — no
+    real ``claude`` is reachable from them. The root conftest sets
+    ``RAPTOR_CC_TRANSPORT_DISABLED`` for every test session unless the
+    operator opts into live LLM tests; files that opt out via this
+    fixture must never dispatch the real CLI (declare fakes in the
+    module docstring)."""
+    monkeypatch.delenv("RAPTOR_CC_TRANSPORT_DISABLED", raising=False)

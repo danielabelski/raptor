@@ -625,6 +625,12 @@ class RaptorConfig:
         "RAPTOR_EF_ENABLE_CACHING", "RAPTOR_EF_ROP_CACHE_SIZE",
         "RAPTOR_EF_MAX_GADGETS", "RAPTOR_EF_VERIFY_FORMAT_N",
         "RAPTOR_EF_VERBOSE",
+        # Pure-refusal transport kill switch (core.llm.cc_adapter):
+        # can only forbid billed claude spawns, never enable anything
+        # — safe for every child, and keeping it makes the
+        # whole-process-tree hermeticity guarantee hold through
+        # get_safe_env() children too.
+        "RAPTOR_CC_TRANSPORT_DISABLED",
     })
 
     # Environment variables that can be exploited for command injection or
@@ -1264,6 +1270,13 @@ class RaptorConfig:
         for name in [k for k in env
                      if k in drop or k.startswith(prefixes)]:
             del env[name]
+        # These children make no LLM calls by contract, but the prefix
+        # strip above also removed the pure-refusal transport kill
+        # switch. Force it ON rather than exempting it: a child that
+        # (buggily) constructed an LLM client would still see claude
+        # on PATH and CLAUDECODE — the switch is the layer that makes
+        # such a bug loud and spend-free instead of live.
+        env["RAPTOR_CC_TRANSPORT_DISABLED"] = "1"
         return env
 
     @staticmethod

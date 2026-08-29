@@ -179,6 +179,15 @@ def probe_cc_session_model(
         if cached is not None:
             return cached
 
+    # The live probe is a real, billed `claude -p` call — honour the
+    # transport kill switch the same way dispatch does. None keeps the
+    # documented meaning: "do not trust the claudecode transport on
+    # this install right now". The cache-only read above stays
+    # available (it never spawns).
+    from core.llm.cc_adapter import cc_transport_disabled
+    if cc_transport_disabled():
+        return None
+
     from core.llm.cc_adapter import cc_subprocess_env, neutral_cwd
     cmd = [
         resolved_bin, "-p",

@@ -13,6 +13,11 @@ from core.llm.cc_probe import (
     probe_cc_session_model,
 )
 
+# The probe's subprocess.run is mocked throughout — spawn-machinery
+# shape tests, so the transport kill switch the root conftest sets is
+# cleared for this module.
+pytestmark = pytest.mark.usefixtures("cc_spawn_machinery_enabled")
+
 
 class TestExtractModel:
     def test_single_model(self):
@@ -117,6 +122,16 @@ class TestProbe:
     def test_missing_binary_returns_none(self, monkeypatch):
         monkeypatch.setattr(cc_probe.shutil, "which", lambda _: None)
         assert probe_cc_session_model(None) is None
+
+    def test_kill_switch_returns_none_without_spawning(self, monkeypatch):
+        """The probe is a billed live call — under
+        RAPTOR_CC_TRANSPORT_DISABLED it reports \"do not trust the
+        transport\" (None) and never reaches subprocess.run."""
+        calls = self._fake_run(monkeypatch, stdout="unreachable")
+        monkeypatch.setenv("RAPTOR_CC_TRANSPORT_DISABLED", "1")
+        assert probe_cc_session_model("/usr/bin/claude",
+                                      use_cache=False) is None
+        assert calls == []
 
     def test_env_signature_change_invalidates_cache(self, monkeypatch):
         envelope = json.dumps({

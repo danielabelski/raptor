@@ -107,6 +107,23 @@ def _cc_proxy_strip(key: str) -> bool:
     return key.startswith("ANTHROPIC_") and "BASE_URL" in key
 
 
+#: When set (to anything but "" / "0"), every live ``claude`` spawn on
+#: the billed dispatch paths refuses with a named error instead of
+#: executing. This is the hermetic-test/administrative kill switch for
+#: the CLI transport: detection, model selection and client
+#: construction proceed normally (mock-driven tests keep their shape),
+#: but no real CLI process — and therefore no real model call or spend
+#: — can start. The root test conftest sets it for every test session
+#: unless the operator opts into live LLM tests.
+_CC_TRANSPORT_DISABLED_ENV = "RAPTOR_CC_TRANSPORT_DISABLED"
+
+
+def cc_transport_disabled() -> bool:
+    """True when live ``claude`` CLI spawns are administratively off."""
+    import os as _os
+    return _os.environ.get(_CC_TRANSPORT_DISABLED_ENV, "") not in ("", "0")
+
+
 def resolve_claude_cli(explicit: str | None = None) -> str | None:
     """Resolve the ``claude`` CLI to its REAL path for sandboxed dispatch.
 
@@ -1200,6 +1217,17 @@ def run_cc_streaming(
             f"refusing PATH-dependent exec of {cmd[0] if cmd else None!r}: "
             "the claude CLI must be resolved to an absolute path before "
             "spawn (resolve_claude_cli)"
+        )
+
+    # Administrative kill switch — the single chokepoint every billed
+    # claude dispatch passes through. Raising HERE (not at detection or
+    # resolution) keeps transport-shape code paths testable with mocks
+    # while making a live spawn — and its spend — impossible when the
+    # environment says so.
+    if cc_transport_disabled():
+        raise RuntimeError(
+            "claude CLI transport disabled "
+            f"({_CC_TRANSPORT_DISABLED_ENV} is set): refusing live spawn"
         )
 
     proc = subprocess.Popen(

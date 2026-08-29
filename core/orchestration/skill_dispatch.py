@@ -522,10 +522,20 @@ def run_skill_dispatch(
     except NonInteractiveError as e:
         return SkillDispatchResult(ran=False, skipped_reason=str(e))
 
+    # Administrative transport kill switch — this lane is a billed
+    # `claude -p` spawn that does not pass run_cc_streaming, so it
+    # honours the switch itself, joining the gate chain with the same
+    # skip shape as the other gates.
+    from core.llm.cc_adapter import cc_transport_disabled, resolve_claude_cli
+    if cc_transport_disabled():
+        return SkillDispatchResult(
+            ran=False,
+            skipped_reason="claude CLI transport disabled "
+            "(RAPTOR_CC_TRANSPORT_DISABLED is set)")
+
     # Realpath at the resolution seam: symlinked installs otherwise
     # fail the mount-ns visibility check and silently downgrade the
     # dispatch to Landlock-only (see resolve_claude_cli).
-    from core.llm.cc_adapter import resolve_claude_cli
     claude_bin = resolve_claude_cli(claude_bin)
     if not claude_bin:
         return SkillDispatchResult(ran=False, skipped_reason="claude not on PATH")

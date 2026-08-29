@@ -46,6 +46,19 @@ def invoke_cc_simple(prompt, schema, repo_path, claude_bin, out_dir,
     finding-derived user content, dropping the role separation CC's
     prompt-injection defences key off (see CCDispatchConfig).
     """
+    # Administrative transport kill switch — this lane is a billed
+    # `claude -p` spawn per finding that does not pass
+    # run_cc_streaming, so it honours the switch itself. Same graceful
+    # error shape as the other per-finding failures: the dispatch loop
+    # continues, nothing spawns, nothing spends.
+    from core.llm.cc_adapter import cc_transport_disabled
+    if cc_transport_disabled():
+        return DispatchResult(result={
+            "error": "claude CLI transport disabled "
+                     "(RAPTOR_CC_TRANSPORT_DISABLED is set): "
+                     "refusing live dispatch",
+        })
+
     # Use the caller's schema. Pre-fix this was
     # `build_schema() if schema else None`, which IGNORED the
     # caller's argument and substituted FINDING_RESULT_SCHEMA

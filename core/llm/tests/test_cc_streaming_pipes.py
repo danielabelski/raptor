@@ -18,7 +18,14 @@ import json
 import os
 import sys
 
+import pytest
+
 from core.llm.cc_adapter import run_cc_streaming
+
+# Children here are test-local fakes (module docstring) — the spawn
+# machinery itself is under test, so the transport kill switch the
+# root conftest sets is cleared for this module.
+pytestmark = pytest.mark.usefixtures("cc_spawn_machinery_enabled")
 
 # Well over the 64KB pipe buffer.
 _STDERR_SPEW = 256 * 1024

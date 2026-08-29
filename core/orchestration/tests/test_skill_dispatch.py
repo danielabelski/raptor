@@ -97,6 +97,21 @@ class GateOrderTests(unittest.TestCase):
         self.assertIn("cc_trust", result.skipped_reason)
         self.assertIsNone(result.run_dir)
 
+    def test_transport_kill_switch_skips_before_resolution(self):
+        # This lane is a billed spawn that never passes
+        # run_cc_streaming, so it honours RAPTOR_CC_TRANSPORT_DISABLED
+        # itself — before binary resolution, with the gate-chain skip
+        # shape. (The module-level opt-out fixture deletes the var;
+        # setting it inside the test wins.)
+        import os
+        with TemporaryDirectory() as tmp, \
+                patch.dict(os.environ,
+                           {"RAPTOR_CC_TRANSPORT_DISABLED": "1"}):
+            result = _run(tmp, Path(tmp) / "run")
+        self.assertFalse(result.ran)
+        self.assertIn("transport disabled", result.skipped_reason)
+        self.assertIsNone(result.run_dir)
+
     def test_claude_missing(self):
         # Resolution moved to cc_adapter.resolve_claude_cli (realpath
         # at the seam); missing CLI still gates the dispatch off.

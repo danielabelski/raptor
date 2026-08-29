@@ -67,6 +67,34 @@ def captured_helper_kwargs():
         yield captured
 
 
+def test_invoke_cc_simple_honours_transport_kill_switch(
+    captured_helper_kwargs, tmp_path, monkeypatch,
+):
+    """This lane is a billed per-finding spawn that never passes
+    run_cc_streaming, so it honours RAPTOR_CC_TRANSPORT_DISABLED
+    itself: a graceful per-finding error result, and the sandbox
+    helper is never reached (captured list stays empty)."""
+    from packages.llm_analysis.cc_dispatch import invoke_cc_simple
+
+    monkeypatch.setenv("RAPTOR_CC_TRANSPORT_DISABLED", "1")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    result = invoke_cc_simple(
+        prompt="ignored",
+        schema=None,
+        repo_path=str(repo),
+        claude_bin="/usr/bin/true",
+        out_dir=str(out_dir),
+        timeout=5,
+    )
+
+    assert "transport disabled" in result.result["error"]
+    assert captured_helper_kwargs == []
+
+
 def test_invoke_cc_simple_uses_run_untrusted_networked(captured_helper_kwargs, tmp_path):
     """Direct migration evidence: cc_dispatch goes through the helper,
     not raw sandbox_run. If the call site regresses to ``sandbox_run``,

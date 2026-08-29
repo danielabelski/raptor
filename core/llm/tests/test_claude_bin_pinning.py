@@ -21,6 +21,11 @@ from core.llm.cc_adapter import run_cc_streaming
 from core.llm.config import ModelConfig
 from core.llm.providers import ClaudeCodeLLMProvider
 
+# Spawns here execute sys.executable one-liners, never a real claude —
+# the spawn guard itself is under test, so the transport kill switch
+# the root conftest sets is cleared for this module.
+pytestmark = pytest.mark.usefixtures("cc_spawn_machinery_enabled")
+
 
 def _config() -> ModelConfig:
     return ModelConfig(
@@ -70,6 +75,37 @@ class TestSpawnGuard:
                 ["./claude", "-p"], prompt="",
                 env=dict(os.environ), timeout_s=5,
             )
+
+    def test_kill_switch_refuses_before_any_exec(
+        self, tmp_path, monkeypatch,
+    ):
+        """RAPTOR_CC_TRANSPORT_DISABLED refuses even an absolute-path
+        spawn with the named error, BEFORE the child starts — proven
+        by a marker script that would record its own execution."""
+        marker = tmp_path / "executed"
+        script = tmp_path / "fake-claude"
+        script.write_text(f"#!/bin/sh\ntouch {marker}\n")
+        script.chmod(0o755)
+        monkeypatch.setenv("RAPTOR_CC_TRANSPORT_DISABLED", "1")
+        with pytest.raises(RuntimeError, match="transport disabled"):
+            run_cc_streaming(
+                [str(script), "-p"], prompt="",
+                env=dict(os.environ), timeout_s=5,
+            )
+        assert not marker.exists(), "the guard must fire before exec"
+
+    def test_kill_switch_zero_and_empty_stay_live(self, monkeypatch):
+        """\"0\" and \"\" mean OFF — the documented no-op spellings."""
+        for value in ("0", ""):
+            monkeypatch.setenv("RAPTOR_CC_TRANSPORT_DISABLED", value)
+            sr = run_cc_streaming(
+                [sys.executable, "-c",
+                 "import json; print(json.dumps("
+                 "{'type':'result','session_id':'s0','is_error':False}"
+                 "))"],
+                prompt="", env=dict(os.environ), timeout_s=30,
+            )
+            assert sr.error is None
 
     def test_absolute_path_still_spawns(self):
         sr = run_cc_streaming(

@@ -111,8 +111,7 @@ def find_binary_run_dirs(
 
     When *target_path* is set, only siblings whose ``.raptor-run.json``
     records the same resolved target are included.  This prevents
-    unrelated binary analyses (e.g. a SAProuter run) from leaking edges
-    into a kernel audit.
+    unrelated binary analyses from leaking edges into another audit.
     """
     parent = out_dir.parent
     if not parent.is_dir():

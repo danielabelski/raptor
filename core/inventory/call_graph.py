@@ -74,6 +74,37 @@ logger = logging.getLogger(__name__)
 # exactly one Parser per language for its lifetime.
 _TS_PARSER_LOCAL = threading.local()
 
+# Cached tree-sitter grammar imports. Python does NOT cache FAILED
+# imports, so a per-file ``import tree_sitter_go`` on a grammar-less
+# install re-ran the full import machinery — plus a log emission —
+# for every file of that language. Besides the hot-loop cost, both
+# the import lock and the logging handler locks are exactly what a
+# fork-pool worker inherits FROZEN when the parent process is
+# multi-threaded (the stress sweep runs scans as threads), turning
+# any file of a grammar-less language into a deadlock site. Cache
+# hits touch neither lock, and the missing-grammar note fires once
+# per process instead of once per file.
+_GRAMMAR_CACHE: dict = {}
+
+
+def _import_grammar(module_name: str):
+    """Import a tree-sitter grammar module, caching success AND
+    failure. Returns the module or ``None`` when not installed."""
+    if module_name in _GRAMMAR_CACHE:
+        return _GRAMMAR_CACHE[module_name]
+    try:
+        import importlib
+        mod = importlib.import_module(module_name)
+    except ImportError:
+        logger.debug(
+            "call_graph: %s not installed; files of this language "
+            "get an empty call graph", module_name,
+        )
+        mod = None
+    _GRAMMAR_CACHE[module_name] = mod
+    return mod
+
+
 
 def _get_ts_parser(language_fn: Any) -> Any:
     """Return a per-thread cached tree-sitter Parser for *language_fn*.
@@ -776,22 +807,17 @@ def extract_call_graph_javascript(
     matching the Python ``from foo import y`` convention so the
     resolver's chain semantics work unchanged.
     """
-    try:
-        if language == "typescript":
-            import tree_sitter_typescript as ts_ts
-            language_fn = ts_ts.language_typescript
-        elif language == "tsx":
-            import tree_sitter_typescript as ts_ts
-            language_fn = ts_ts.language_tsx
-        else:
-            import tree_sitter_javascript as ts_js
-            language_fn = ts_js.language
-    except ImportError:
-        logger.debug(
-            "call_graph: tree-sitter grammar for %s not installed; "
-            "returning empty graph", language,
-        )
-        return FileCallGraph()
+    if language in ("typescript", "tsx"):
+        ts_ts = _import_grammar("tree_sitter_typescript")
+        if ts_ts is None:
+            return FileCallGraph()
+        language_fn = (ts_ts.language_typescript
+                       if language == "typescript" else ts_ts.language_tsx)
+    else:
+        ts_js = _import_grammar("tree_sitter_javascript")
+        if ts_js is None:
+            return FileCallGraph()
+        language_fn = ts_js.language
 
     try:
         parser = _get_ts_parser(language_fn)
@@ -1573,13 +1599,8 @@ def extract_call_graph_go(content: str) -> FileCallGraph:
     so ``http.HandlerFunc(...)`` resolves to ``"net/http" +
     ".HandlerFunc"`` for the resolver's chain comparison.
     """
-    try:
-        import tree_sitter_go as ts_go
-    except ImportError:
-        logger.debug(
-            "call_graph: tree-sitter Go grammar not installed; "
-            "returning empty graph",
-        )
+    ts_go = _import_grammar('tree_sitter_go')
+    if ts_go is None:
         return FileCallGraph()
 
     try:
@@ -1943,13 +1964,8 @@ def extract_call_graph_java(content: str) -> FileCallGraph:
     method-on-instance — out of scope; CodeQL is the right tool
     when type-aware reachability matters.
     """
-    try:
-        import tree_sitter_java as ts_java
-    except ImportError:
-        logger.debug(
-            "call_graph: tree-sitter Java grammar not installed; "
-            "returning empty graph",
-        )
+    ts_java = _import_grammar('tree_sitter_java')
+    if ts_java is None:
         return FileCallGraph()
 
     try:
@@ -2506,13 +2522,8 @@ def extract_call_graph_rust(content: str) -> FileCallGraph:
     masking every macro-using file would gut the not_called signal —
     macro-generated call edges remain a documented limitation.
     """
-    try:
-        import tree_sitter_rust as ts_rust
-    except ImportError:
-        logger.debug(
-            "call_graph: tree-sitter Rust grammar not installed; "
-            "returning empty graph",
-        )
+    ts_rust = _import_grammar('tree_sitter_rust')
+    if ts_rust is None:
         return FileCallGraph()
 
     try:
@@ -2994,13 +3005,8 @@ def extract_call_graph_ruby(content: str) -> FileCallGraph:
     ``method_missing`` / etc. produce calls invisible to static
     analysis — same family of limitation as Python ``getattr``.
     """
-    try:
-        import tree_sitter_ruby as ts_ruby
-    except ImportError:
-        logger.debug(
-            "call_graph: tree-sitter Ruby grammar not installed; "
-            "returning empty graph",
-        )
+    ts_ruby = _import_grammar('tree_sitter_ruby')
+    if ts_ruby is None:
         return FileCallGraph()
 
     try:
@@ -3323,13 +3329,8 @@ def extract_call_graph_csharp(content: str) -> FileCallGraph:
         ``Activator.CreateInstance(...)`` -> ``INDIRECTION_REFLECT``
       * ``Assembly.Load(...)`` -> ``INDIRECTION_IMPORTLIB``
     """
-    try:
-        import tree_sitter_c_sharp as ts_cs
-    except ImportError:
-        logger.debug(
-            "call_graph: tree-sitter C# grammar not installed; "
-            "returning empty graph",
-        )
+    ts_cs = _import_grammar('tree_sitter_c_sharp')
+    if ts_cs is None:
         return FileCallGraph()
 
     try:
@@ -3825,13 +3826,8 @@ def extract_call_graph_php(content: str) -> FileCallGraph:
       * ``include`` / ``require`` (with var) ->
         ``INDIRECTION_DYNAMIC_IMPORT``
     """
-    try:
-        import tree_sitter_php as ts_php
-    except ImportError:
-        logger.debug(
-            "call_graph: tree-sitter PHP grammar not installed; "
-            "returning empty graph",
-        )
+    ts_php = _import_grammar('tree_sitter_php')
+    if ts_php is None:
         return FileCallGraph()
 
     try:
@@ -4249,13 +4245,8 @@ def extract_call_graph_c(content: str) -> FileCallGraph:
         but the declarator walk only handles ANSI prototypes for
         signature/parameters extraction.
     """
-    try:
-        import tree_sitter_c as ts_c
-    except ImportError:
-        logger.debug(
-            "call_graph: tree-sitter C grammar not installed; "
-            "returning empty graph",
-        )
+    ts_c = _import_grammar('tree_sitter_c')
+    if ts_c is None:
         return FileCallGraph()
 
     try:
@@ -4673,13 +4664,8 @@ def extract_call_graph_cpp(content: str) -> FileCallGraph:
       * ``using namespace ns;`` doesn't fold ``ns::`` qualifiers off
         of subsequent calls.
     """
-    try:
-        import tree_sitter_cpp as ts_cpp
-    except ImportError:
-        logger.debug(
-            "call_graph: tree-sitter C++ grammar not installed; "
-            "returning empty graph",
-        )
+    ts_cpp = _import_grammar('tree_sitter_cpp')
+    if ts_cpp is None:
         return FileCallGraph()
 
     try:
@@ -5370,13 +5356,8 @@ def extract_call_graph_lua(content: str) -> FileCallGraph:
         first/second argument is the real callee
       * ``loadstring(...)`` / ``load(...)`` -> ``INDIRECTION_EVAL``
     """
-    try:
-        import tree_sitter_lua as ts_lua
-    except ImportError:
-        logger.debug(
-            "call_graph: tree-sitter Lua grammar not installed; "
-            "returning empty graph",
-        )
+    ts_lua = _import_grammar('tree_sitter_lua')
+    if ts_lua is None:
         return FileCallGraph()
 
     try:
@@ -5631,13 +5612,8 @@ def extract_call_graph_scala(content: str) -> FileCallGraph:
       * ``f()`` → chain ``["f"]``; ``obj.m()`` → ``["obj", "m"]``;
         ``this.m()`` → receiver_class narrowing like Java
     """
-    try:
-        import tree_sitter_scala as ts_scala
-    except ImportError:
-        logger.debug(
-            "call_graph: tree-sitter Scala grammar not installed; "
-            "returning empty graph",
-        )
+    ts_scala = _import_grammar('tree_sitter_scala')
+    if ts_scala is None:
         return FileCallGraph()
 
     try:
@@ -5871,13 +5847,8 @@ def extract_call_graph_kotlin(content: str) -> FileCallGraph:
     keep real node types — the walker descends ERROR nodes, so those
     declarations still contribute classes/functions/calls.
     """
-    try:
-        import tree_sitter_kotlin as ts_kotlin
-    except ImportError:
-        logger.debug(
-            "call_graph: tree-sitter Kotlin grammar not installed; "
-            "returning empty graph",
-        )
+    ts_kotlin = _import_grammar('tree_sitter_kotlin')
+    if ts_kotlin is None:
         return FileCallGraph()
 
     try:
@@ -6087,13 +6058,8 @@ def extract_call_graph_swift(content: str) -> FileCallGraph:
       * ``f()`` → chain ``["f"]``; ``obj.m()`` → ``["obj", "m"]``;
         ``self.m()`` → receiver_class narrowing like Rust
     """
-    try:
-        import tree_sitter_swift as ts_swift
-    except ImportError:
-        logger.debug(
-            "call_graph: tree-sitter Swift grammar not installed; "
-            "returning empty graph",
-        )
+    ts_swift = _import_grammar('tree_sitter_swift')
+    if ts_swift is None:
         return FileCallGraph()
 
     try:

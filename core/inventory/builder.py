@@ -132,16 +132,139 @@ def _resolved_max_workers() -> int:
 
 MAX_WORKERS = _resolved_max_workers()
 
+
+def _pool_mp_context():
+    """Preferred multiprocessing context for the extractor pool:
+    forkserver when the platform offers it (Linux/macOS), else the
+    platform default.
+
+    Callers embed inventory builds in multi-threaded processes, and
+    fork from a threaded parent hands every worker a copy of any
+    lock a sibling thread held at that instant — permanently frozen
+    in the child. forkserver/spawn children start clean.
+    """
+    import multiprocessing
+    try:
+        return multiprocessing.get_context("forkserver")
+    except ValueError:
+        return None
+
+
+def _pool_probe() -> bool:
+    """No-op worker round-trip used to prove a pool context actually
+    works before files are submitted to it."""
+    return True
+
+
+def _make_extractor_pool(initargs, *, max_workers=None, contexts=None):
+    """Create the extractor process pool, PROBING each candidate
+    context with a real worker round-trip before committing to it.
+
+    forkserver preloads ``__main__``, and drivers without a
+    file-backed main (``python - <<'PY'`` heredocs — the stress
+    sweep's own shape — or embedders reading code from stdin) kill
+    the forkserver at its first spawn. That failure is LAZY: the
+    ``ProcessPoolExecutor`` constructor succeeds and the first
+    ``submit`` blows up, so a constructor-level fallback never sees
+    it — and every file would be lost. The probe forces the spawn
+    now, and a context that cannot produce a working worker falls
+    through to the next candidate (the platform default), then to
+    ``None`` for the caller's thread-pool fallback.
+    """
+    if contexts is None:
+        contexts = (_pool_mp_context(), None)
+    tried = set()
+    for ctx in contexts:
+        method = ctx.get_start_method() if ctx is not None else "default"
+        if method in tried:
+            continue
+        tried.add(method)
+        try:
+            pool = ProcessPoolExecutor(
+                max_workers=max_workers or MAX_WORKERS,
+                initializer=_init_inventory_worker,
+                initargs=initargs,
+                mp_context=ctx,
+            )
+        except (OSError, RuntimeError, ValueError):
+            continue
+        try:
+            if pool.submit(_pool_probe).result(timeout=120) is True:
+                return pool
+        except Exception:  # noqa: BLE001 — any spawn failure disqualifies
+            logger.info(
+                "inventory: %s pool context failed its worker probe; "
+                "trying the next candidate", method,
+            )
+        pool.shutdown(wait=False, cancel_futures=True)
+        procs = getattr(pool, "_processes", None) or {}
+        for proc in list(procs.values()):
+            try:
+                proc.terminate()
+            except Exception:  # noqa: BLE001
+                pass
+    return None
+
 # Stall watchdog for the extractor pool. The previous loop used
 # ``as_completed()`` + ``future.result(timeout=300)`` — but
 # ``as_completed`` only yields futures that have ALREADY completed, so
-# that result() timeout could never fire, and one hung worker (a
-# pathological file in a scanned repo) stalled the whole inventory
-# build — and every pipeline waiting on it — indefinitely. The timeout
-# belongs on the WAIT: a full window with zero completions declares
-# the remaining futures stalled; they are recorded as excluded files
-# and the pool is torn down without blocking on the hung workers.
-INVENTORY_STALL_TIMEOUT_S = 300
+# that result() timeout could never fire, and one hung worker stalled
+# the whole inventory build — and every pipeline waiting on it —
+# indefinitely. The timeout belongs on the WAIT: a full window with
+# zero completions declares the remaining futures stalled; they are
+# retried once in a fresh pool, and the wedged pool is torn down
+# without blocking on its workers.
+#
+# 60s, not 300: per-file extraction is millisecond-scale, so a full
+# minute with ZERO completions across the whole pool is already
+# decisive — and the window is pure serialized wallclock cost when a
+# worker wedges (a 300s window added five minutes to one project's
+# scan). The known wedge class is not pathological input at all: a
+# worker forked from a multi-threaded parent inherits any lock a
+# sibling thread held at fork time permanently frozen, and froze at
+# its next logging/import acquisition (hence mp_context below).
+INVENTORY_STALL_TIMEOUT_S = 60
+
+
+def _retry_stalled_files(files, initargs, *, _on_retry_done, futures_map):
+    """One-shot retry of a wedged pool's in-flight files in a FRESH
+    pool. Returns the files that failed again (empty when everything
+    recovered — the common case, since a zero-completion stall means
+    the WORKERS wedged, not that the files are pathological).
+
+    The retry pool gets the same stall window; a second stall (or a
+    pool-creation failure) hands the remainder back for
+    excluded-file recording. No ``with`` block: the context manager
+    exit would block on wedged workers, which is exactly what the
+    teardown here must never do.
+    """
+    pool = _make_extractor_pool(initargs, max_workers=1)
+    if pool is None:
+        return list(files)
+    retry_futures = {}
+    for fp in files:
+        fut = pool.submit(_process_file_in_worker, fp)
+        retry_futures[fut] = fp
+        # The caller's completion callback resolves file paths
+        # through its own futures map — register the retry futures
+        # there so results land through the same accounting.
+        futures_map[fut] = fp
+    stalled = _drain_futures(
+        retry_futures, INVENTORY_STALL_TIMEOUT_S, _on_retry_done,
+    )
+    if stalled:
+        for fut in stalled:
+            fut.cancel()
+        pool.shutdown(wait=False, cancel_futures=True)
+        procs = getattr(pool, "_processes", None) or {}
+        for proc in list(procs.values()):
+            try:
+                proc.terminate()
+            except Exception:  # noqa: BLE001
+                pass
+    else:
+        pool.shutdown(wait=True)
+    return [retry_futures[f] for f in stalled]
 
 
 def _drain_futures(futures, timeout_s, on_done):
@@ -381,14 +504,20 @@ def build_inventory(
             old_files_by_path, allow_unreachable,
             macro_config, build_tus, crate_modules,
         )
-        try:
-            pool = ProcessPoolExecutor(
-                max_workers=MAX_WORKERS,
-                initializer=_init_inventory_worker,
-                initargs=initargs,
-            )
-        except (OSError, RuntimeError):
-            pool = None
+        # Prefer forkserver, NEVER unprobed fork: builds run inside
+        # multi-threaded parents (the SCA stress sweep scans projects
+        # on threads; logging holds handler locks), and a fork child
+        # inherits any lock a sibling thread held at fork time
+        # permanently frozen — workers then deadlocked at their next
+        # logging/import acquisition and the watchdog blamed whatever
+        # file they had claimed. forkserver was validated
+        # deadlock-free under the same adversarial thread load that
+        # wedged fork deterministically. The factory PROBES each
+        # context with a real worker round-trip because forkserver's
+        # failure mode under file-less ``__main__`` (stdin-heredoc
+        # drivers — the sweep's own shape) is lazy: the constructor
+        # succeeds and the first submit dies.
+        pool = _make_extractor_pool(initargs)
         if pool is None:
             pool = ThreadPoolExecutor(max_workers=MAX_WORKERS)
 
@@ -435,23 +564,39 @@ def build_inventory(
             stalled = _drain_futures(
                 futures, INVENTORY_STALL_TIMEOUT_S, _on_done,
             )
-            for future in stalled:
-                future.cancel()
-                fp = futures[future]
+            if stalled:
+                # A zero-completion window means WORKERS wedged (the
+                # known class: fork-frozen locks), not that these
+                # files are pathological — they are simply the wedged
+                # workers' in-flight/queued items. Retry them once in
+                # a fresh pool; only files that fail the retry too
+                # are recorded as excluded.
+                retry_files = [futures[f] for f in stalled]
+                for future in stalled:
+                    future.cancel()
                 logger.warning(
                     "inventory: no extractor completion within %ds — "
-                    "abandoning %s as stalled",
-                    INVENTORY_STALL_TIMEOUT_S, fp,
+                    "worker pool wedged; retrying the %d in-flight "
+                    "file(s) in a fresh pool: %s",
+                    INVENTORY_STALL_TIMEOUT_S, len(retry_files),
+                    ", ".join(str(fp) for fp in retry_files[:5])
+                    + ("…" if len(retry_files) > 5 else ""),
                 )
-                # Same visibility rule as processing_error: a dropped
-                # file must be recorded in the artifact.
-                excluded_files.append({
-                    "path": _rel_of(fp),
-                    "reason": "processing_timeout",
-                    "pattern_matched":
-                        f"stalled>{INVENTORY_STALL_TIMEOUT_S}s",
-                })
-                skipped += 1
+                still_failed = _retry_stalled_files(
+                    retry_files, initargs, _on_retry_done=_on_done,
+                    futures_map=futures,
+                )
+                for fp in still_failed:
+                    # Same visibility rule as processing_error: a
+                    # dropped file must be recorded in the artifact.
+                    excluded_files.append({
+                        "path": _rel_of(fp),
+                        "reason": "worker_stalled",
+                        "pattern_matched":
+                            f"no completion in {INVENTORY_STALL_TIMEOUT_S}s"
+                            " + retry failed",
+                    })
+                    skipped += 1
         finally:
             if stalled:
                 # Never block on hung workers: drop the queue, then

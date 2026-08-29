@@ -248,6 +248,24 @@ def _contained_system_tmp(tmp_path_factory: pytest.TempPathFactory):
         try:
             yield
         finally:
+            # Multiprocessing roots its PROCESS-LIFETIME temp dir
+            # (``pymp-*`` — the forkserver socket lives there) under
+            # whatever tempdir is current at first use, i.e. inside
+            # THIS soon-to-be-removed scratch dir, and removes it via
+            # an atexit finalizer at INTERPRETER exit — after the
+            # ``with`` below has already deleted the parent. The
+            # finalizer then crashed process exit with
+            # FileNotFoundError (traceback after the pytest summary,
+            # corrupted exit status on composed single-process runs).
+            # Redirecting tempdir breaks multiprocessing's lifetime
+            # assumption, so the redirect's owner reconciles: run
+            # multiprocessing's own exit function NOW, while the
+            # parent still exists. It is atexit-idempotent (the
+            # ``_exiting`` guard makes the real-exit invocation a
+            # no-op) and this is session teardown — no pools or
+            # children may legitimately outlive this point.
+            if "multiprocessing.util" in sys.modules:
+                sys.modules["multiprocessing.util"]._exit_function()
             tempfile.tempdir = prior_cached
             if prior_env is None:
                 os.environ.pop("TMPDIR", None)

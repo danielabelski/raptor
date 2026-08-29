@@ -18,7 +18,7 @@ on documented variables that no longer exist in code.
 Conventions used below:
 
 - **Precedence** is per-run flag > environment variable > config file
-  > built-in default, unless a row says otherwise. The known
+  \> built-in default, unless a row says otherwise. The known
   exceptions are called out explicitly (worker caps, model selection).
 - **Fail direction** for toggles: *fail-closed* means the unset/invalid
   state is the restrictive one; *fail-open* means it is the permissive
@@ -155,7 +155,7 @@ deleting).
 
 ## LLM model selection and transport
 
-These knobs are covered in narrative form in [LLM Providers](llm.md)
+These knobs are covered in full in [LLM Providers](llm.md)
 — Claude Code transport, Bedrock opt-in/authentication/region, and
 cost management. `models.json` entries beat every env knob for model
 selection.
@@ -242,7 +242,7 @@ does not count as local.
 ## LLM HTTP transport
 
 See "HTTP Transport Tuning" in [LLM Providers](llm.md) for the
-narrative version. Pooled
+full version. Pooled
 `httpx` transports for the in-process SDK clients
 (`core.llm.http_pool`); all numeric knobs must be strictly positive —
 absent, unparseable, or non-positive values warn and fall back.
@@ -261,7 +261,7 @@ absent, unparseable, or non-positive values warn and fall back.
 ## Egress proxy
 
 See "Egress proxy" and "Upstream proxy support" in
-[Sandbox](sandbox.md) for the narrative version.
+[Sandbox](sandbox.md) for the full version.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|

@@ -79,6 +79,7 @@ def _prep_for(tmp_path_factory, *, wur: bool):
     )
     assert r.returncode == 0, f"build-checklist failed: {r.stderr}"
 
+    import core.audit.orchestrator as orch
     from core.audit.orchestrator import (
         OrchestratorConfig,
         _compute_audit_prep,
@@ -93,7 +94,21 @@ def _prep_for(tmp_path_factory, *, wur: bool):
         enable_session_context=False,
         propagate_constraints=False,
     )
-    prep = _compute_audit_prep(config)
+    # The consistency channel is under test; prep's mechanical-detector
+    # phase is incidental substrate (18 sandboxed Coccinelle rule runs
+    # on spatch-equipped hosts, ~6s of the fixture's setup — the same
+    # seam test_budget_terminal stubs, with its own wiring tests).
+    # Manual patch/restore because module-scoped fixtures cannot take
+    # the function-scoped monkeypatch. Full variadic signature + the
+    # real (dict, set) return contract: a wrong-shaped stub dies inside
+    # the phase's blanket except and "works" by swallowed crash instead
+    # of by stubbing.
+    _real_mechanical = orch._run_mechanical_detectors
+    orch._run_mechanical_detectors = lambda *args, **kwargs: ({}, set())
+    try:
+        prep = _compute_audit_prep(config)
+    finally:
+        orch._run_mechanical_detectors = _real_mechanical
     assert prep is not None
     return prep, out, target, config
 

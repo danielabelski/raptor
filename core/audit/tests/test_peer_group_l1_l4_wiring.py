@@ -45,6 +45,7 @@ def _build_checklist(target: Path, out: Path) -> None:
 
 
 def _run_prep(target: Path, out: Path):
+    import core.audit.orchestrator as orch
     from core.audit.orchestrator import (
         OrchestratorConfig,
         _compute_audit_prep,
@@ -59,7 +60,21 @@ def _run_prep(target: Path, out: Path):
         enable_session_context=False,
         propagate_constraints=False,
     )
-    prep = _compute_audit_prep(config)
+    # Peer-group formation is under test; prep's mechanical-detector
+    # phase is incidental substrate (sandboxed Coccinelle rule runs on
+    # spatch-equipped hosts — the seam test_budget_terminal stubs, with
+    # its own wiring tests). Manual patch/restore keeps this helper
+    # fixture-scope-agnostic (its consistency-wiring twin IS consumed
+    # by module-scoped fixtures, where the function-scoped monkeypatch
+    # cannot reach). Full variadic signature + the real (dict, set)
+    # return contract so a contract drift dies loudly instead of
+    # "working" by swallowed crash.
+    _real_mechanical = orch._run_mechanical_detectors
+    orch._run_mechanical_detectors = lambda *args, **kwargs: ({}, set())
+    try:
+        prep = _compute_audit_prep(config)
+    finally:
+        orch._run_mechanical_detectors = _real_mechanical
     assert prep is not None
     return prep
 

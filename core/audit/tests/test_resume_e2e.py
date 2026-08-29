@@ -124,21 +124,58 @@ def _home(base: Path) -> Path:
     return home
 
 
+#: Live-LLM opt-in for this file's subprocesses. The CLI gates under
+#: test are REFUSAL paths, but their failure mode is the opposite: a
+#: gate that unexpectedly proceeds runs a real audit, and on an
+#: operator host the ambient env (a configured models.json, provider
+#: API keys, the live claude CLI on PATH) would make that audit spend
+#: real model budget. Default = hermetic children; export
+#: RAPTOR_TEST_LIVE_LLM=1 to deliberately exercise the live shapes.
+_LIVE_LLM_OPT_IN = "RAPTOR_TEST_LIVE_LLM"
+
+
 def _env(home: Path):
-    env = dict(
-        os.environ, CLAUDECODE="1", _RAPTOR_TRUSTED="1",
-        PYTHONPATH=str(_RAPTOR_DIR), HOME=str(home),
+    if os.environ.get(_LIVE_LLM_OPT_IN) == "1":
+        env = dict(
+            os.environ, CLAUDECODE="1", _RAPTOR_TRUSTED="1",
+            PYTHONPATH=str(_RAPTOR_DIR), HOME=str(home),
+            XDG_DATA_HOME=str(home / ".local" / "share"),
+        )
+        # The launcher's session env would let the child token-verify
+        # into the operator's live session registry even under the
+        # HOME redirect.
+        env.pop("RAPTOR_SESSION_PID", None)
+        env.pop("RAPTOR_SESSION_TOKEN", None)
+        return env
+    # Hermetic default — built UP from an allowlist, never filtered
+    # down from os.environ (same doctrine as the web live-tool tests):
+    # subtractive scrubbing misses the next credential variable by
+    # construction, so the operator's API keys, models.json pointer
+    # and session identity are absent rather than removed.
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": str(home),
         # Explicit, not HOME-derived: an exported XDG_DATA_HOME in the
         # ambient env would otherwise still point the child at the
         # real install's row-provenance key — segment 2 must verify
         # the child's journal tokens against the SAME key.
-        XDG_DATA_HOME=str(home / ".local" / "share"),
-    )
-    # The launcher's session env would let the child token-verify into
-    # the operator's live session registry even under the HOME
-    # redirect above.
-    env.pop("RAPTOR_SESSION_PID", None)
-    env.pop("RAPTOR_SESSION_TOKEN", None)
+        "XDG_DATA_HOME": str(home / ".local" / "share"),
+        "PYTHONPATH": str(_RAPTOR_DIR),
+        "CLAUDECODE": "1",
+        "_RAPTOR_TRUSTED": "1",
+        # Spawn-time kill switch: even with the live CLI on PATH and
+        # CLAUDECODE set, a billed claude spawn in the child refuses
+        # with a named error instead of executing (cc_adapter).
+        "RAPTOR_CC_TRANSPORT_DISABLED": "1",
+        # Nonexistent by construction — a configured operator
+        # models.json can never steer the child's model selection.
+        "RAPTOR_CONFIG": str(home / "no-operator-models.json"),
+        "RAPTOR_REACH_VERDICT_LOG_DISABLED": "1",
+    }
+    # Inherit only behaviour-neutral plumbing.
+    for var in ("TMPDIR", "LANG", "LC_ALL", "COLUMNS"):
+        if var in os.environ:
+            env[var] = os.environ[var]
     return env
 
 
@@ -475,6 +512,129 @@ class TestResumedSegment:
         assert [r["segment"] for r in meta["extra"]["resumes"]] == [
             resumed_run["segment"],
         ]
+
+
+class TestHermeticByDefault:
+    """Live-LLM invocation is explicit opt-in (RAPTOR_TEST_LIVE_LLM=1),
+    never a side effect of running this file: the subprocess env is
+    allowlist-built, and the spawn-time transport kill switch makes a
+    fall-through loud and free instead of silent and billed."""
+
+    def test_env_is_allowlist_built_without_opt_in(
+        self, tmp_path, monkeypatch,
+    ):
+        monkeypatch.delenv(_LIVE_LLM_OPT_IN, raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-a-real-key")
+        fake_models = tmp_path / "models.json"
+        fake_models.write_text('{"models": []}')
+        monkeypatch.setenv("RAPTOR_CONFIG", str(fake_models))
+        monkeypatch.setenv("RAPTOR_SESSION_PID", "12345")
+
+        env = _env(_home(tmp_path))
+
+        assert "ANTHROPIC_API_KEY" not in env
+        assert "RAPTOR_SESSION_PID" not in env
+        assert env["RAPTOR_CC_TRANSPORT_DISABLED"] == "1"
+        # The child's config pointer is OURS and nonexistent — the
+        # ambient (operator-shaped) models.json cannot steer it.
+        assert env["RAPTOR_CONFIG"] != str(fake_models)
+        assert not Path(env["RAPTOR_CONFIG"]).exists()
+
+    def test_opt_in_restores_the_live_shape(self, tmp_path, monkeypatch):
+        monkeypatch.setenv(_LIVE_LLM_OPT_IN, "1")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-a-real-key")
+        env = _env(_home(tmp_path))
+        assert env["ANTHROPIC_API_KEY"] == "sk-test-not-a-real-key"
+
+    def test_child_cannot_reach_a_live_llm_without_opt_in(
+        self, tmp_path, monkeypatch,
+    ):
+        """Instrumented proof, not absence-of-errors: with a fully
+        operator-shaped ambient env — a configured models.json, a
+        provider key, and a canary ``claude`` FIRST on PATH that
+        records any execution — a child under ``_env()``:
+
+        * resolves no external LLM (the key/config are invisible),
+        * refuses the billed claude spawn at the exec chokepoint with
+          the named kill-switch error (loud, free), and
+        * never executes the canary binary (log stays absent),
+
+        end-to-end through a real ``raptor-audit resume`` invocation
+        as well as a direct probe of the decision chain.
+        """
+        canary_dir = tmp_path / "bin"
+        canary_dir.mkdir()
+        canary_log = tmp_path / "canary-invocations.log"
+        canary = canary_dir / "claude"
+        canary.write_text(
+            f"#!/bin/sh\necho \"$@\" >> {canary_log}\nexit 1\n",
+        )
+        canary.chmod(0o755)
+        monkeypatch.setenv(
+            "PATH", f"{canary_dir}:{os.environ.get('PATH', '')}",
+        )
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-a-real-key")
+        fake_models = tmp_path / "models.json"
+        fake_models.write_text(json.dumps({"models": [{
+            "name": "fake", "provider": "anthropic",
+            "model": "fake-model", "api_key": "sk-test-not-a-real-key",
+        }]}))
+        monkeypatch.setenv("RAPTOR_CONFIG", str(fake_models))
+        monkeypatch.delenv(_LIVE_LLM_OPT_IN, raising=False)
+
+        env = _env(_home(tmp_path))
+
+        probe = subprocess.run(
+            [sys.executable, "-c", textwrap.dedent("""\
+                import json, shutil
+                from core.llm.detection import detect_llm_availability
+                from core.llm.cc_adapter import (
+                    cc_transport_disabled, run_cc_streaming,
+                )
+                av = detect_llm_availability()
+                out = {
+                    "external_llm": av.external_llm,
+                    "kill_switch": cc_transport_disabled(),
+                    "which": shutil.which("claude"),
+                }
+                try:
+                    run_cc_streaming(
+                        [shutil.which("claude"), "-p"], "x", {}, 5,
+                    )
+                    out["spawn"] = "EXECUTED"
+                except RuntimeError as exc:
+                    out["spawn"] = (
+                        "refused" if "transport disabled" in str(exc)
+                        else f"other: {exc}"
+                    )
+                print(json.dumps(out))
+            """)],
+            env=env, capture_output=True, text=True, timeout=120,
+            check=False,
+        )
+        assert probe.returncode == 0, probe.stderr
+        data = json.loads(probe.stdout.strip().splitlines()[-1])
+        assert data["external_llm"] is False, (
+            "ambient key/models.json leaked into the child"
+        )
+        assert data["kill_switch"] is True
+        assert data["which"] == str(canary), (
+            "the canary must be the resolvable CLI — otherwise this "
+            "test proves nothing about spawn refusal"
+        )
+        assert data["spawn"] == "refused"
+
+        # End-to-end: a real CLI-gate invocation stays hermetic.
+        r = subprocess.run(
+            [sys.executable, _AUDIT_CLI, "resume", str(tmp_path)],
+            env=env, capture_output=True, text=True, timeout=120,
+            check=False,
+        )
+        assert r.returncode == 1
+        assert "not a run directory" in r.stderr
+        assert not canary_log.exists(), (
+            f"a child executed the live CLI: {canary_log.read_text()!r}"
+        )
 
 
 class TestResumeCliGates:

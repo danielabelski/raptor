@@ -16,6 +16,7 @@ import tempfile
 
 import pytest
 from pathlib import Path
+from core.sandbox.tests.capability import requires_landlock, requires_userns
 
 pytestmark = pytest.mark.skipif(
     sys.platform != "linux",
@@ -23,6 +24,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+@requires_landlock
 def test_cpu_count_without_master_switch_logs_warning(caplog):
     """Passing cpu_count without sanitise_host_fingerprint=True should
     warn the caller — silently engaging the CPU mask without the rest
@@ -37,6 +39,7 @@ def test_cpu_count_without_master_switch_logs_warning(caplog):
     ), [rec.message for rec in caplog.records]
 
 
+@requires_landlock
 def test_sanitise_kwarg_rejected_on_inner_run():
     """sanitise_host_fingerprint is sandbox-context-level. Passing it to
     sandbox().run() must raise TypeError (same as block_network=, etc.).
@@ -48,6 +51,7 @@ def test_sanitise_kwarg_rejected_on_inner_run():
                 run(["true"], sanitise_host_fingerprint=True)
 
 
+@requires_landlock
 def test_cpu_count_rejected_on_inner_run():
     from core.sandbox import sandbox
     with tempfile.TemporaryDirectory() as tmp:
@@ -56,6 +60,7 @@ def test_cpu_count_rejected_on_inner_run():
                 run(["true"], cpu_count=4)
 
 
+@requires_landlock
 def test_require_sanitisation_rejected_on_inner_run():
     from core.sandbox import sandbox
     with tempfile.TemporaryDirectory() as tmp:
@@ -64,6 +69,7 @@ def test_require_sanitisation_rejected_on_inner_run():
                 run(["true"], require_sanitisation=True)
 
 
+@requires_landlock
 def test_require_sanitisation_raises_when_unsupported(monkeypatch):
     """If require_sanitisation=True and mount-ns is unavailable, the
     sandbox() context must raise RuntimeError at entry. Operators who
@@ -81,6 +87,7 @@ def test_require_sanitisation_raises_when_unsupported(monkeypatch):
                 pass
 
 
+@requires_landlock
 def test_unsupported_soft_degrades_with_warning(monkeypatch, caplog):
     """Without require_sanitisation, an unsupported environment should
     log a WARNING but not raise — sandbox continues without the persona,
@@ -100,6 +107,7 @@ def test_unsupported_soft_degrades_with_warning(monkeypatch, caplog):
     ), [rec.message for rec in caplog.records]
 
 
+@requires_landlock
 def test_sanitise_without_target_or_output_soft_degrades(monkeypatch, caplog):
     """sandbox() with sanitise_host_fingerprint=True but neither
     target nor output set: mount-ns gets skipped by _spawn (its gate
@@ -117,6 +125,7 @@ def test_sanitise_without_target_or_output_soft_degrades(monkeypatch, caplog):
     ), [rec.message for rec in caplog.records]
 
 
+@requires_landlock
 def test_sanitise_without_target_or_output_hard_fails_when_required(monkeypatch):
     """require_sanitisation=True must hard-fail on the no-target/output
     corner case too — not just on platform / mount-ns unavailability."""
@@ -129,6 +138,7 @@ def test_sanitise_without_target_or_output_hard_fails_when_required(monkeypatch)
             pass
 
 
+@requires_landlock
 def test_top_level_run_forwards_kwargs_to_sandbox():
     """The standalone run() must forward sanitise/cpu_count/require
     kwargs through to its inner sandbox() — otherwise callers of
@@ -200,6 +210,7 @@ def test_apply_overlay_nonstrict_keeps_partial_coverage(tmp_path):
     apply_overlay(persona, root_prefix=str(root))  # must not raise
 
 
+@requires_userns
 def test_required_sanitisation_refuses_landlock_degrade(
         monkeypatch, tmp_path):
     """A mount-ns setup failure ('M' status — where a strict
@@ -250,6 +261,8 @@ def _required_sanitisation_ctx(monkeypatch, tmp_path):
     return ctx
 
 
+@requires_landlock
+@requires_userns
 def test_required_sanitisation_accepts_input_kwarg(
         monkeypatch, tmp_path):
     """input= no longer demotes (it converts to a stdin spool on the
@@ -288,6 +301,7 @@ def test_required_sanitisation_accepts_input_kwarg(
             "host machine-id leaked through the persona")
 
 
+@requires_userns
 def test_required_sanitisation_refuses_speculative_cache_demotion(
         monkeypatch, tmp_path):
     """A speculative-failure-cache hit (poisonable by an earlier
@@ -314,6 +328,7 @@ def test_required_sanitisation_refuses_speculative_cache_demotion(
             _run(["true"])
 
 
+@requires_landlock
 def test_persona_tmpdir_cleaned_up_on_exit(monkeypatch):
     """The tmpdir created for persona files in sandbox() must be
     removed on context exit. Catches a class of bug where a long-lived
@@ -366,6 +381,7 @@ def test_persona_tmpdir_cleaned_up_on_exit(monkeypatch):
         )
 
 
+@requires_landlock
 def test_persona_tmpdir_keepalive_spans_context_lifetime(tmp_path):
     """The persona home is reaper-listed (.fp- anchored) and
     mtime-quiet after build_persona writes it once; a long-lived

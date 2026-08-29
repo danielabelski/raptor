@@ -18,6 +18,7 @@ import sys
 import pytest
 
 from core.sandbox import SandboxSetupError, check_unshare_engages, sandbox, state
+from core.sandbox.tests.capability import requires_landlock, requires_userns
 
 _linux_only = pytest.mark.skipif(
     sys.platform != "linux", reason="unshare engagement is Linux-only",
@@ -44,6 +45,7 @@ def _gate_flags(block_network=True):
 
 @_linux_only
 class TestEngagementGateRaises:
+    @requires_userns
     def test_block_network_engagement_failure_raises(self):
         # The gate probes the exact production flag-set (see _gate_flags).
         _poison(_gate_flags())
@@ -52,6 +54,7 @@ class TestEngagementGateRaises:
             run(["echo", "hi"], capture_output=True, text=True)
         assert "Operation not permitted" in str(ei.value)
 
+    @requires_userns
     def test_error_names_the_escape_hatch(self):
         _poison(_gate_flags())
         with sandbox(block_network=True) as run, \
@@ -85,6 +88,7 @@ class TestEngagementGateRaises:
         assert "--sandbox none" in SEATBELT_FAIL_INSTRUCTIONS
         assert "network-only" not in SEATBELT_FAIL_INSTRUCTIONS
 
+    @requires_userns
     def test_failure_does_not_return_empty_result(self):
         # The whole point: a setup failure must NOT come back as a
         # CompletedProcess the caller could mistake for "ran, no output".
@@ -97,6 +101,7 @@ class TestEngagementGateRaises:
                 pass
         assert returned is None, "setup failure leaked as a normal result"
 
+    @requires_landlock
     def test_engaging_flagset_still_runs(self):
         # Negative control: a flag-set marked as engaging runs normally,
         # so the gate doesn't break the happy path.
@@ -106,6 +111,7 @@ class TestEngagementGateRaises:
         assert r.returncode == 0
         assert "ok" in (r.stdout or "")
 
+    @requires_landlock
     def test_indeterminate_probe_does_not_abort(self):
         # A probe that COULDN'T RUN (None — transient timeout/OSError, not a
         # definitive refusal) must NOT fail loud: aborting a working scan on
@@ -228,6 +234,7 @@ class TestExecStatusPipe:
             "U", "Operation not permitted")
         assert _parse_setup_status(b"X:exec: file not found")[0] == "X"
 
+    @requires_landlock
     def test_mount_failure_degrades_to_landlock_and_runs(self, tmp_path):
         # Force the mount-ns spawn path. On a mount-capable host it engages;
         # on an AppArmor/nested host mount() is denied → status 'M' → degrade

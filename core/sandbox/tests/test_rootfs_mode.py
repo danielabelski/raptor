@@ -38,6 +38,7 @@ import subprocess  # noqa: E402
 import tempfile  # noqa: E402
 import unittest  # noqa: E402
 from pathlib import Path  # noqa: E402
+from core.sandbox.tests.capability import requires_landlock, requires_userns
 
 
 def _mount_ns_usable() -> bool:
@@ -304,6 +305,8 @@ class TestRootfsPivotE2E(_RootfsE2EBase):
             timeout=60, **kw,
         )
 
+    @requires_landlock
+    @requires_userns
     def test_image_view_pids_and_upper_layer(self):
         """One pivoted run proves the core contract: the child sees the
         image filesystem (sentinel present, host /etc/passwd absent),
@@ -327,10 +330,14 @@ class TestRootfsPivotE2E(_RootfsE2EBase):
                         "image write did not land in the rootfs dir")
         self.assertEqual(host_side.read_text(), "W\n")
 
+    @requires_landlock
+    @requires_userns
     def test_exit_status_mirrored_through_waiter(self):
         r = self._run(["/bin/init", "exit7"])
         self.assertEqual(r.returncode, 7, f"stderr: {r.stderr!r}")
 
+    @requires_landlock
+    @requires_userns
     def test_signal_death_mirrored_as_128_plus_n(self):
         """abort()-class deaths are the raison d'être of the PID-1
         waiter: a PID-1 target would have the self-signal filtered by
@@ -347,6 +354,8 @@ class TestRootfsPivotE2E(_RootfsE2EBase):
         with self.assertRaises(SandboxSetupError):
             self._run(["/bin/sh", "-c", "true"])
 
+    @requires_landlock
+    @requires_userns
     def test_input_kwarg_rides_the_image(self):
         """input= no longer demotes (stdin spool on the fork backend):
         a rootfs run with witness bytes executes INSIDE the image —
@@ -359,6 +368,7 @@ class TestRootfsPivotE2E(_RootfsE2EBase):
         self.assertIn("IMAGE-SENTINEL", r.stdout)
 
 
+@requires_userns
 class TestRootfsHostDeviceContainment(_RootfsE2EBase):
     """rootfs mode rbinds host /dev and /sys. The Landlock write grant
     must NOT cover them — otherwise same-UID host device nodes (the
@@ -409,6 +419,8 @@ class TestRootfsHostDeviceContainment(_RootfsE2EBase):
         ))
 
 
+@requires_landlock
+@requires_userns
 class TestRootfsEtcOverlayReadOnly(_RootfsE2EBase):
     """Overlay entries are configuration views, never write surfaces.
     In rootfs mode the Landlock grant covers the image's /etc, so a
@@ -463,6 +475,7 @@ class TestRootfsSymlinkedMountpointRefused(_RootfsE2EBase):
         ))
 
 
+@requires_userns
 class TestRootfsGate5LoadBearing(unittest.TestCase):
     """Rootfs fail-closed gate #5 is LOAD-BEARING for the loader-var
     posture: a rootfs run whose mount-ns spawn setup fails mid-flight

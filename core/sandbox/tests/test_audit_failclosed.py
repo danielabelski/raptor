@@ -38,6 +38,7 @@ import pytest
 
 from core.sandbox.context import run_trusted, run_untrusted, sandbox
 from core.sandbox.errors import SandboxSetupError
+from core.sandbox.tests.capability import requires_landlock, requires_userns
 
 linux_only = pytest.mark.skipif(
     sys.platform != "linux",
@@ -71,6 +72,7 @@ def _audit_sandbox(audit_dir, **extra):
     )
 
 
+@requires_landlock
 class TestEntryValidation:
     """Layer 1: caller-input errors raise at run() entry."""
 
@@ -140,6 +142,7 @@ class TestEntryValidation:
 class TestVanishedMidRun:
     """Layer 2: audit dir vanishing after entry validation fails loud."""
 
+    @requires_userns
     def test_spawn_enoent_with_vanished_dir_raises(
             self, tmp_path, monkeypatch):
         """A FileNotFoundError out of the spawn tier while the audit
@@ -169,6 +172,8 @@ class TestVanishedMidRun:
                 r(["touch", str(proof)], capture_output=True, timeout=30)
         assert not proof.exists()
 
+    @requires_landlock
+    @requires_userns
     def test_spawn_failure_with_intact_dir_still_degrades(
             self, tmp_path, monkeypatch, no_audit_tiers):
         """Environmental spawn failures (audit dir intact) keep the
@@ -196,6 +201,7 @@ class TestVanishedMidRun:
         assert "spawn path failed" in payload["reason"]
 
 
+@requires_landlock
 @linux_only
 class TestEvidenceBottleneck:
     """Layer 3: audit requested but no tier engaged."""
@@ -253,6 +259,7 @@ class TestEvidenceBottleneck:
 class TestKwargSurface:
     """audit_required is sandbox()-level configuration."""
 
+    @requires_landlock
     def test_inner_run_rejects_audit_required(self, tmp_path):
         with sandbox(block_network=False, target="/tmp",
                      profile="target_run") as r:

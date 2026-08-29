@@ -28,6 +28,7 @@ from core.sandbox.observe_profile import (
     ObserveProfile,
     parse_observe_log,
 )
+from core.sandbox.tests.capability import requires_landlock, requires_userns
 
 
 def _write_jsonl(path: Path, records: list) -> None:
@@ -782,6 +783,7 @@ class TestPublicObserveKwarg:
         __import__("sys").platform == "darwin",
         reason="Linux mount-ns spawn path; macOS variant is signature-parity only",
     )
+    @requires_userns
     def test_observe_implies_audit(self, tmp_path):
         # The audit_mode/audit_verbose_active resolution lives at
         # the top of sandbox(); we check the variables by entering
@@ -833,6 +835,7 @@ class TestPublicObserveKwarg:
         __import__("sys").platform == "darwin",
         reason="Linux mount-ns spawn path; macOS variant is signature-parity only",
     )
+    @requires_landlock
     def test_observe_off_by_default(self, tmp_path):
         from unittest.mock import patch
 

@@ -29,6 +29,7 @@ from pathlib import Path
 import pytest
 
 from core.sandbox import check_unshare_engages, sandbox
+from core.sandbox.tests.capability import requires_landlock
 
 _linux_only = pytest.mark.skipif(
     sys.platform != "linux", reason="mount-ns sandbox is Linux-only",
@@ -41,6 +42,7 @@ def _require_namespaces():
         pytest.skip("host cannot engage namespaces")
 
 
+@requires_landlock
 @_linux_only
 class TestReadableFileBindUnderTmp:
 
@@ -77,6 +79,7 @@ class TestReadableFileBindUnderTmp:
             shutil.rmtree(src_dir, ignore_errors=True)
 
 
+@requires_landlock
 @_linux_only
 class TestInheritedTmpdirUnderTmp:
 

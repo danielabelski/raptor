@@ -32,6 +32,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from core.sandbox.tests.capability import requires_userns
+
 REPO = Path(__file__).resolve().parents[3]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
@@ -54,6 +56,7 @@ class _Fd1Swap:
         return False
 
 
+@requires_userns
 class TestFd12ReadableArm(unittest.TestCase):
     def _run_untrusted_capturing(self):
         import core.sandbox.context as ctx

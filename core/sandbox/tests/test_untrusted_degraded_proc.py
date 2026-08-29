@@ -23,6 +23,7 @@ from unittest import mock
 import pytest
 
 from core.sandbox import context as context_mod
+from core.sandbox.tests.capability import requires_landlock
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "darwin",
@@ -74,6 +75,7 @@ class TestDegradedFailsClosedWithoutOverride:
             )
 
 
+@requires_landlock
 class TestDegradedRunUntrusted:
 
     def test_warns_every_call_and_drops_proc(
@@ -125,6 +127,7 @@ class TestDegradedRunUntrusted:
             "the open /proc exposure")
 
 
+@requires_landlock
 class TestHealthyHostKeepsProc:
 
     def test_sandbox_default_allowlist_keeps_proc(

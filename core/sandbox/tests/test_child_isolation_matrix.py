@@ -25,6 +25,7 @@ import pytest
 
 from core.sandbox import check_mount_available
 from core.sandbox._spawn import mount_ns_available, run_sandboxed
+from core.sandbox.tests.capability import requires_landlock, requires_userns
 
 
 def _spawn_kwargs(tmp_path, **over):
@@ -83,10 +84,12 @@ class TestSeccompUnixAllowancePlumbing:
             )
         assert self._capture(monkeypatch, tmp_path) == [True]
 
+    @requires_userns
     def test_blocked_without_target_or_output(self, monkeypatch, tmp_path):
         got = self._capture(monkeypatch, tmp_path, target=None, output=None)
         assert got == [False]
 
+    @requires_userns
     def test_blocked_when_mount_ns_skipped(self, monkeypatch, tmp_path):
         got = self._capture(monkeypatch, tmp_path, skip_mount_ns=True)
         assert got == [False]
@@ -105,6 +108,7 @@ class TestSeccompUnixAllowancePlumbing:
         )
 
 
+@requires_userns
 class TestLandlockReadGatePlumbing:
     """readable_paths reaches Landlock only under restrict_reads."""
 
@@ -183,6 +187,7 @@ _LIVE = pytest.mark.skipif(
 )
 
 
+@requires_landlock
 @_LIVE
 class TestLiveIsolationMatrix:
     """End-to-end behaviour on hosts with the full stack available."""
@@ -293,6 +298,7 @@ class TestLiveIsolationMatrix:
         )
 
 
+@requires_landlock
 @_LIVE
 class TestScannerBindMatrix:
     """The scanner's realpath + bind fixes, end to end with a stub tool."""

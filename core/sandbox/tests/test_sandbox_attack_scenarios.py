@@ -24,6 +24,7 @@ from core.sandbox import (
     sandbox,
     state,
 )
+from core.sandbox.tests.capability import requires_landlock
 
 
 def _compile(source: str, path: Path, extra_flags=()) -> bool:
@@ -88,6 +89,7 @@ def _assert_syscall_blocked(tc: unittest.TestCase, r, name: str,
         )
 
 
+@requires_landlock
 class TestSyscallFilterBlocks(unittest.TestCase):
     """Claims: keyctl, bpf, userfaultfd, perf_event_open, io_uring_setup,
     socket(AF_PACKET / AF_NETLINK), TIOCSTI are all blocked.
@@ -294,6 +296,7 @@ class TestSyscallFilterBlocks(unittest.TestCase):
         _assert_syscall_blocked(self, r, "socket(AF_PACKET)", token="fd")
 
 
+@requires_landlock
 class TestProfilePtraceBehavior(unittest.TestCase):
     """Claim: ptrace is blocked in 'full' profile, allowed in 'debug'.
 
@@ -350,6 +353,7 @@ class TestAPIContract(unittest.TestCase):
         self.tmp = TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
 
+    @requires_landlock
     def test_shell_true_rejected(self):
         """shell=True reinterprets argv into `sh -c argv[0] argv[1:]` which
         silently mangles our unshare command-line construction and is a
@@ -375,6 +379,7 @@ class TestAPIContract(unittest.TestCase):
             s1.close()
             s2.close()
 
+    @requires_landlock
     def test_pass_fds_pipe_allowed(self):
         """Pipe FD (S_ISFIFO) must NOT trigger the socket-rejection path."""
         if not check_net_available():
@@ -551,6 +556,7 @@ class TestProxyHostnameMatchRigor(unittest.TestCase):
         self.assertFalse(p.is_host_allowed("mueller.de"))
 
 
+@requires_landlock
 class TestOOMScoreAdjWrite(unittest.TestCase):
     """Adversarial gap: a child can write `/proc/self/oom_score_adj` to
     deprioritise itself (or prioritise) in the OOM killer. Under memory
@@ -590,6 +596,7 @@ class TestOOMScoreAdjWrite(unittest.TestCase):
                          f"oom_score_adj was actually lowered to -1000: {out!r}")
 
 
+@requires_landlock
 class TestNewMountAPIBlocked(unittest.TestCase):
     """Adversarial gap: the new mount API syscalls (kernel 5.2+,
     fsopen/fsmount/fspick/move_mount/mount_setattr) could let a child
@@ -645,6 +652,7 @@ class TestNewMountAPIBlocked(unittest.TestCase):
         _assert_syscall_blocked(self, r, "mount_setattr")
 
 
+@requires_landlock
 class TestProcNetTCPLeak(unittest.TestCase):
     """Claim: under net-ns, the child's /proc/net/tcp shows only ns-local
     sockets (empty when block_network=True, proxy-only when use_egress_proxy).
@@ -756,6 +764,7 @@ class TestSafeEnvAllowlistHygiene(unittest.TestCase):
                              f"{name} leaked into SAFE_ENV_ALLOWLIST")
 
 
+@requires_landlock
 class TestMapRootGetuid(unittest.TestCase):
     """Claim: `map_root=True` makes the child see itself as uid 0 INSIDE
     the user-ns. This is NOT real root on the host — it is capability
@@ -830,6 +839,7 @@ class TestMapRootGetuid(unittest.TestCase):
                         f"(Landlock-only fallback); got: {r.stdout}")
 
 
+@requires_landlock
 class TestPidNamespaceDefenses(unittest.TestCase):
     """Claims: PID ns hides host PIDs (kill/ptrace/procfs cross-lookup)."""
 
@@ -871,6 +881,7 @@ class TestPidNamespaceDefenses(unittest.TestCase):
         )
 
 
+@requires_landlock
 class TestForkBombBounded(unittest.TestCase):
     """Claim: RLIMIT_NPROC via prlimit-wrapper bounds fork bombs per sandbox."""
 
@@ -930,6 +941,7 @@ class TestRestrictReadsCredentialExfil(unittest.TestCase):
         )
 
 
+@requires_landlock
 class TestParentSideTOCTOU(unittest.TestCase):
     """Claims: parent-side writes into {output} defeat child-planted symlinks
     and FIFOs via O_NOFOLLOW + fstat S_ISREG / lstat-first-makedirs."""
@@ -1023,6 +1035,7 @@ class TestCLIPrecedence(unittest.TestCase):
         self.assertIn("HAS_NET", r.stdout or "")
 
 
+@requires_landlock
 class TestProxyIsGlobalScreen(unittest.TestCase):
     """Claim: proxy rejects resolved IPs that are not globally routable
     (loopback, RFC1918, CGNAT 100.64/10, link-local, TEST-NET, etc.)."""

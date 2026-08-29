@@ -16,6 +16,7 @@ import socket
 import pytest
 
 import core.sandbox.proxy as proxy_mod
+from core.sandbox.tests.capability import requires_landlock
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("RAPTOR_SKIP_PROXY_TESTS") == "1",
@@ -174,6 +175,7 @@ class TestTcpLanes:
             proxy.stop()
 
 
+@requires_landlock
 class TestContextWiring:
     """The sandbox() context engages lanes, never the global flag."""
 
@@ -441,6 +443,7 @@ class TestLaneScopedEventBuffers:
         finally:
             proxy.stop()
 
+    @requires_landlock
     def test_context_registers_buffers_with_its_lane(self, tmp_path,
                                                      monkeypatch):
         """The sandbox() context subscribes its event buffers (per-

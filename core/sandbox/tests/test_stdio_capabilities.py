@@ -22,6 +22,7 @@ import unittest
 from pathlib import Path
 
 import pytest
+from core.sandbox.tests.capability import requires_landlock, requires_userns
 
 pytestmark = pytest.mark.skipif(
     sys.platform != "linux", reason="spawn backends are Linux-only",
@@ -35,6 +36,7 @@ def _mount_ns_usable() -> bool:
     return not (sysctl.exists() and sysctl.read_text().strip() == "1")
 
 
+@requires_landlock
 class TestStdinFdPolicy(unittest.TestCase):
     def setUp(self):
         if not _mount_ns_usable():
@@ -99,6 +101,8 @@ class TestStdinFdPolicy(unittest.TestCase):
             self.assertEqual(r.returncode, 0)
 
 
+@requires_landlock
+@requires_userns
 class TestPtyReadbackPlugged(unittest.TestCase):
     """End-to-end: a wrapper process whose stdio sits on a real PTY
     calls run_untrusted without capturing; the sandboxed child tries

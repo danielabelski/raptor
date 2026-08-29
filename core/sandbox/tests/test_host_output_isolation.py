@@ -26,6 +26,7 @@ from unittest.mock import patch
 import pytest
 
 from core.sandbox.host import HostRPCError, SandboxHost, one_shot_call
+from core.sandbox.tests.capability import requires_userns
 
 pytestmark = pytest.mark.skipif(
     sys.platform != "linux",
@@ -61,6 +62,7 @@ class _RunRecorder:
         return _Result()
 
 
+@requires_userns
 class TestDefaultOutputIsPrivate:
 
     def test_start_default_output_not_target(self):
@@ -122,6 +124,7 @@ class TestDefaultOutputIsPrivate:
             )
 
 
+@requires_userns
 class TestOutputEqualsTargetRefused:
 
     def test_start_refuses_output_equal_target(self):

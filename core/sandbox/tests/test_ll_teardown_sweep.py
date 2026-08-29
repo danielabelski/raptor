@@ -29,6 +29,7 @@ import uuid
 from unittest.mock import patch
 
 import pytest
+from core.sandbox.tests.capability import requires_landlock
 
 pytestmark = pytest.mark.skipif(
     sys.platform != "linux", reason="Landlock-only posture is Linux-only",
@@ -76,6 +77,7 @@ def _kill_survivors(mark: str) -> None:
             pass
 
 
+@requires_landlock
 class TestLandlockOnlyTeardownSweep(unittest.TestCase):
     def setUp(self):
         self._out = tempfile.TemporaryDirectory(prefix="raptor-sweep-")
@@ -279,6 +281,7 @@ class TestSweeperSignalScopeStamp(unittest.TestCase):
                 return run([_SYS_PY, "-c", "pass"],
                            capture_output=True, text=True, timeout=30)
 
+    @requires_landlock
     def test_stamp_matches_host_scoping(self):
         """Hermetic across hosts: the stamp must be present exactly
         when this host cannot scope signals for the sweeper."""
@@ -301,6 +304,7 @@ class TestSweeperSignalScopeStamp(unittest.TestCase):
                 r.sandbox_info.get("teardown_sweep_signal_unscoped"),
                 True)
 
+    @requires_landlock
     def test_stamp_present_when_scoping_forced_off(self):
         """Force the ABI<6 view at the preexec seam: the run must
         carry the degraded-envelope stamp."""
@@ -343,6 +347,7 @@ class TestSweepBackstopUnit(unittest.TestCase):
                     pass
 
 
+@requires_landlock
 class TestNamespacePathUnaffected(unittest.TestCase):
     def test_spawn_path_does_not_stamp_teardown_sweep(self):
         import shutil

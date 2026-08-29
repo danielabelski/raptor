@@ -20,6 +20,7 @@ from unittest.mock import patch
 
 import core.sandbox.context as ctx
 from core.sandbox.errors import SandboxSetupError
+from core.sandbox.tests.capability import requires_landlock
 
 
 class TestDarwinUntrustedGate(unittest.TestCase):
@@ -70,6 +71,7 @@ class TestStrictRequiresSeccomp(unittest.TestCase):
                     pass
             self.assertIn("seccomp", str(cm.exception).lower())
 
+    @requires_landlock
     def test_full_profile_still_degrades_gracefully(self):
         with patch.object(ctx._seccomp, "check_seccomp_available",
                           return_value=False):

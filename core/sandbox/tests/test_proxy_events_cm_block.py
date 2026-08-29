@@ -39,6 +39,7 @@ pytestmark = pytest.mark.skipif(
 
 from core.sandbox import context as ctx                   # noqa: E402
 from core.sandbox import proxy as proxy_mod               # noqa: E402
+from core.sandbox.tests.capability import requires_landlock
 
 
 class TestPersistProxyEventsHelper(unittest.TestCase):
@@ -112,6 +113,7 @@ class TestPersistProxyEventsHelper(unittest.TestCase):
             self.assertTrue(log_path.is_symlink())
 
 
+@requires_landlock
 class TestSandboxContextBlockEventCapture(unittest.TestCase):
     """Block-scoped token: ``sandbox(use_egress_proxy=True, audit=True,
     output=...)`` must register a token on the proxy at ``__enter__``

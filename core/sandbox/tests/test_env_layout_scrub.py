@@ -26,6 +26,7 @@ import tempfile
 import unittest
 
 import pytest
+from core.sandbox.tests.capability import requires_landlock
 
 pytestmark = pytest.mark.skipif(
     sys.platform != "linux", reason="sandbox env scrub paths are Linux-only",
@@ -76,11 +77,13 @@ class TestSandboxedChildLayoutScrub(unittest.TestCase):
         kw.setdefault("output", self.out)
         return _run_and_dump(**kw)
 
+    @requires_landlock
     def test_no_oldpwd_or_pwd(self):
         env = self._dump()["env"]
         self.assertNotIn("OLDPWD", env)
         self.assertNotIn("PWD", env)
 
+    @requires_landlock
     def test_path_has_no_home_rooted_entries(self):
         env = self._dump()["env"]
         home = os.path.expanduser("~")
@@ -93,6 +96,7 @@ class TestSandboxedChildLayoutScrub(unittest.TestCase):
                 f"{comp!r}",
             )
 
+    @requires_landlock
     def test_declared_tool_path_survives_home_scrub(self):
         """A home-rooted PATH entry under a DECLARED tool_paths dir must
         stay in the child PATH: the same declaration binds the dir into
@@ -123,6 +127,7 @@ class TestSandboxedChildLayoutScrub(unittest.TestCase):
             tooldir, env.get("PATH", "").split(os.pathsep),
             "declared tool_paths dir was scrubbed out of the child PATH")
 
+    @requires_landlock
     def test_default_cwd_is_output_dir(self):
         dump = self._dump()
         self.assertEqual(
@@ -131,6 +136,7 @@ class TestSandboxedChildLayoutScrub(unittest.TestCase):
             "not the orchestrator's cwd",
         )
 
+    @requires_landlock
     def test_caller_cwd_still_wins(self):
         with tempfile.TemporaryDirectory(prefix="raptor-cwd-") as want:
             # cwd must be visible inside the sandbox: pass it as target.
@@ -146,11 +152,13 @@ class TestSandboxedChildLayoutScrub(unittest.TestCase):
                 os.path.realpath(dump["cwd"]), os.path.realpath(want),
             )
 
+    @requires_landlock
     def test_fake_home_neutralises_user_identity(self):
         env = self._dump(fake_home=True)["env"]
         self.assertEqual(env.get("USER"), "sandbox")
         self.assertEqual(env.get("LOGNAME"), "sandbox")
 
+    @requires_landlock
     def test_gate_divergent_bare_name_refused_naming_both(self):
         """venv-shaped divergence: ~/.venv-style pip in the caller PATH
         plus a same-named system-side pip in the child's surviving PATH
@@ -167,6 +175,7 @@ class TestSandboxedChildLayoutScrub(unittest.TestCase):
         assert os.path.join(sys_bin, "pip") in msg
         assert "tool_paths" in msg
 
+    @requires_landlock
     def test_gate_declared_tool_paths_runs_the_caller_pip(self):
         """Declared via tool_paths= the DECLARED (venv-shaped) pip runs
         — proven by its marker, not just a zero exit."""
@@ -178,6 +187,7 @@ class TestSandboxedChildLayoutScrub(unittest.TestCase):
         assert r.returncode == 0, (r.returncode, r.stderr[-300:])
         assert "venv-pip-marker" in r.stdout
 
+    @requires_landlock
     def test_gate_opt_out_runs_the_child_resolution(self):
         """allow_path_divergence=True is the explicit intent statement:
         the child's own (scrubbed) PATH resolution runs."""
@@ -189,6 +199,7 @@ class TestSandboxedChildLayoutScrub(unittest.TestCase):
         assert r.returncode == 0, (r.returncode, r.stderr[-300:])
         assert "system-pip-marker" in r.stdout
 
+    @requires_landlock
     def test_gate_absolute_path_untouched(self):
         """Absolute-path invocations never consult PATH — no gate."""
         from core.sandbox import sandbox
@@ -199,6 +210,7 @@ class TestSandboxedChildLayoutScrub(unittest.TestCase):
         assert r.returncode == 0, (r.returncode, r.stderr[-300:])
         assert "system-pip-marker" in r.stdout
 
+    @requires_landlock
     def test_gate_same_resolution_untouched(self):
         """A bare name resolving identically on both sides passes."""
         from core.sandbox import sandbox
@@ -252,6 +264,7 @@ class TestSandboxedChildLayoutScrub(unittest.TestCase):
         self.addCleanup(os.environ.__setitem__, "PATH", old_path)
         return venv_bin, sys_bin
 
+    @requires_landlock
     def test_caller_env_still_verbatim(self):
         """Caller-supplied env= is documented pass-through — the scrub
         must not touch it."""

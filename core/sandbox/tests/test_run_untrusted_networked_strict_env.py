@@ -9,8 +9,10 @@ cc_dispatch-style migrations that build env from semi-trusted sources.
 import pytest
 
 from core.sandbox import context as _ctx
+from core.sandbox.tests.capability import requires_userns
 
 
+@requires_userns
 def test_run_untrusted_networked_forwards_strict_env(monkeypatch, tmp_path):
     captured = {}
 
@@ -50,6 +52,7 @@ def test_run_untrusted_networked_forwards_strict_env(monkeypatch, tmp_path):
     assert captured["kwargs"].get("proxy_hosts") == ["api.example.com"]
 
 
+@requires_userns
 def test_run_untrusted_rejects_caller_strict_env(tmp_path):
     """Caller passing strict_env= must get the clean guard message, not
     a confusing "multiple values for keyword argument" TypeError.
@@ -68,6 +71,7 @@ def test_run_untrusted_rejects_caller_strict_env(tmp_path):
         )
 
 
+@requires_userns
 def test_run_untrusted_networked_rejects_caller_strict_env(tmp_path):
     """Same defensive parity for the networked variant."""
     with pytest.raises(TypeError, match="strict_env"):

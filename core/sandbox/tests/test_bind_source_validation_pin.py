@@ -39,6 +39,7 @@ import unittest
 from pathlib import Path
 
 import pytest
+from core.sandbox.tests.capability import requires_landlock, requires_userns
 
 REPO = Path(__file__).resolve().parents[3]
 if str(REPO) not in sys.path:
@@ -416,6 +417,7 @@ class TestAttackRegressionE2E(unittest.TestCase):
             capture_output=True, text=True,
         )
 
+    @requires_userns
     def test_post_validation_swap_refused_at_spawn_layer(self) -> None:
         from core.sandbox._spawn import run_sandboxed
         with self._swap_after_pin():
@@ -436,6 +438,7 @@ class TestAttackRegressionE2E(unittest.TestCase):
                 f"write escaped the refused spawn into {where}",
             )
 
+    @requires_userns
     def test_context_layer_fails_loud_no_landlock_demotion(self) -> None:
         """The 'P' refusal must NOT ride the M-degrade ladder: the
         Landlock-only retry would re-run the command on the host
@@ -457,6 +460,7 @@ class TestAttackRegressionE2E(unittest.TestCase):
                 f"to a tier the planted symlink steers",
             )
 
+    @requires_userns
     def test_pin_time_plant_fails_loud_at_context_layer(self) -> None:
         """Reviewer-demonstrated shape: the symlink lands DURING the
         validation walk (pin raises ELOOP with the plant already in
@@ -496,6 +500,7 @@ class TestAttackRegressionE2E(unittest.TestCase):
                 f"degraded to a tier the planted symlink steers",
             )
 
+    @requires_userns
     def test_planted_readable_path_not_bound(self) -> None:
         """A readable_paths entry that did NOT exist at validation and
         is planted (as a symlink to a secret-bearing directory) before
@@ -531,6 +536,8 @@ class TestAttackRegressionE2E(unittest.TestCase):
         self.assertNotIn("SECRET-CONTENT", r.stdout or "",
                          "planted symlink content leaked into sandbox")
 
+    @requires_landlock
+    @requires_userns
     def test_benign_run_unaffected(self) -> None:
         """No swap: pinned spawn works end-to-end, including an output
         path that is a benign pre-existing symlink."""

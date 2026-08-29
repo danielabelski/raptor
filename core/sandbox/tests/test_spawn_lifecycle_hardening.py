@@ -28,6 +28,7 @@ import unittest
 from pathlib import Path
 
 import pytest
+from core.sandbox.tests.capability import requires_landlock, requires_userns
 
 pytestmark = pytest.mark.skipif(
     sys.platform != "linux", reason="Linux spawn backend",
@@ -72,6 +73,8 @@ class TestKillpgConfusedDeputyGuard(unittest.TestCase):
         self.assertEqual(r.returncode, 0)
 
 
+@requires_landlock
+@requires_userns
 class TestTimeoutKillsTargetTree(unittest.TestCase):
     def setUp(self):
         if not _mount_ns_usable():
@@ -127,6 +130,8 @@ class TestTimeoutKillsTargetTree(unittest.TestCase):
         ))
 
 
+@requires_landlock
+@requires_userns
 class TestHighFdSweep(unittest.TestCase):
     def setUp(self):
         if not _mount_ns_usable():

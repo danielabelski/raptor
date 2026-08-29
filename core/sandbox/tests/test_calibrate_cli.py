@@ -12,6 +12,7 @@ import pytest
 
 from core.sandbox import calibrate as cal
 from core.sandbox.calibrate_cli import _cli_main
+from core.sandbox.tests.capability import requires_landlock
 
 
 def _profile_for(bin_path) -> cal.SandboxProfile:
@@ -245,6 +246,7 @@ class TestSpawnPath:
     sys.platform != "linux",
     reason="Linux ptrace + seccomp tracer — observe is Linux-only here",
 )
+@requires_landlock
 class TestE2EShim:
 
     def test_shim_calibrates_bin_cat(self, tmp_path, monkeypatch):

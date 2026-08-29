@@ -26,6 +26,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from core.sandbox.tests.capability import requires_landlock, requires_userns
 
 pytestmark = pytest.mark.skipif(
     sys.platform != "linux", reason="Linux spawn backend",
@@ -39,6 +40,8 @@ def _mount_ns_usable() -> bool:
     return not (sysctl.exists() and sysctl.read_text().strip() == "1")
 
 
+@requires_landlock
+@requires_userns
 class TestCaptureCeiling(unittest.TestCase):
     def setUp(self):
         if not _mount_ns_usable():
@@ -94,6 +97,7 @@ class TestCaptureCeiling(unittest.TestCase):
                       "expected the truncation marker")
 
 
+@requires_landlock
 class TestKeepTrustMarkersOutOfBand(unittest.TestCase):
     def setUp(self):
         if not _mount_ns_usable():

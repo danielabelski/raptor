@@ -32,6 +32,7 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from core.sandbox import check_seccomp_available  # noqa: E402
+from core.sandbox.tests.capability import requires_landlock
 
 pytestmark = [
     pytest.mark.skipif(sys.platform != "linux", reason="Linux seccomp"),
@@ -97,6 +98,7 @@ def _run_probes(**run_kwargs) -> subprocess.CompletedProcess:
     )
 
 
+@requires_landlock
 class TestSctpFamilyDenied:
     def test_denied_under_default_posture(self):
         r = _run_probes(block_network=True)
@@ -113,6 +115,7 @@ class TestSctpFamilyDenied:
         assert r.returncode == 0, r.stdout + r.stderr
 
 
+@requires_landlock
 class TestUnixSeqpacketUnaffected:
     def test_af_unix_seqpacket_where_unix_allowed(self, tmp_path):
         # The family-scoped SEQPACKET deny must not break AF_UNIX

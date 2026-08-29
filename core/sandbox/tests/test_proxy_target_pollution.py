@@ -27,8 +27,10 @@ from pathlib import Path  # noqa: E402
 from tempfile import TemporaryDirectory  # noqa: E402
 
 from core.sandbox import check_net_available, run as sandbox_run  # noqa: E402
+from core.sandbox.tests.capability import requires_landlock
 
 
+@requires_landlock
 class TestProxyEventsTargetPollution(unittest.TestCase):
     """proxy-events.jsonl must not be written into `target` when
     output==target (or output lives under target). In-memory events

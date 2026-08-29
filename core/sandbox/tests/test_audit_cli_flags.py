@@ -13,6 +13,7 @@ import pytest
 
 from core.sandbox import cli as cli_mod
 from core.sandbox import state
+from core.sandbox.tests.capability import requires_landlock, requires_userns
 
 
 @pytest.fixture
@@ -176,6 +177,7 @@ class TestAuditBudgetFlag:
             cli_mod.apply_cli_args(args)
 
 
+@requires_userns
 class TestRunUntrustedForwardsAuditKwargs:
     """run_untrusted is a thin convenience wrapper around run() — it
     forwards **kwargs. Audit kwargs should propagate. Covers the
@@ -254,6 +256,7 @@ class TestProfileSet:
 class TestSandboxAuditKwarg:
     """Per-call audit/audit_verbose kwargs on context.sandbox()."""
 
+    @requires_landlock
     def test_audit_kwarg_engages_audit_mode(self, monkeypatch, tmp_path):
         # No CLI flag, but per-call audit=True. Should still engage.
         from core.sandbox import probes
@@ -344,6 +347,7 @@ class TestAllowlistExtensionFlags:
         with pytest.raises(ValueError, match="incoherent"):
             cli_mod.apply_cli_args(args, None)
 
+    @requires_landlock
     def test_context_merges_cli_readable_paths(self, tmp_path):
         """sandbox() must union the CLI extension into the caller's
         readable_paths kwarg (dedup included)."""

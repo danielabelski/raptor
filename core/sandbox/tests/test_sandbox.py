@@ -21,6 +21,7 @@ from core.sandbox import (
 from core.sandbox import (
     run as sandbox_run,
 )
+from core.sandbox.tests.capability import requires_landlock, requires_userns
 
 
 class TestAvailabilityCheck(unittest.TestCase):
@@ -244,6 +245,7 @@ class TestBlockedCheck(unittest.TestCase):
 
 class TestSandboxContextManager(unittest.TestCase):
 
+    @requires_landlock
     def test_basic_command(self):
         """A simple command runs and returns CompletedProcess."""
         with sandbox() as run:
@@ -251,6 +253,7 @@ class TestSandboxContextManager(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("hello", result.stdout)
 
+    @requires_landlock
     def test_env_is_safe(self):
         """Commands get safe env by default (dangerous vars stripped)."""
         os.environ["BASH_ENV"] = "/tmp/evil.sh"
@@ -261,6 +264,7 @@ class TestSandboxContextManager(unittest.TestCase):
         finally:
             os.environ.pop("BASH_ENV", None)
 
+    @requires_landlock
     def test_glibc_loader_vars_stripped(self):
         """glibc loader/data-module vars must be stripped — GCONV_PATH etc.
         are classic AT_SECURE-surviving injection vectors and must not flow
@@ -326,6 +330,7 @@ class TestSandboxContextManager(unittest.TestCase):
             result = run(["echo", "test"], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0)
 
+    @requires_landlock
     def test_custom_env_preserved(self):
         """Caller-provided env is respected, not overwritten."""
         custom_env = {"PATH": "/usr/bin", "MY_VAR": "hello"}
@@ -364,11 +369,13 @@ class TestSandboxContextManager(unittest.TestCase):
             for k in ("RAPTOR_TEST_UNKNOWN_INJECTION", "LC_TIME", "SSH_ASKPASS"):
                 os.environ.pop(k, None)
 
+    @requires_landlock
     def test_timeout_works(self):
         """Python timeout still functions inside sandbox."""
         with sandbox() as run, self.assertRaises(subprocess.TimeoutExpired):
             run(["sleep", "60"], timeout=1)
 
+    @requires_landlock
     def test_multiple_commands(self):
         """Multiple run() calls work in same context."""
         with sandbox() as run:
@@ -424,6 +431,7 @@ class TestSandboxNetworkIsolation(unittest.TestCase):
 class TestSandboxRun(unittest.TestCase):
     """Test the convenience run() function."""
 
+    @requires_landlock
     def test_basic(self):
         try:
             result = sandbox_run(["echo", "test"], capture_output=True, text=True)
@@ -487,6 +495,7 @@ class TestSandboxProfiles(unittest.TestCase):
                 result = run(["echo", "disabled"], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0)
 
+    @requires_landlock
     def test_convenience_run_with_profile(self):
         try:
             result = sandbox_run(["echo", "profiled"], profile="none",
@@ -500,6 +509,7 @@ class TestSandboxProfiles(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
 
 
+@requires_landlock
 class TestSandboxMountIsolation(unittest.TestCase):
     """Mount namespace tests — only run when available."""
 
@@ -708,6 +718,7 @@ class TestPreexecLandlockGate(unittest.TestCase):
         self.assertEqual(len(calls), 1)
 
 
+@requires_landlock
 class TestSeccompBlocklist(unittest.TestCase):
     """Seccomp filter blocks escape-vector syscalls under full/debug."""
 
@@ -928,6 +939,7 @@ class TestForkBombBounded(unittest.TestCase):
         if not check_sandbox_available():
             self.skipTest("User namespaces not available")
 
+    @requires_landlock
     def test_fork_bomb_bounded_by_nproc(self):
         """nproc=5 caps the sandbox at ~5 processes — fork loop gets EAGAIN."""
         with TemporaryDirectory() as d:
@@ -970,6 +982,7 @@ class TestForkBombBounded(unittest.TestCase):
         self.assertIn("ok", result.stdout)
 
 
+@requires_landlock
 class TestPidNamespace(unittest.TestCase):
     """PID namespace isolates sandboxed processes from host PIDs."""
 
@@ -1021,6 +1034,7 @@ class TestPidNamespace(unittest.TestCase):
                       f"grandchild), got: {r.stdout!r}")
 
 
+@requires_landlock
 class TestFdIsolation(unittest.TestCase):
     """File descriptors must NOT be inherited from RAPTOR into the sandbox
     except via the explicit pass_fds= escape hatch."""
@@ -1233,6 +1247,7 @@ class TestRunTrustedGuard(unittest.TestCase):
             with self.assertRaises(TypeError, msg=f"run_trusted should reject {bad}"):
                 run_trusted(["true"], **{bad: "x"})
 
+    @requires_landlock
     def test_run_trusted_accepts_subprocess_kwargs(self):
         from core.sandbox import run_trusted
         result = run_trusted(["echo", "ok"], capture_output=True, text=True)
@@ -1248,6 +1263,8 @@ class TestRunUntrustedGuard(unittest.TestCase):
         with self.assertRaises(ValueError):
             run_untrusted(["true"])  # no target, no output
 
+    @requires_landlock
+    @requires_userns
     def test_run_untrusted_with_output_works(self):
         from core.sandbox import run_untrusted
         with TemporaryDirectory() as out:
@@ -1264,18 +1281,21 @@ class TestRunUntrustedGuard(unittest.TestCase):
             with self.assertRaises(ValueError):
                 run_untrusted(["true"], target=t, output=o)
 
+    @requires_userns
     def test_run_untrusted_rejects_block_network_override(self):
         """run_untrusted contract includes network block — cannot be disabled."""
         from core.sandbox import run_untrusted
         with TemporaryDirectory() as out, self.assertRaises(TypeError):
             run_untrusted(["true"], output=out, block_network=False)
 
+    @requires_userns
     def test_run_untrusted_rejects_allowed_tcp_ports(self):
         """Dead combination: namespace --net kills any Landlock TCP allow-rule."""
         from core.sandbox import run_untrusted
         with TemporaryDirectory() as out, self.assertRaises(TypeError):
             run_untrusted(["true"], output=out, allowed_tcp_ports=[443])
 
+    @requires_userns
     def test_run_untrusted_rejects_weaker_profiles(self):
         """profile= is a ratchet: anything below 'full' would relax the
         untrusted-execution contract and must be rejected."""
@@ -1287,6 +1307,7 @@ class TestRunUntrustedGuard(unittest.TestCase):
                                        msg=f"should reject profile={weaker}"):
                     run_untrusted(["true"], output=out, profile=weaker)
 
+    @requires_userns
     def test_run_untrusted_forwards_ratchet_profiles(self):
         """'strict' and the default 'full' pass through to run()."""
         from core.sandbox import context
@@ -1297,6 +1318,7 @@ class TestRunUntrustedGuard(unittest.TestCase):
                 self.assertEqual(m.call_args.kwargs["profile"], allowed)
 
 
+@requires_landlock
 class TestSandboxRunKwargGuard(unittest.TestCase):
     """sandbox().run() must reject per-call sandbox kwargs."""
 
@@ -1395,6 +1417,7 @@ class TestSanitizerStderrBytes(unittest.TestCase):
         _interpret_result(r, "bin")
         self.assertEqual(r.sandbox_info.get("sanitizer"), "asan")
 
+    @requires_landlock
     def test_bytes_stderr_enforcement_still_detected(self):
         """sandbox() must detect Landlock/network/seccomp blocks even when
         the caller passed capture_output=True without text=True (bytes stderr).
@@ -2051,6 +2074,7 @@ class TestLandlockDegradationWarnings(unittest.TestCase):
         mod_state._landlock_warned_unavailable = self._saved_unav
         mod_state._landlock_warned_abi_v4 = self._saved_abi
 
+    @requires_userns
     def test_raises_when_landlock_unavailable_but_target_set(self):
         from unittest.mock import patch
 
@@ -2064,6 +2088,7 @@ class TestLandlockDegradationWarnings(unittest.TestCase):
             run(["true"], capture_output=True, text=True)
         self.assertIn("Landlock is unavailable", cm.exception.reason)
 
+    @requires_userns
     def test_warns_when_tcp_allowlist_on_abi_lt_4(self):
         from unittest.mock import patch
 
@@ -2091,6 +2116,7 @@ class TestLandlockDegradationWarnings(unittest.TestCase):
                         sandbox(target=d, output=d) as run:
                     run(["true"], capture_output=True, text=True)
 
+    @requires_userns
     def test_warns_on_old_landlock_abi_v2(self):
         """Pre-5.19 kernels lack REFER — rename-across-dirs isn't blocked.
         Operator should see a WARNING so the gap is visible."""
@@ -2106,6 +2132,7 @@ class TestLandlockDegradationWarnings(unittest.TestCase):
         self.assertTrue(any("ABI v2" in m and "REFER" in m for m in cm.output))
         self.assertTrue(any("ABI v3" in m and "TRUNCATE" in m for m in cm.output))
 
+    @requires_userns
     def test_warns_on_old_landlock_abi_v3_only(self):
         """Pre-6.2 kernels lack TRUNCATE but have REFER (ABI 2)."""
         import core.sandbox as mod
@@ -2120,6 +2147,7 @@ class TestLandlockDegradationWarnings(unittest.TestCase):
         self.assertTrue(any("ABI v3" in m and "TRUNCATE" in m for m in cm.output))
         self.assertFalse(any("ABI v2" in m and "REFER" in m for m in cm.output))
 
+    @requires_landlock
     def test_warns_on_block_network_plus_allowlist(self):
         """block_network=True + allowed_tcp_ports is a dead combination —
         namespace removes all interfaces before Landlock's allow-rule can
@@ -2147,6 +2175,7 @@ class TestLandlockDegradationWarnings(unittest.TestCase):
         self.assertFalse(any("ABI v4" in m for m in cm.output))
 
 
+@requires_landlock
 class TestCliProfileAuthoritative(unittest.TestCase):
     """CLI --sandbox must override library-level disabled=True."""
 
@@ -2182,6 +2211,7 @@ class TestCliProfileAuthoritative(unittest.TestCase):
         self.assertFalse(mod_state._cli_sandbox_disabled)
 
 
+@requires_landlock
 class TestSandboxObservability(unittest.TestCase):
     """Test signal interpretation and sandbox_info."""
 
@@ -2261,6 +2291,7 @@ class TestCmdVisibleInMountTree(unittest.TestCase):
         self.assertTrue(_cmd_visible_in_mount_tree([], None, None, None))
 
 
+@requires_landlock
 class TestToolPathsKwarg(unittest.TestCase):
     """C: the tool_paths kwarg is the explicit-opt-in companion to B's
     auto-fallback. Callers that know their tool's install layout pass

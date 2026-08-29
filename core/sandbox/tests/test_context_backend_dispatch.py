@@ -16,6 +16,7 @@ from unittest import mock
 import pytest
 
 from core.sandbox import context, state
+from core.sandbox.tests.capability import requires_userns
 
 
 @pytest.fixture
@@ -83,6 +84,7 @@ def test_dispatch_picks_macos_backend_on_darwin(reset_caches):
     )
 
 
+@requires_userns
 @pytest.mark.skipif(sys.platform != "linux", reason="runs real unshare")
 def test_dispatch_picks_linux_backend_on_linux(reset_caches):
     """Inverse: on Linux, the dispatch must use _spawn (or the

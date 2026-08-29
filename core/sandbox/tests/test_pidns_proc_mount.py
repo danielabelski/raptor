@@ -39,6 +39,7 @@ import textwrap  # noqa: E402
 import unittest  # noqa: E402
 from pathlib import Path  # noqa: E402
 from unittest import mock  # noqa: E402
+from core.sandbox.tests.capability import requires_landlock, requires_userns
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -263,6 +264,8 @@ class TestPostureStampE2E(unittest.TestCase):
         return run(["true"], timeout=30,
                    target=self.tmp.name, output=self.tmp.name)
 
+    @requires_landlock
+    @requires_userns
     def test_degraded_host_run_is_stamped_pidns_proc_mount_unavailable(self):
         from core.sandbox import state
         state._pidns_fresh_proc_cache = False  # degraded host class
@@ -276,6 +279,7 @@ class TestPostureStampE2E(unittest.TestCase):
             "per-run forensic record",
         )
 
+    @requires_landlock
     def test_capable_host_run_carries_no_degradation_stamp(self):
         from core.sandbox import state
         state._pidns_fresh_proc_cache = True
@@ -283,6 +287,7 @@ class TestPostureStampE2E(unittest.TestCase):
         self.assertEqual(r.returncode, 0)
         self.assertNotIn("pidns_proc_mount_unavailable", r.sandbox_info)
 
+    @requires_landlock
     def test_contract_lane_run_is_never_stamped_from_a_divergent_probe(self):
         """A require_fresh_procfs run that completed PROVED its procfs
         was fresh (a grandchild remount failure aborts before any
@@ -297,6 +302,8 @@ class TestPostureStampE2E(unittest.TestCase):
         self.assertNotIn("pidns_proc_mount_unavailable", r.sandbox_info)
 
 
+@requires_landlock
+@requires_userns
 class TestNoWarningWhenRemountWorksE2E(unittest.TestCase):
     """On a host that CAN remount the fresh procfs, spawns must emit no
     proc-mount warning at all (the pre-Landlock mount ordering makes the
@@ -368,6 +375,7 @@ ctypes.CDLL = _patched
 """
 
 
+@requires_userns
 class TestDegradeLaneWarningDedupE2E(unittest.TestCase):
     """End-to-end log-once semantics on the accepted-degrade lane, with
     the remount failure forced through the real spawn chain: the

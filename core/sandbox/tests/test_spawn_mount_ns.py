@@ -27,6 +27,7 @@ import sys  # noqa: E402
 import tempfile  # noqa: E402
 import unittest  # noqa: E402
 from pathlib import Path  # noqa: E402
+from core.sandbox.tests.capability import requires_landlock, requires_userns
 
 
 def _mount_ns_usable() -> bool:
@@ -99,6 +100,8 @@ class TestRunSandboxedSmokeTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
 
+    @requires_landlock
+    @requires_userns
     def test_basic_execvp(self):
         """Fork+newuidmap+mount+Landlock+seccomp+exec chain runs. The
         child sees itself as PID 1 (pid-ns) and uid 0 (user-ns-mapped)."""
@@ -122,6 +125,8 @@ class TestRunSandboxedSmokeTest(unittest.TestCase):
         self.assertIn("pid=1", r.stdout)
         self.assertIn("0", r.stdout.splitlines()[-1])
 
+    @requires_landlock
+    @requires_userns
     def test_target_visible_at_original_path(self):
         """Caller's target dir is bind-mounted at its original absolute
         path inside the sandbox, so argv referring to the host path
@@ -145,6 +150,8 @@ class TestRunSandboxedSmokeTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, f"stderr: {r.stderr!r}")
         self.assertIn("MARKER-CONTENT", r.stdout)
 
+    @requires_landlock
+    @requires_userns
     def test_output_writable_inside_sandbox(self):
         """A file created in output by the child survives the sandbox."""
         from core.sandbox._spawn import run_sandboxed
@@ -167,6 +174,8 @@ class TestRunSandboxedSmokeTest(unittest.TestCase):
                         "file created by sandboxed child should persist "
                         "because output is bind-mounted writable")
 
+    @requires_landlock
+    @requires_userns
     def test_tmp_is_fresh_per_sandbox(self):
         """Per-sandbox tmpfs /tmp — content the caller placed in host
         /tmp is NOT visible inside the sandbox (except the bind-mounted
@@ -202,6 +211,8 @@ class TestRunSandboxedSmokeTest(unittest.TestCase):
                           "/tmp canary leaked into sandboxed view — "
                           "per-sandbox tmpfs isolation broken")
 
+    @requires_landlock
+    @requires_userns
     def test_readable_file_under_target_bind_no_eexist(self):
         """A readable_paths FILE living under the target bind must not
         abort the spawn. The step-8 target bind already populates the
@@ -240,6 +251,7 @@ class TestRunSandboxedSmokeTest(unittest.TestCase):
         )
         self.assertIn("HELPER-CONTENT", r.stdout)
 
+    @requires_userns
     def test_tmp_resident_target_is_read_only(self):
         """A target under /tmp must NOT be writable through its bind.
 
@@ -274,6 +286,8 @@ class TestRunSandboxedSmokeTest(unittest.TestCase):
                          "host file materialised through the read-only "
                          "target bind — locked-flag remount regressed")
 
+    @requires_landlock
+    @requires_userns
     def test_stub_dir_cleaned_up_after_run(self):
         """The parent-created tempfile.mkdtemp stub must be removed
         after the child exits. Without cleanup, /tmp accumulates
@@ -335,6 +349,8 @@ class TestRunSandboxedSmokeTest(unittest.TestCase):
         )
 
 
+@requires_landlock
+@requires_userns
 class TestEtcOverlayMissingHostTarget(unittest.TestCase):
     """etc_overlay when the target path doesn't exist on the host.
 
@@ -470,6 +486,8 @@ class TestEtcOverlayMissingHostTarget(unittest.TestCase):
                       "overlay file not visible alongside host /etc")
 
 
+@requires_landlock
+@requires_userns
 class TestEtcOverlayKeyValidation(unittest.TestCase):
     """etc_overlay keys are concatenated onto the staging root; a
     non-normalized key (\"..\") must never drive pre-pivot file

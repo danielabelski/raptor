@@ -26,6 +26,7 @@ import unittest
 from pathlib import Path
 
 import pytest
+from core.sandbox.tests.capability import requires_landlock, requires_userns
 
 pytestmark = pytest.mark.skipif(
     sys.platform != "linux", reason="mount-ns backend is Linux-only",
@@ -55,6 +56,8 @@ class _Base(unittest.TestCase):
 
 
 class TestStrictRefusesPerCallDemotion(_Base):
+    @requires_landlock
+    @requires_userns
     def test_input_kwarg_no_longer_demotes_under_strict(self):
         # input= converts to a private stdin spool and rides the fork
         # backend — strict mode has nothing to refuse: the call runs
@@ -67,6 +70,8 @@ class TestStrictRefusesPerCallDemotion(_Base):
         self.assertEqual(r.returncode, 0, r.stderr[-300:])
         self.assertIn("witness-x", r.stdout)
 
+    @requires_landlock
+    @requires_userns
     def test_input_stdin_spool_is_read_only(self):
         # The converted spool must reach the target with NO write
         # capability on fd 0 — a writable description would let the
@@ -88,6 +93,7 @@ class TestStrictRefusesPerCallDemotion(_Base):
         self.assertIn("IN=witness-ro", r.stdout)
         self.assertIn("WRITE=denied", r.stdout)
 
+    @requires_userns
     def test_truncated_stdin_spool_fails_loud(self):
         # A spool that silently loses the input= bytes must abort the
         # run: handing the target an empty fd 0 turns a witness-driven
@@ -121,6 +127,7 @@ class TestStrictRefusesPerCallDemotion(_Base):
                     text=True, timeout=30)
         self.assertIn("spool integrity", str(cm.exception))
 
+    @requires_userns
     def test_input_and_stdin_together_raise(self):
         # subprocess.run's own contract, kept across the spool
         # conversion instead of silently preferring input=.
@@ -133,6 +140,7 @@ class TestStrictRefusesPerCallDemotion(_Base):
                 run(["cat"], input="x", stdin=_pr,
                     capture_output=True, text=True, timeout=30)
 
+    @requires_userns
     def test_pass_fds_demotion_raises_under_strict(self):
         from core.sandbox import sandbox
         from core.sandbox.errors import SandboxSetupError
@@ -144,6 +152,8 @@ class TestStrictRefusesPerCallDemotion(_Base):
                 run(["true"], pass_fds=[r], pass_fds_declared=True,
                     capture_output=True, text=True, timeout=30)
 
+    @requires_landlock
+    @requires_userns
     def test_strict_without_demotion_still_runs(self):
         from core.sandbox import sandbox
         with sandbox(profile="strict", target=self.tgt,
@@ -179,6 +189,7 @@ class TestDemotedCallGetsPrivateScratch(_Base):
             print("scratch=denied")
     """)
 
+    @requires_landlock
     def test_demoted_restricted_call_cannot_write_host_tmp(self):
         from core.sandbox import sandbox
         marker = os.path.join(
@@ -217,6 +228,7 @@ class TestDemotedCallGetsPrivateScratch(_Base):
                 "private_scratch"),
             "demoted restricted call must stamp private_scratch")
 
+    @requires_landlock
     def test_demoted_lane_masks_host_cgroup(self):
         # The subprocess-lane bootstrap unshares a cgroup namespace
         # (where util-linux supports --cgroup), so /proc/self/cgroup
@@ -240,6 +252,8 @@ class TestDemotedCallGetsPrivateScratch(_Base):
             self.assertNotIn(tell, r.stdout,
                              f"host cgroup path leaked: {r.stdout!r}")
 
+    @requires_landlock
+    @requires_userns
     def test_mounted_run_keeps_full_tmp_semantics(self):
         """No demotion → per-sandbox tmpfs /tmp stays writable."""
         from core.sandbox import sandbox
@@ -252,6 +266,7 @@ class TestDemotedCallGetsPrivateScratch(_Base):
                       f"{r.stdout!r} {r.stderr[-300:]!r}")
 
 
+@requires_userns
 class TestPolicyRequiredGates(unittest.TestCase):
     def test_restrict_reads_alone_builds_landlock_on_spawn_path(self):
         """_spawn's landlock gate must treat a read-restricted spawn
@@ -297,6 +312,7 @@ class TestPolicyRequiredGates(unittest.TestCase):
         ))
 
 
+@requires_userns
 class TestTargetRemountRoFailClosed(_Base):
     def test_remount_failure_aborts_when_target_under_writable_grant(
             self):

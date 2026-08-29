@@ -18,6 +18,7 @@ import pytest
 from core.sandbox import summary as summary_mod
 from core.sandbox import telemetry_mac
 from core.sandbox import triage as triage_mod
+from core.sandbox.tests.capability import requires_landlock
 
 
 @pytest.fixture(autouse=True)
@@ -311,6 +312,7 @@ class TestMacosSpawnWiring:
         assert posture["mac_key_hidden"] is True
 
 
+@requires_landlock
 class TestLinuxContextWiring:
     """The Linux dispatch layer records the per-call posture too —
     a real sandboxed call with an output dir must land a posture

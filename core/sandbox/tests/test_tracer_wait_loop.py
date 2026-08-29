@@ -39,6 +39,7 @@ import time
 from pathlib import Path
 
 import pytest
+from core.sandbox.tests.capability import requires_landlock
 
 pytestmark = pytest.mark.skipif(
     sys.platform != "linux",
@@ -207,6 +208,7 @@ def _live_prereqs() -> tuple[bool, str]:
     return True, ""
 
 
+@requires_landlock
 class TestLandlockOnlyObserveLatency:
     """The user-visible regression: Landlock-only observe of
     ``/usr/bin/true`` must complete in well under the wrapper chain's

@@ -19,6 +19,7 @@ import unittest
 from pathlib import Path
 
 import pytest
+from core.sandbox.tests.capability import requires_landlock, requires_userns
 
 pytestmark = pytest.mark.skipif(
     sys.platform != "linux",
@@ -35,6 +36,8 @@ def _mount_ns_usable() -> bool:
     return True
 
 
+@requires_landlock
+@requires_userns
 class TestFingerprintEndToEnd(unittest.TestCase):
     """Full sandbox spawn with sanitise_host_fingerprint → child reads
     masked files. Each test runs a small sh snippet inside the sandbox

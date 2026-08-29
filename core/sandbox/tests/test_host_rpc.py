@@ -45,6 +45,7 @@ from tempfile import TemporaryDirectory  # noqa: E402
 from unittest.mock import patch  # noqa: E402
 
 from core.sandbox.host import HostRPCError, SandboxHost  # noqa: E402
+from core.sandbox.tests.capability import requires_userns
 
 # Generous ceiling for CI boxes where the first sandbox spawn pays
 # for probe/cache warm-up.
@@ -294,6 +295,7 @@ def _fake_run(*args, **kwargs):
     return _DeadDaemonResult()
 
 
+@requires_userns
 class TestDaemonDiedDiagnostic(unittest.TestCase):
     """The daemon-died startup diagnostic must surface the captured
     returncode alongside its sibling keys ``error`` and ``stderr``.

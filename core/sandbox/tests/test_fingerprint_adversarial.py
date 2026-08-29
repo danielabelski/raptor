@@ -35,6 +35,7 @@ import unittest
 from pathlib import Path
 
 import pytest
+from core.sandbox.tests.capability import requires_landlock, requires_userns
 
 pytestmark = pytest.mark.skipif(
     sys.platform != "linux",
@@ -49,6 +50,8 @@ def _mount_ns_usable() -> bool:
     return not (sysctl.exists() and sysctl.read_text().strip() == "1")
 
 
+@requires_landlock
+@requires_userns
 class TestAdversarialFingerprint(unittest.TestCase):
     """Each test spawns a sandbox with sanitise_host_fingerprint=True
     and runs an adversary's fingerprint check. The check exits 0 if

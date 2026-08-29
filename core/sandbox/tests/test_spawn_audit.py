@@ -43,6 +43,7 @@ from core.sandbox import (
 )
 from core.sandbox import tracer as tracer_mod
 from core.sandbox._spawn import run_sandboxed
+from core.sandbox.tests.capability import requires_landlock, requires_userns
 
 pytestmark = [
     pytest.mark.skipif(
@@ -76,6 +77,7 @@ def _audit_prereqs_ok() -> tuple:
     return True, ""
 
 
+@requires_userns
 class TestAuditPreflightDecision:
     """The audit pre-flight decides _audit_engaged based on the
     ptrace probe result. These tests verify the decision logic
@@ -226,6 +228,7 @@ class TestAuditModeRequiresRunDir:
             )
 
 
+@requires_landlock
 class TestAuditModeBasicFlow:
     """Full end-to-end: target runs `true` under audit mode; tracer
     attaches; target exits clean; tracer reaped; no orphans."""
@@ -454,6 +457,7 @@ class TestAuditModeBasicFlow:
             )
 
 
+@requires_landlock
 class TestAuditModeMultiProcess:
     """TRACEFORK / TRACEVFORK / TRACECLONE in the SEIZE options means
     the kernel auto-attaches the tracer to every fork/clone descendant
@@ -677,6 +681,7 @@ class TestAuditModeTracerDeath:
             raise
 
 
+@requires_landlock
 class TestSandboxAuditProfile:
     """Public-API exercise of the `--sandbox audit` profile. Goes
     through context.sandbox()'s profile resolution, not the lower-
@@ -727,6 +732,7 @@ class TestSandboxAuditProfile:
             assert r["audit"] is True
 
 
+@requires_landlock
 class TestAuditModeDegradesWhenPtraceBlocked:
     """When the ptrace probe reports unavailable, audit mode degrades:
     seccomp filter installed WITHOUT SCMP_ACT_TRACE (target wouldn't

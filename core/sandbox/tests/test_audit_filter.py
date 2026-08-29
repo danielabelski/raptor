@@ -18,6 +18,7 @@ import pytest
 from core.sandbox import audit_budget, probes, ptrace_probe
 from core.sandbox import evidence as evidence_mod
 from core.sandbox import tracer as tracer_mod
+from core.sandbox.tests.capability import requires_landlock
 
 pytestmark = pytest.mark.skipif(
     not tracer_mod._is_supported_arch(),
@@ -1343,6 +1344,7 @@ class TestFilterDispatchSeccomp:
         assert budget.total_records == 1
 
 
+@requires_landlock
 class TestEndToEndAuditVsAuditVerbose:
     """Real run: same workload under `audit` and `audit-verbose`,
     verify record counts differ in the expected direction."""

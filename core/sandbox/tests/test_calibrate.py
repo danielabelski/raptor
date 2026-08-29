@@ -25,6 +25,7 @@ from unittest.mock import patch
 import pytest
 
 from core.sandbox import calibrate as cal
+from core.sandbox.tests.capability import requires_landlock
 
 
 @pytest.fixture
@@ -466,6 +467,7 @@ class TestCalibrateBinaryE2E:
                 and check_ptrace_available()):
             pytest.skip("observe prerequisites unavailable")
 
+    @requires_landlock
     def test_real_calibration_of_bin_cat(self, cache_dir):
         # Use /bin/cat /etc/hosts as the probe — guaranteed to
         # produce file-read records under either spawn path.

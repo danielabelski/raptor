@@ -20,6 +20,7 @@ import unittest
 from unittest.mock import patch
 
 import pytest
+from core.sandbox.tests.capability import requires_landlock
 
 pytestmark = pytest.mark.skipif(
     sys.platform != "linux", reason="sandbox rlimit defaults are Linux-only",
@@ -44,6 +45,7 @@ def _child_limits(**sandbox_kwargs):
     return json.loads(r.stdout.strip().splitlines()[-1])
 
 
+@requires_landlock
 class TestNofileDefault(unittest.TestCase):
     def setUp(self):
         self._out = tempfile.TemporaryDirectory(prefix="raptor-rlim-")
@@ -99,6 +101,7 @@ class TestNofileDefault(unittest.TestCase):
         self.assertEqual(soft, want)
 
 
+@requires_landlock
 class TestHostNprocCapOnNoNamespacePath(unittest.TestCase):
     """Landlock-only posture (no userns/netns) — the fork-storm bound."""
 

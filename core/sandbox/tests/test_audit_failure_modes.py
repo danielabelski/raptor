@@ -23,6 +23,7 @@ from core.sandbox import proxy as proxy_mod
 from core.sandbox import tracer as tracer_mod
 from core.sandbox._spawn import run_sandboxed
 from core.sandbox.context import sandbox
+from core.sandbox.tests.capability import requires_landlock
 
 pytestmark = [
     pytest.mark.skipif(
@@ -67,6 +68,7 @@ class TestAuditWithDisabled:
         )
 
 
+@requires_landlock
 class TestBackToBackAuditSandboxes:
     """Run multiple audit sandboxes sequentially in the same process.
     Ref-count must return to zero between calls; tracer subprocesses
@@ -122,6 +124,7 @@ class TestAuditRunDirFailures:
             )
 
 
+@requires_landlock
 class TestAuditWithoutPtraceAvailable:
     """When the ptrace probe says no, audit mode degrades gracefully:
     no tracer fork, no SCMP_ACT_TRACE in seccomp, target runs to
@@ -385,6 +388,7 @@ class TestZombieReapingOnFailure:
         # only ValueError above, so test passes only if no other
         # exception leaked.
 
+    @requires_landlock
     def test_no_zombie_after_disabled_audit(self, tmp_path):
         # This exercises the SUCCESS path through run_sandboxed with
         # audit_mode=False. Just verifies cleanup happens — useful
@@ -674,6 +678,7 @@ class TestAuditConfigWriteFailureHandling:
             )
 
 
+@requires_landlock
 class TestAuditMissingOutputBehaviour:
     """Handling depends on origin of the audit signal:
       - Per-call kwarg `audit=True` + no output= → ValueError (caller
@@ -751,6 +756,7 @@ class TestAuditDegradationWarning:
     (mount-ns blocked vs pass_fds= vs input=) so operators get a
     pointer to the correct fix."""
 
+    @requires_landlock
     def test_no_warning_for_demoted_internal_helper(self, monkeypatch, caplog):
         """CLI --audit + sandbox call with no target/output → audit is
         silently demoted, NO degradation warning fires. The call's
@@ -814,6 +820,7 @@ class TestAuditRunDirKwarg:
     elsewhere.
     """
 
+    @requires_landlock
     def test_audit_run_dir_alone_satisfies_explicit_audit(self, tmp_path):
         """`audit=True` + `audit_run_dir=` (no output) → no ValueError.
         Previously raised because output was the only accepted target."""
@@ -839,6 +846,7 @@ class TestAuditRunDirKwarg:
                 # are unrelated to the kwarg contract being tested.
                 pass
 
+    @requires_landlock
     def test_audit_no_target_at_all_still_raises_for_explicit(self):
         """audit=True with NEITHER output= NOR audit_run_dir= must
         still raise — that's the original case 1, unchanged."""
@@ -1016,6 +1024,7 @@ class TestAuditAcquireOrdering:
         )
 
 
+@requires_landlock
 class TestAuditComposesWithDebugProfile:
     """The flag-based refactor's headline new capability:
     `--sandbox debug --audit` runs the target with debug-profile
@@ -1090,6 +1099,7 @@ class TestAuditWithExistingSandboxFlows:
         jsonl = out / evidence_mod.AUDIT_SUBDIR / tracer_mod._DENIALS_FILENAME
         assert not jsonl.exists()
 
+    @requires_landlock
     def test_cli_audit_overrides_library(
             self, monkeypatch, tmp_path):
         # CLI's `--audit` flag must engage audit even if library
@@ -1165,6 +1175,7 @@ class TestAuditWithExistingSandboxFlows:
         finally:
             proxy_mod._reset_for_tests()
 
+    @requires_landlock
     def test_audit_acquires_proxy_only_when_proxy_engaged(self):
         # use_egress_proxy=False → no proxy → no acquire on the
         # singleton. Verify ref-count stays zero across an audit
@@ -1184,6 +1195,7 @@ class TestAuditWithExistingSandboxFlows:
             proxy_mod._reset_for_tests()
 
 
+@requires_landlock
 class TestProxyAuditAcquireReleaseIntegration:
     """End-to-end: sandbox() context with audit=True +
     use_egress_proxy=True must acquire on entry and release on exit,

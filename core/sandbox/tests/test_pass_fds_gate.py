@@ -20,12 +20,14 @@ import tempfile
 import unittest
 
 import pytest
+from core.sandbox.tests.capability import requires_landlock
 
 pytestmark = pytest.mark.skipif(
     sys.platform != "linux", reason="sandbox pass_fds gate is Linux-only",
 )
 
 
+@requires_landlock
 class TestPassFdsGate(unittest.TestCase):
     def setUp(self):
         self._out = tempfile.TemporaryDirectory(prefix="raptor-fdgate-")

@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
+from core.sandbox.tests.capability import requires_landlock
 
 RAPTOR_DIR = Path(__file__).resolve().parents[3]
 # Hard-SET (never setdefault): the code under test derives paths from
@@ -536,6 +537,7 @@ class TestProxyNetnsContextWiring:
         reason="netns tier spawns a live child through the fork "
                "backend (needs real userns + mount-ns capability)",
     )
+    @requires_landlock
     def test_netns_path_selected_on_low_abi(self):
         """ABI < 4 with the spawn backend live → netns enforcement."""
         assert self._enforcement_with(abi=3, net=True, mount=True) == "netns"
@@ -545,6 +547,7 @@ class TestProxyNetnsContextWiring:
         reason="netns tier spawns a live child through the fork "
                "backend (needs real userns + mount-ns capability)",
     )
+    @requires_landlock
     def test_netns_tier_wins_on_high_abi(self):
         """netns is the strongest tier and wins on ANY ABI when the
         spawn backend is live — the Landlock pin is port-scoped to
@@ -729,6 +732,7 @@ class TestProxyNetnsContextWiring:
         ]
         assert len(tier2_warnings) == 1
 
+    @requires_landlock
     def test_fallback_on_unix_bind_failure(self):
         """If bind_unix fails, falls back to TCP-only without crash."""
         from core.sandbox import sandbox

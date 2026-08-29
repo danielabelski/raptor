@@ -19,7 +19,10 @@ budget client is a fake.
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -453,3 +456,172 @@ class TestBatchedPassBudgetTerminal:
         assert result.terminated_by == "llm_budget_exceeded"
         # Journal agrees with the tally.
         assert len(_journal_functions(out)) == len(calls)
+
+    def test_exhaustion_with_queued_batches_terminates(
+        self, tmp_path: Path, monkeypatch,
+    ):
+        """Deadlock regression: exhaustion firing while batches are
+        still QUEUED must terminate the pass, not hang it.
+
+        ``pool.shutdown(cancel_futures=True)`` cancels queued batches
+        by draining the pool's work queue — so no worker ever pops
+        them, and nothing ever notifies a completion waiter for them
+        (see ``TestQueueDrainCancellation`` for the primitive pin).
+        Pre-fix the harvest loop iterated ``as_completed`` over ALL
+        submitted futures and therefore blocked forever on the
+        drain-cancelled ones: a capped run whose cost rail fired with
+        batches still queued hung its batched pass indefinitely.
+
+        The sibling test above cannot reach this shape: its rail-
+        refused batches complete instantly, so the single worker has
+        drained the whole queue before the consumer's shutdown runs
+        and nothing is left to cancel. Here the worker is held INSIDE
+        its pre-batch rail check (post-exhaustion only) until the
+        queue drain has actually happened, guaranteeing batches are
+        still pending when ``cancel_futures=True`` fires:
+
+        1. the only worker reviews batch 1; its last review flips the
+           client ledger to exhausted;
+        2. the worker picks up batch 2 — its rail check now blocks on
+           ``queue_drained``;
+        3. the consumer tallies batch 1, sees exhaustion, and calls
+           ``shutdown(cancel_futures=True)``: batches 3..6 are
+           cancelled while pending, then the instrumented pool sets
+           ``queue_drained``;
+        4. the worker wakes, rail-refuses batch 2, and exits — the
+           consumer must now terminate with four cancelled futures
+           that will never complete.
+        """
+        target, out, _names = _setup_trivial_target(
+            tmp_path, n_files=6, fns_per_file=4,
+        )
+        import core.audit.orchestrator as orch
+        monkeypatch.setattr(
+            orch, "_run_mechanical_detectors",
+            lambda *args, **kwargs: ({}, set()),
+        )
+
+        client = _FlippableBudgetClient()
+        queue_drained = threading.Event()
+
+        real_check = orch._check_budget
+
+        def gated_check(config, start_time, result):
+            # Hold post-exhaustion WORKER rail checks until the
+            # consumer's cancel_futures drain has run. The consumer's
+            # own checks (main run thread) pass straight through.
+            if (
+                client.exhausted
+                and threading.current_thread().name.startswith(
+                    "ThreadPoolExecutor",
+                )
+            ):
+                queue_drained.wait(timeout=15)
+            return real_check(config, start_time, result)
+
+        monkeypatch.setattr(orch, "_check_budget", gated_check)
+
+        class _SignalOnCancelDrain(ThreadPoolExecutor):
+            """Signals AFTER shutdown's queue drain cancelled the
+            pending futures — the only point that is causally ordered
+            after the cancellations the regression needs in place."""
+
+            def shutdown(self, wait=True, *, cancel_futures=False):
+                super().shutdown(wait=wait, cancel_futures=cancel_futures)
+                if cancel_futures:
+                    queue_drained.set()
+
+        # The batched pass imports ThreadPoolExecutor from
+        # concurrent.futures at call time, so patching the module
+        # attribute reaches it.
+        monkeypatch.setattr(
+            concurrent.futures, "ThreadPoolExecutor", _SignalOnCancelDrain,
+        )
+
+        calls: list[str] = []
+
+        def review_fn(ctx, config):
+            calls.append(ctx["function"])
+            if len(calls) >= 4:
+                # First batch paid for — the cap is now exhausted.
+                client.exhausted = True
+            return ReviewOutcome(
+                file=ctx["file"], function=ctx["function"],
+                status="clean", body="ok", cost_usd=0.5,
+            )
+
+        cfg = _config(
+            target, out,
+            batch_sloc_threshold=15,
+            llm_budget_client=client,
+            # The Joern lifecycle is incidental to this seam and
+            # dominates wallclock on joern-equipped hosts; the
+            # watchdog below needs the healthy run to be fast.
+            joern_overrides={"enabled": False},
+        )
+
+        box: list = []
+        runner = threading.Thread(
+            target=lambda: box.append(run_orchestrator(cfg, review_fn)),
+            daemon=True,
+            name="audit-under-test",
+        )
+        runner.start()
+        runner.join(timeout=8.0)
+        if runner.is_alive():
+            queue_drained.set()  # unwedge the held worker before failing
+            pytest.fail(
+                "batched pass hung after budget exhaustion with queued "
+                "batches — the harvest loop never terminated on the "
+                "drain-cancelled futures",
+            )
+
+        result = box[0]
+        # Batch 1 reviewed; batch 2 worker-gated; batches 3..6
+        # cancelled while pending — never dispatched.
+        assert len(calls) == 4, (
+            f"{len(calls)} reviews dispatched — queued batches ran "
+            f"after budget exhaustion"
+        )
+        # Every dispatched review's outcome is tallied, including any
+        # that complete during the shutdown itself.
+        assert result.reviewed == len(calls)
+        assert result.total_cost_usd == pytest.approx(0.5 * len(calls))
+        assert result.terminated_by == "llm_budget_exceeded"
+        assert len(_journal_functions(out)) == len(calls)
+
+
+class TestQueueDrainCancellation:
+    """Pins the stdlib contract the batched pass's harvest loop is
+    built around: ``shutdown(cancel_futures=True)`` cancels queued
+    futures by DRAINING the work queue, so no worker ever calls
+    ``set_running_or_notify_cancel`` on them and no completion waiter
+    is ever notified. Both ``as_completed`` and ``wait`` treat such a
+    future as still pending forever — the harvest loop must drop
+    futures via ``.cancelled()`` instead of waiting on them."""
+
+    def test_drain_cancelled_future_never_notifies_waiters(self):
+        gate = threading.Event()
+        pool = ThreadPoolExecutor(max_workers=1)
+        try:
+            running = pool.submit(gate.wait, 10)  # occupies the worker
+            queued = pool.submit(lambda: None)    # sits in the queue
+            pool.shutdown(wait=False, cancel_futures=True)
+
+            # The drain cancelled it — visible to .cancelled() ...
+            assert queued.cancelled()
+
+            # ... but as_completed never yields it,
+            with pytest.raises(concurrent.futures.TimeoutError):
+                next(concurrent.futures.as_completed([queued], timeout=0.2))
+
+            # and wait() still classifies it as not_done.
+            done, not_done = concurrent.futures.wait(
+                {queued}, timeout=0.2,
+                return_when=concurrent.futures.FIRST_COMPLETED,
+            )
+            assert done == set()
+            assert not_done == {queued}
+        finally:
+            gate.set()
+            assert running.result(timeout=5) is True

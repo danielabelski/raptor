@@ -656,7 +656,7 @@
       "note": "externally produced PC traces (DynamoRIO/Frida/AFL-QEMU drcov logs dropped into the fuzz out dir by the campaign or the operator) \u2014 consumed by packages/fuzzing coverage_bridge.find_pc_dumps; no in-repo writer by design"
     },
     "artifacts:orphan_reader::analysed_results.json": {
-      "note": "explicit-input convention: raptor-ghidra export and attach.sync_findings_to_attached accept an operator-placed bare record list at this name; no pipeline writes it by design — the wired sources are the run-written reports (orchestrated_report.json, autonomous_analysis_report.json)"
+      "note": "explicit-input convention: raptor-ghidra export and attach.sync_findings_to_attached accept an operator-placed bare record list at this name; no pipeline writes it by design \u2014 the wired sources are the run-written reports (orchestrated_report.json, autonomous_analysis_report.json)"
     },
     "artifacts:write_only_artifact::-symbolic.json": {
       "note": "operator-facing evidence artifact: the full per-finding FeasibilityMap JSON for a symbolically-synthesized witness (mitigation_feasibility/<finding>-symbolic.json), mirroring the raptor-run-feasibility per-finding map files; the machine-consumed summary rides the finding's feasibility.empirical_mitigation_map"
@@ -737,13 +737,22 @@
       "note": "operator/LLM-facing output: packages/frida cli._maybe_correlate_io writes the ingest-payload/call-argument correlation report after a run and prints its path for the operator to inspect; no in-repo literal-name production reader by design (tests assert the file, the CLI only echoes the path)"
     },
     "artifacts:orphan_reader::auto-sink-watch.json": {
-      "note": "single-literal read/variable write false positive: libexec/raptor-validation-helper's auto sink-watch builds ledger_path from the one literal with load_json in the classification window (read), then writes via save_json(ledger_path, ...) further down the same function through the variable — invisible to the literal-name index; helper-owned freshness ledger, both halves in one function by design (same class as the baselined coverage-read.json entry)"
+      "note": "single-literal read/variable write false positive: libexec/raptor-validation-helper's auto sink-watch builds ledger_path from the one literal with load_json in the classification window (read), then writes via save_json(ledger_path, ...) further down the same function through the variable \u2014 invisible to the literal-name index; helper-owned freshness ledger, both halves in one function by design (same class as the baselined coverage-read.json entry)"
     },
     "artifacts:write_only_artifact::binary-match.json": {
       "note": "operator/LLM-facing output: the ghidra diff --matched CLI writes the tiered function-matching report (pairs with tier + score, unmatched sets, stats) next to version-diff.json and prints its path to the operator; no in-repo literal-name production reader by design"
     },
     "artifacts:write_only_artifact::patch-verify.json": {
       "note": "operator/LLM-facing output: the frida runtime regression oracle writes both runs' evidence as patch-verify.json and prints its path; the machine-consumed verdict rides the CLI exit code and the in-process return value, so no in-repo literal-name production reader exists by design (tests read the file back)"
+    },
+    "dead:dead_function:core/audit/integer_truncation_checker.py:format_findings": {
+      "note": "public checker API: renders findings for operator/CLI consumption; not called by orchestrator dispatch path"
+    },
+    "dead:dead_function:core/audit/proto_length_checker.py:format_findings": {
+      "note": "public checker API: renders findings for operator/CLI consumption; not called by orchestrator dispatch path"
+    },
+    "dead:dead_function:core/audit/struct_field_checker.py:format_findings": {
+      "note": "public checker API: renders findings for operator/CLI consumption; not called by orchestrator dispatch path"
     }
   },
   "version": 1

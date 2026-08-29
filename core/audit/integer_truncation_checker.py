@@ -19,6 +19,20 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Sequence
 
+_APPLICABLE_CWES = frozenset({"CWE-190", "CWE-195", "CWE-680"})
+
+
+def integer_truncation_applicable(cwe: str) -> bool:
+    return cwe in _APPLICABLE_CWES
+
+
+def is_integer_truncation_hypothesis(hypothesis: str) -> bool:
+    h = hypothesis.lower()
+    return any(k in h for k in (
+        "integer truncat", "narrowing cast", "wide to narrow",
+        "integer overflow", "integer wraparound",
+    ))
+
 
 @dataclass
 class TruncationFinding:

@@ -51,9 +51,7 @@ _KEYWORD_RULE_MAP: dict[str, str] = {
     "integer overflow": "integer-overflow.yaml",
     "integer truncation": "integer-overflow.yaml",
     "narrowing cast": "integer-overflow.yaml",
-    "truncation": "integer-overflow.yaml",
     "integer wraparound": "integer-overflow.yaml",
-    "alloc truncation": "integer-overflow.yaml",
 }
 
 

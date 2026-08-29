@@ -25,6 +25,20 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
 
+_APPLICABLE_CWES = frozenset({"CWE-120", "CWE-131", "CWE-805"})
+
+
+def struct_field_applicable(cwe: str) -> bool:
+    return cwe in _APPLICABLE_CWES
+
+
+def is_struct_field_hypothesis(hypothesis: str) -> bool:
+    h = hypothesis.lower()
+    return any(k in h for k in (
+        "struct field", "field size", "field boundary",
+        "offset mismatch", "copy into struct",
+    ))
+
 
 @dataclass
 class StructFieldFinding:

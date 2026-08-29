@@ -3320,15 +3320,15 @@ def run_heap_copy_sweep(
 
 
 INTEGER_TRUNC_CWES = frozenset({
-    "CWE-190", "CWE-195", "CWE-680", "CWE-122", "CWE-131",
+    "CWE-190", "CWE-195", "CWE-680",
 })
 
 PROTO_LENGTH_CWES = frozenset({
-    "CWE-120", "CWE-122", "CWE-131", "CWE-190", "CWE-787",
+    "CWE-120", "CWE-131", "CWE-805",
 })
 
 STRUCT_FIELD_CWES = frozenset({
-    "CWE-120", "CWE-122", "CWE-131", "CWE-787",
+    "CWE-120", "CWE-131", "CWE-805",
 })
 
 

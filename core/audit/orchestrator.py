@@ -14715,6 +14715,38 @@ def _hypothesis_to_tool_chain(
             if codeql_query:
                 chain.append({"type": "codeql", "config": {"query": codeql_query}})
 
+    if "integer_truncation" not in seen_types:
+        try:
+            from .integer_truncation_checker import (
+                is_integer_truncation_hypothesis,
+            )
+        except ImportError:
+            pass
+        else:
+            if is_integer_truncation_hypothesis(hypothesis):
+                chain.append({"type": "integer_truncation", "config": {}})
+                seen_types.add("integer_truncation")
+
+    if "proto_length" not in seen_types:
+        try:
+            from .proto_length_checker import is_proto_length_hypothesis
+        except ImportError:
+            pass
+        else:
+            if is_proto_length_hypothesis(hypothesis):
+                chain.append({"type": "proto_length", "config": {}})
+                seen_types.add("proto_length")
+
+    if "struct_field" not in seen_types:
+        try:
+            from .struct_field_checker import is_struct_field_hypothesis
+        except ImportError:
+            pass
+        else:
+            if is_struct_field_hypothesis(hypothesis):
+                chain.append({"type": "struct_field", "config": {}})
+                seen_types.add("struct_field")
+
     return chain
 
 
@@ -15247,6 +15279,30 @@ def _cwe_fallback_chain(
         # existing smt/cocci lock-imbalance entry).
         if lock_region_applicable(cwe):
             chain.append({"type": "lock_region", "config": {}})
+
+    try:
+        from .integer_truncation_checker import integer_truncation_applicable
+    except ImportError:
+        pass
+    else:
+        if integer_truncation_applicable(cwe):
+            chain.append({"type": "integer_truncation", "config": {}})
+
+    try:
+        from .proto_length_checker import proto_length_applicable
+    except ImportError:
+        pass
+    else:
+        if proto_length_applicable(cwe):
+            chain.append({"type": "proto_length", "config": {}})
+
+    try:
+        from .struct_field_checker import struct_field_applicable
+    except ImportError:
+        pass
+    else:
+        if struct_field_applicable(cwe):
+            chain.append({"type": "struct_field", "config": {}})
 
     if cwe and not chain:
         _warn_unmapped_cwe(cwe)
@@ -16392,6 +16448,108 @@ def _run_tool_chain(
                 elif tier_counters:
                     _increment_tier_dict(
                         tier_counters, "coccinelle_flow", "inconclusive",
+                    )
+
+            elif tool_type == "integer_truncation":
+                from .sweep import run_integer_truncation_sweep
+
+                it_res = run_integer_truncation_sweep(
+                    file_path=file_path,
+                    function_name=function_name,
+                    source=source or "",
+                    cwe=cwe,
+                )
+                if it_res.outcome == "confirmed":
+                    confirmed.append(
+                        f"integer_truncation:{it_res.rule_id}")
+                    if tier_counters:
+                        _increment_tier_dict(
+                            tier_counters, "integer_truncation",
+                            "confirmed",
+                        )
+                elif it_res.outcome == "error":
+                    logger.debug(
+                        "tool_chain integer_truncation error "
+                        "%s:%s: %s",
+                        file_path, function_name, it_res.errors,
+                    )
+                    if errored_types is not None:
+                        errored_types.add(tool_type)
+                    if tier_counters:
+                        _increment_tier_dict(
+                            tier_counters, "integer_truncation",
+                            "errors",
+                        )
+                elif tier_counters:
+                    _increment_tier_dict(
+                        tier_counters, "integer_truncation",
+                        "refuted",
+                    )
+
+            elif tool_type == "proto_length":
+                from .sweep import run_proto_length_sweep
+
+                pl_res = run_proto_length_sweep(
+                    file_path=file_path,
+                    function_name=function_name,
+                    source=source or "",
+                    cwe=cwe,
+                )
+                if pl_res.outcome == "confirmed":
+                    confirmed.append(
+                        f"proto_length:{pl_res.rule_id}")
+                    if tier_counters:
+                        _increment_tier_dict(
+                            tier_counters, "proto_length",
+                            "confirmed",
+                        )
+                elif pl_res.outcome == "error":
+                    logger.debug(
+                        "tool_chain proto_length error %s:%s: %s",
+                        file_path, function_name, pl_res.errors,
+                    )
+                    if errored_types is not None:
+                        errored_types.add(tool_type)
+                    if tier_counters:
+                        _increment_tier_dict(
+                            tier_counters, "proto_length", "errors",
+                        )
+                elif tier_counters:
+                    _increment_tier_dict(
+                        tier_counters, "proto_length", "refuted",
+                    )
+
+            elif tool_type == "struct_field":
+                from .sweep import run_struct_field_sweep
+
+                sf_res = run_struct_field_sweep(
+                    file_path=file_path,
+                    function_name=function_name,
+                    source=source or "",
+                    cwe=cwe,
+                )
+                if sf_res.outcome == "confirmed":
+                    confirmed.append(
+                        f"struct_field:{sf_res.rule_id}")
+                    if tier_counters:
+                        _increment_tier_dict(
+                            tier_counters, "struct_field",
+                            "confirmed",
+                        )
+                elif sf_res.outcome == "error":
+                    logger.debug(
+                        "tool_chain struct_field error %s:%s: %s",
+                        file_path, function_name, sf_res.errors,
+                    )
+                    if errored_types is not None:
+                        errored_types.add(tool_type)
+                    if tier_counters:
+                        _increment_tier_dict(
+                            tier_counters, "struct_field", "errors",
+                        )
+                elif tier_counters:
+                    _increment_tier_dict(
+                        tier_counters, "struct_field", "refuted",
                     )
 
 

@@ -20,6 +20,20 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
 
+_APPLICABLE_CWES = frozenset({"CWE-120", "CWE-131", "CWE-805"})
+
+
+def proto_length_applicable(cwe: str) -> bool:
+    return cwe in _APPLICABLE_CWES
+
+
+def is_proto_length_hypothesis(hypothesis: str) -> bool:
+    h = hypothesis.lower()
+    return any(k in h for k in (
+        "length field", "unbounded length", "protocol length",
+        "unchecked length", "packet length",
+    ))
+
 
 @dataclass
 class ProtoLengthFinding:

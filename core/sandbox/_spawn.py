@@ -2834,8 +2834,29 @@ def run_sandboxed(
         try:
             if os.read(p_ready_r, 1) != b"R":
                 _kill_and_reap(child_pid)
-                msg = "sandbox child did not signal ready"
-                raise RuntimeError(msg)
+                # The child died before "R" — almost always because its
+                # unshare(USER|NS|IPC|[NET]) was refused (userns-
+                # restricted host, outer seccomp filter, LSM policy).
+                # It wrote its setup category ('U' at this stage) and
+                # the failing exception to the exec-status pipe before
+                # exiting: drain that so the raise names the kernel's
+                # actual refusal, and raise the typed engagement error
+                # (fail-loud per the category-U doctrine) instead of a
+                # bare RuntimeError that carried no diagnostic, no
+                # remediation, and — through the context ladder's
+                # environmental RuntimeError catch — silently demoted
+                # the run to the Landlock-only path.
+                _status = _drain_status_pipe(status_r, _parent_fds)
+                from .errors import SandboxSetupError
+                from .probes import ENGAGE_FAIL_INSTRUCTIONS
+                _detail = (f" ({_status[0]}: {_status[1]})"
+                           if _status else "")
+                raise SandboxSetupError(
+                    "sandbox namespace child did not signal ready — "
+                    f"setup failed in the spawn child{_detail}",
+                    ENGAGE_FAIL_INSTRUCTIONS,
+                    setup_category=_status[0] if _status else None,
+                )
         finally:
             os.close(p_ready_r)
             _parent_fds.discard(p_ready_r)

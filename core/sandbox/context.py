@@ -23,6 +23,12 @@ from pathlib import Path
 
 from . import landlock as _landlock
 from . import probes as _probes
+# Module alias (not `from .errors import SandboxSetupError`): run()'s
+# closure contains function-local `from .errors import ...` statements,
+# which make the bare name function-local for the WHOLE scope — an
+# except clause naming it before those lines execute would hit
+# UnboundLocalError. The alias sidesteps the scoping trap.
+from . import errors as _errors
 from ._env_quarantine import ENV_RESTORE_KEY as _ENV_RESTORE_KEY
 from ._env_quarantine import quarantine_loader_env as _quarantine_loader_env
 from . import seccomp as _seccomp
@@ -4381,7 +4387,8 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                                 f"{result.returncode}); retried via "
                                 "Landlock-only path")
                             # Fall through to subprocess path below.
-                except (FileNotFoundError, RuntimeError, OSError) as _spawn_err:
+                except (FileNotFoundError, RuntimeError, OSError,
+                        _errors.SandboxSetupError) as _spawn_err:
                     # _spawn raised mid-setup (uidmap uninstalled,
                     # kernel quirk, libc soname absent on minimal
                     # containers, etc.). Fall back to
@@ -4397,6 +4404,25 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                     # libc layouts (musl, minimal busybox images);
                     # FileNotFoundError is a subclass but we list
                     # it explicitly for documentation.
+                    #
+                    # SandboxSetupError from _spawn rides the ladder
+                    # ONLY for setup_category 'U' — the spawn child
+                    # dying at its unshare stage (userns refused at
+                    # runtime), the typed replacement for the bare
+                    # RuntimeError this environmental catch has always
+                    # degraded on. Every other category (P pin
+                    # violations, L/S hardening-layer failures, F
+                    # fresh-procfs contract) keeps its fail-loud
+                    # BaseException contract and is re-raised
+                    # untouched. The degrade below is loud (warning +
+                    # sandbox_info.mount_ns_degraded) and the
+                    # Landlock-recheck / untrusted / strict / persona
+                    # gates in the `if not used_spawn` block still
+                    # decide whether the demoted call may actually
+                    # run.
+                    if (isinstance(_spawn_err, _errors.SandboxSetupError)
+                            and _spawn_err.setup_category != "U"):
+                        raise
                     #
                     # This except is for ENVIRONMENTAL failures only.
                     # A caller-input error — the audit target dir

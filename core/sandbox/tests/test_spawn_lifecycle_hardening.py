@@ -80,6 +80,8 @@ class TestTimeoutKillsTargetTree(unittest.TestCase):
         if not mount_ns_available():
             self.skipTest("mount-ns not available on this host")
 
+    @pytest.mark.slow  # real 3s run timeout + two post-teardown observation
+    # windows (the quiet heartbeat IS the property) — ~7s by construction
     def test_no_post_timeout_execution(self):
         """A target that outlives the run timeout must be killed with
         the sandbox teardown, not keep mutating output afterwards."""

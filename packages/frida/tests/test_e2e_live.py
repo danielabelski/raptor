@@ -266,6 +266,7 @@ class TestBbCoverageLive:
             pytest.skip(f"gcc failed: {result.stderr[:200]}")
         return binary
 
+    @pytest.mark.slow  # real spawn + instrumentation window, ~5s by construction
     def test_drcov_round_trips_through_parser(self, sleeper_binary, run_dir):
         rc = _run_frida_cli(sleeper_binary, run_dir, duration=5,
                             template="bb-coverage")
@@ -340,6 +341,7 @@ class TestPatchOracleLive:
             pair.append(binary)
         return tuple(pair)
 
+    @pytest.mark.slow  # two real instrumented runs (pre/post patch), ~8s by construction
     def test_closed_verdict_on_real_patch(self, patch_pair, tmp_path,
                                           monkeypatch):
         before, after = patch_pair
@@ -408,6 +410,7 @@ class TestHeapTraceLive:
             pytest.skip(f"gcc failed: {result.stderr[:200]}")
         return binary
 
+    @pytest.mark.slow  # real heap-trace instrumentation window, ~5s by construction
     def test_anomalies_and_summary(self, heap_victim, run_dir):
         rc = _run_frida_cli(heap_victim, run_dir, duration=5,
                             template="heap-trace")

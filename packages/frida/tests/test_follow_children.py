@@ -9,6 +9,8 @@ from types import SimpleNamespace
 
 import time
 
+import pytest
+
 from packages.frida import runner
 from packages.frida.runner import RunConfig, TargetSpec, run
 
@@ -194,6 +196,7 @@ class TestCliFlag:
 
 
 class TestBoundedTeardown:
+    @pytest.mark.slow  # deliberately wedged child + bounded-detach deadline, ~5s by construction
     def test_wedged_child_detach_cannot_lose_metadata(self, tmp_path):
         """frida's detach has no timeout; a frida-core race can block a
         child detach unboundedly — which sat BEFORE the metadata write

@@ -132,6 +132,19 @@ Distinct from `RAPTOR_ALLOW_UNSANDBOXED_TOOLS`, which waives a
 waives a missing *namespace tier* inside an otherwise-working
 sandbox. Neither implies the other.
 
+### `RAPTOR_MATRIX_RESULTS` and `RAPTOR_MATRIX_APT_MIRROR`
+
+Knobs for the sandbox feature-matrix harness
+(`core/sandbox/scripts/feature-matrix/run-matrix.sh`, weekly CI wrapper
+`.github/workflows/sandbox-matrix.yml`). `RAPTOR_MATRIX_RESULTS` sets
+the base directory for run results (default:
+`${RUNNER_TEMP:-/tmp}/raptor-sandbox-matrix` — deliberately outside
+the repository; results are never committed).
+`RAPTOR_MATRIX_APT_MIRROR`, when set, replaces the apt sources inside
+the lane image builds — for build environments where the default
+Ubuntu archives are unreachable. Both are read from the calling
+environment only; nothing in the harness hardcodes hosts.
+
 ### Housekeeping asymmetry
 
 The three reaper knobs deliberately disagree on invalid input: the

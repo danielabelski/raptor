@@ -1,0 +1,64 @@
+name: Weekly (sandbox feature matrix)
+
+# The core/sandbox degradation lattice (Landlock-only fallback,
+# degraded net deny, fail-closed refusals, fresh-procfs contract) is
+# unit-tested via monkeypatched probes everywhere else in CI — this
+# workflow is the only place it runs end-to-end on environments that
+# GENUINELY lack the kernel features. Docker lanes fake feature absence
+# with derived seccomp profiles (Landlock syscalls -> ENOSYS, userns
+# creation -> EPERM), an in-container probe records what each lane
+# actually provides, and the report keys on PROBED capabilities: a lane
+# whose probe diverges from its intended feature shape fails the job,
+# as does any lane with test failures (designed refusals on degraded
+# lanes SKIP with a named capability reason — a failure is signal).
+#
+# Weekly, not nightly: the lattice only moves when core/sandbox does,
+# and the job's cost is dominated by two runner-shaped image builds.
+# `workflow_dispatch` reruns it on demand after touching the sandbox.
+
+on:
+  schedule:
+    # 05:30 UTC Saturday — clear of the weekly corpus job (05:00) and
+    # the daily nightlies (07:00).
+    - cron: '30 5 * * 6'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  feature-matrix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Self-test the harness wiring (no docker)
+        run: core/sandbox/scripts/feature-matrix/run-matrix.sh --self-test
+
+      - name: Run the feature matrix (default tier, both images)
+        run: core/sandbox/scripts/feature-matrix/run-matrix.sh
+
+      - name: Upload matrix results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: sandbox-feature-matrix-results
+          path: |
+            ${{ runner.temp }}/raptor-sandbox-matrix/*/matrix.md
+            ${{ runner.temp }}/raptor-sandbox-matrix/*/matrix.json
+            ${{ runner.temp }}/raptor-sandbox-matrix/*/failures.txt
+            ${{ runner.temp }}/raptor-sandbox-matrix/*/*/*/probe.json
+            ${{ runner.temp }}/raptor-sandbox-matrix/*/*/*/pytest-*.out
+          retention-days: 30
+          if-no-files-found: warn

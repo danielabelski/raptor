@@ -217,6 +217,23 @@ OVERRIDES: dict[str, str] = {
     "RAPTOR_SANITIZER_CUT": "operator",
     "RAPTOR_SANITIZER_CUT_NO_LEXICAL": "operator",
     "RAPTOR_SANITIZER_CUT_PARITY_LOG": "operator",
+    # Sandbox feature-matrix harness (core/sandbox/scripts/
+    # feature-matrix/): the driver passes SXV_* into its lane
+    # containers via `docker run -e` and MATRIX_PY is baked as image
+    # ENV — driver→container plumbing, not operator knobs. The
+    # `docker -e VAR=` write shape isn't recognised by the bash
+    # write heuristic.
+    "SXV_LANE": "internal",
+    "SXV_TIER": "internal",
+    "SXV_REQHASH_MATCH": "internal",
+    "SXV_UNMASK": "internal",
+    "SXV_SG_REEXEC": "internal",
+    "MATRIX_PY": "internal",
+    # Bash array locals in run-matrix.sh (mapfile/read -a); the
+    # ${VAR[*]:-} empty-array-safe expansion trips the
+    # self-defaulting-read heuristic.
+    "LANE_ARR": "internal",
+    "LANE_OPTS": "internal",
     # Written into .mcp.json by libexec/raptor-sage-setup and read
     # back by libexec/raptor-sage-mcp — setup plumbing, not knobs.
     "SAGE_IDENTITY_PATH": "internal",

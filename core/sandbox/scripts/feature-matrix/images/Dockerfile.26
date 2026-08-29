@@ -1,0 +1,65 @@
+# GitHub-runner-shaped ubuntu 26.04 image for the sandbox feature
+# matrix: setup-python hostedtoolcache layout, runner uid 1001,
+# rustup-style double-hop toolchain proxies, repo venv baked from the
+# requirements the driver stages into the build context.
+#
+# Build args (all optional except PY_URL):
+#   PY_URL     download URL of an actions/python-versions linux tarball
+#              (the driver resolves it from versions-manifest.json)
+#   PY_VERSION interpreter version directory name (default 3.14.7)
+#   APT_MIRROR when set, replaces the apt sources with this mirror
+#              (for build environments that cannot reach the default
+#              archives; read from the caller's environment)
+FROM ubuntu:26.04
+ARG http_proxy
+ARG https_proxy
+ARG APT_MIRROR=
+ARG PY_URL
+ARG PY_VERSION=3.14.7
+ENV DEBIAN_FRONTEND=noninteractive
+RUN if [ -n "$APT_MIRROR" ]; then \
+        printf 'deb %s resolute main universe\ndeb %s resolute-updates main universe\ndeb %s resolute-security main universe\n' \
+            "$APT_MIRROR" "$APT_MIRROR" "$APT_MIRROR" > /etc/apt/sources.list \
+        && rm -f /etc/apt/sources.list.d/ubuntu.sources; \
+    fi
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-venv python3-pip curl ca-certificates git \
+    uidmap gcc libc6-dev util-linux golang-go rustc cargo \
+    && rm -rf /var/lib/apt/lists/*
+# setup-python layout: interpreter under /opt/hostedtoolcache. The
+# actions/python-versions tarballs are built for exactly this prefix;
+# layout-agnostic extraction (some artifacts carry a top-level dir),
+# then the artifact's own setup.sh when present (shebang/symlink
+# fix-ups, same step actions/setup-python runs).
+RUN set -e; \
+    mkdir -p "/opt/hostedtoolcache/Python/${PY_VERSION}" /tmp/pyx; \
+    curl -fsSL "$PY_URL" | tar -xz -C /tmp/pyx; \
+    if [ -d /tmp/pyx/python ]; then \
+        mv /tmp/pyx/python "/opt/hostedtoolcache/Python/${PY_VERSION}/x64"; \
+    else \
+        mv /tmp/pyx "/opt/hostedtoolcache/Python/${PY_VERSION}/x64"; \
+    fi; \
+    cd "/opt/hostedtoolcache/Python/${PY_VERSION}/x64"; \
+    [ -f setup.sh ] && sh setup.sh || true
+ENV MATRIX_PY="/opt/hostedtoolcache/Python/${PY_VERSION}/x64/bin/python3"
+# GitHub runner user: uid 1001, HOME=/home/runner
+RUN userdel -r ubuntu 2>/dev/null || true; useradd -m -u 1001 runner
+# Relocate the rust toolchain into $HOME, rustup-style: proxies in
+# ~/.cargo/bin re-exec ~/.rustup/toolchains/<tc>/bin (the double-hop)
+COPY rustup-proxy.c /tmp/rustup-proxy.c
+RUN set -e; \
+    TC=/home/runner/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin; \
+    mkdir -p "$TC" /home/runner/.cargo/bin; \
+    cp -aL /usr/bin/cargo "$TC/cargo"; cp -aL /usr/bin/rustc "$TC/rustc"; \
+    rm /usr/bin/cargo /usr/bin/rustc; \
+    gcc -O2 -o /home/runner/.cargo/bin/cargo /tmp/rustup-proxy.c; \
+    ln /home/runner/.cargo/bin/cargo /home/runner/.cargo/bin/rustc; \
+    chown -R runner:runner /home/runner
+USER runner
+ENV HOME=/home/runner
+ENV PATH="/home/runner/.local/bin:/opt/pipx_bin:/home/runner/.cargo/bin:/home/runner/.config/composer/vendor/bin:/usr/local/.ghcup/bin:/home/runner/.dotnet/tools:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin"
+RUN mkdir -p /home/runner/work/raptor/raptor
+COPY --chown=runner:runner requirements.txt requirements-dev.txt /home/runner/work/raptor/raptor/
+WORKDIR /home/runner/work/raptor/raptor
+RUN "$MATRIX_PY" -m venv .venv \
+    && .venv/bin/pip install --no-cache-dir -r requirements-dev.txt

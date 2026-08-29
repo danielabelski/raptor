@@ -3,9 +3,10 @@
 Network-dependent operations (git clone + run_sca) are mocked so
 the tests run offline and deterministically. The collector's
 sanitisation + error-handling logic is what matters for unit
-tests; live clone-and-scan is exercised by an integration smoke
-test that's gated behind ``RAPTOR_SCA_LIVE_NETWORK`` (operator
-opts in).
+tests; live clone-and-scan runs through the sample-refresh CLI
+(``packages/sca/scripts/raptor-sca-collect-samples``, driven by the
+``refresh-sca-project-samples.yml`` workflow), never from this
+suite.
 """
 
 from __future__ import annotations

@@ -28,10 +28,13 @@ _CWE_RULE_MAP: dict[str, list[str]] = {
 _KEYWORD_RULE_MAP: dict[str, str] = {
     "format string": "format-string.yaml",
     "printf": "format-string.yaml",
+    "sprintf": "format-string.yaml",
     "buffer overflow": "buffer-overflow.yaml",
     "stack overflow": "buffer-overflow.yaml",
     "heap overflow": "buffer-overflow.yaml",
+    "heap buffer": "buffer-overflow.yaml",
     "strcpy": "buffer-overflow.yaml",
+    "strcat": "buffer-overflow.yaml",
     "command injection": "command-injection.yaml",
     "os command": "command-injection.yaml",
     "use after free": "memory-safety.yaml",
@@ -39,6 +42,9 @@ _KEYWORD_RULE_MAP: dict[str, str] = {
     "double free": "memory-safety.yaml",
     "double-free": "memory-safety.yaml",
     "memcpy": "memory-safety.yaml",
+    "memmove": "memory-safety.yaml",
+    "size mismatch": "memory-safety.yaml",
+    "bounds check": "memory-safety.yaml",
 }
 
 
@@ -75,6 +81,24 @@ def decompiler_rules_for_hypothesis(
             resolved.append(path)
 
     return resolved
+
+
+def run_heap_copy_check(
+    function_name: str,
+    decompiled_c: str,
+    *,
+    file: str = "",
+) -> list[dict]:
+    """Run heap-size-to-copy-size analysis on a single function.
+
+    Works on source or decompiled C. Returns a list of finding dicts.
+    """
+    from .heap_copy_checker import check_decompiled_function
+
+    findings = check_decompiled_function(
+        function_name, decompiled_c, file=file,
+    )
+    return [f.to_dict() for f in findings]
 
 
 # Dynamic engagement intentionally does NOT live here. An earlier Frida

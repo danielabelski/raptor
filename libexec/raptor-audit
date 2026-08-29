@@ -764,7 +764,13 @@ def cmd_sweep(args: argparse.Namespace) -> int:
                 mode="w", suffix=".c",
                 prefix="raptor-binsweep-", delete=False,
             )
-            _bin_tmp.write(func_obj.decompilation)
+            decomp_source = func_obj.decompilation
+            try:
+                from core.audit.decompiler_sanitise import sanitise
+                decomp_source = sanitise(decomp_source)
+            except Exception:  # noqa: BLE001 — degrade to raw
+                pass
+            _bin_tmp.write(decomp_source)
             _bin_tmp.close()
             sweep_target = Path(_bin_tmp.name).parent
             sweep_file = Path(_bin_tmp.name).name
@@ -895,6 +901,52 @@ def cmd_sweep(args: argparse.Namespace) -> int:
         if result.raw_output:
             for line in result.raw_output.splitlines()[:10]:
                 print(f"  {line}")
+        if result.errors:
+            for e in result.errors[:3]:
+                print(f"  error: {e}", file=sys.stderr)
+        return 0
+
+    # Auto-run mode: heap-copy (static + optional symbolic)
+    if tool == "heap-copy":
+        from core.audit.sweep import run_heap_copy_sweep
+
+        # Read the source — binary items use decompilation
+        source = ""
+        from core.inventory.binary_builder import BINARY_PATH_PREFIX
+        if args.file.startswith(BINARY_PATH_PREFIX):
+            from core.audit.binary_context import find_redb, load_redb
+            redb_path = find_redb(out_dir, target_path)
+            db = load_redb(redb_path) if redb_path else None
+            if db is not None:
+                lookup = args.function
+                if "@0x" in lookup:
+                    lookup = lookup.rpartition("@")[0]
+                func_obj = next(
+                    (f for f in db.functions if f.name == lookup), None,
+                )
+                if func_obj and func_obj.decompilation:
+                    from core.audit.decompiler_sanitise import sanitise
+                    source = sanitise(func_obj.decompilation)
+        else:
+            src_path = target_path / args.file
+            if src_path.is_file():
+                try:
+                    source = src_path.read_text(errors="replace")
+                except OSError:
+                    pass
+
+        result = run_heap_copy_sweep(
+            file_path=args.file,
+            function_name=args.function,
+            source=source,
+            cwe=args.cwe or "",
+        )
+        entry = result.to_log_entry()
+        append_audit_log(out_dir, entry)
+        match_info = ""
+        if result.matches:
+            match_info = f" ({len(result.matches)} finding(s))"
+        print(f"sweep: {func_key} with heap-copy → {result.outcome}{match_info}")
         if result.errors:
             for e in result.errors[:3]:
                 print(f"  error: {e}", file=sys.stderr)
@@ -2324,7 +2376,7 @@ def main() -> int:
     p_sweep.add_argument("--function", required=True)
     p_sweep.add_argument("--tool", required=True,
                          choices=["semgrep", "coccinelle", "codeql", "smt",
-                                  "compilation", "symbolic"])
+                                  "compilation", "symbolic", "heap-copy"])
     p_sweep.add_argument("--rule", default=None, help="Rule ID or reference")
     p_sweep.add_argument("--rule-file", default=None,
                          help="Path to rule file — auto-runs the tool and logs results")

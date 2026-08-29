@@ -3003,6 +3003,10 @@ def mechanical_check_to_semgrep(check: str) -> str | None:
 
 #: CWE families where the unconstrained-PC (control-flow hijack)
 #: solve applies; everything else gets plain reachability.
+HEAP_COPY_CWES = frozenset({
+    "CWE-120", "CWE-122", "CWE-131", "CWE-787",
+})
+
 SYMBOLIC_HIJACK_CWES = frozenset({
     "CWE-120", "CWE-121", "CWE-122", "CWE-124",
     "CWE-131", "CWE-193", "CWE-787",
@@ -3267,3 +3271,186 @@ def _store_sweep_witness(
     except Exception:  # noqa: BLE001 — storage is best-effort
         logger.debug("sweep witness store failed", exc_info=True)
         return None
+
+
+def run_heap_copy_sweep(
+    *,
+    file_path: str,
+    function_name: str,
+    source: str,
+    cwe: str = "",
+) -> SweepResult:
+    """Static heap-size-to-copy-size mismatch check.
+
+    Runs the pattern matcher on decompiled (or original) C source.
+    CWE filtering: only fires for heap/buffer CWEs to avoid noise on
+    unrelated hypotheses.
+    """
+    if cwe and cwe not in HEAP_COPY_CWES:
+        return SweepResult(
+            tool="heap-copy", file_path=file_path,
+            function_name=function_name, outcome="inconclusive",
+            errors=[f"CWE {cwe} not in heap-copy scope"],
+            rule_id="heap-copy",
+        )
+    try:
+        from core.audit.heap_copy_checker import check_decompiled_function
+        findings = check_decompiled_function(
+            function_name, source, file=file_path,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return SweepResult(
+            tool="heap-copy", file_path=file_path,
+            function_name=function_name, outcome="error",
+            errors=[f"heap_copy_checker raised: {exc}"],
+            rule_id="heap-copy",
+        )
+    if findings:
+        return SweepResult(
+            tool="heap-copy", file_path=file_path,
+            function_name=function_name, outcome="confirmed",
+            matches=[f.to_dict() for f in findings],
+            rule_id="heap-copy",
+        )
+    return SweepResult(
+        tool="heap-copy", file_path=file_path,
+        function_name=function_name, outcome="refuted",
+        rule_id="heap-copy",
+    )
+
+
+def run_heap_mismatch_sweep(
+    *,
+    target_path: Path,
+    file_path: str,
+    function_name: str,
+    out_dir: Path,
+    address: int | None = None,
+) -> SweepResult:
+    """Symbolic heap-copy overflow witness via angr.
+
+    Binary items only — resolves the function address the same way
+    ``run_symbolic_sweep`` does (symbol table → checklist rebase).
+    """
+    from core.inventory.binary_builder import BINARY_PATH_PREFIX
+
+    if not file_path.startswith(BINARY_PATH_PREFIX):
+        return SweepResult(
+            tool="symbolic", file_path=file_path,
+            function_name=function_name, outcome="error",
+            errors=["heap-mismatch sweep applies to binary: items only"],
+            rule_id="symbolic-heap-mismatch",
+        )
+    if not symbolic_applicable("CWE-122", file_path):
+        return SweepResult(
+            tool="symbolic", file_path=file_path,
+            function_name=function_name, outcome="error",
+            errors=["angr not installed — symbolic channel unavailable"],
+            rule_id="symbolic-heap-mismatch",
+        )
+    binary = Path(target_path)
+    if not binary.is_file():
+        return SweepResult(
+            tool="symbolic", file_path=file_path,
+            function_name=function_name, outcome="error",
+            errors=[f"target binary not found: {binary}"],
+            rule_id="symbolic-heap-mismatch",
+        )
+
+    try:
+        from core.symbolic import load_binary
+        info = load_binary(binary)
+    except Exception as e:  # noqa: BLE001
+        return SweepResult(
+            tool="symbolic", file_path=file_path,
+            function_name=function_name, outcome="error",
+            errors=[f"could not load binary: {e}"],
+            rule_id="symbolic-heap-mismatch",
+        )
+
+    base_name = function_name
+    if "@0x" in base_name:
+        base_name = base_name.rpartition("@")[0]
+    resolved = info.symbols.get(base_name)
+    if resolved is None:
+        checklist_addr = address
+        if checklist_addr is None:
+            checklist_addr = _checklist_address(
+                out_dir, file_path, function_name,
+            )
+        if checklist_addr is not None:
+            if not info.is_pie:
+                resolved = checklist_addr
+            else:
+                delta = _producer_to_angr_delta(
+                    info, out_dir, file_path,
+                )
+                if delta is not None:
+                    resolved = checklist_addr + delta
+    if resolved is None:
+        return SweepResult(
+            tool="symbolic", file_path=file_path,
+            function_name=function_name, outcome="error",
+            errors=[
+                f"no angr-space address for {function_name}: not in "
+                "the symbol table and the checklist address could "
+                "not be rebased"
+            ],
+            rule_id="symbolic-heap-mismatch",
+        )
+
+    try:
+        from core.symbolic._heap_mismatch import find_heap_mismatch_witness
+        result = find_heap_mismatch_witness(
+            binary, resolved, timeout=_SYMBOLIC_TIMEOUT_S,
+        )
+    except Exception as e:  # noqa: BLE001
+        return SweepResult(
+            tool="symbolic", file_path=file_path,
+            function_name=function_name, outcome="error",
+            rule_id="symbolic-heap-mismatch",
+            errors=[f"heap mismatch solve failed: {e}"],
+        )
+
+    if not result.succeeded or result.concrete_input is None:
+        return SweepResult(
+            tool="symbolic", file_path=file_path,
+            function_name=function_name, outcome="inconclusive",
+            rule_id="symbolic-heap-mismatch",
+            details={"reason": (
+                "no heap-mismatch witness within budget — "
+                + result.reason[:200]
+            )},
+        )
+
+    details: dict[str, Any] = {
+        "mode": "heap_mismatch",
+        "target_address": resolved,
+        "input_len": len(result.concrete_input),
+        "solve_seconds": round(result.wall_seconds, 2),
+    }
+    if result.metadata:
+        details["copy_fn"] = result.metadata.get("copy_fn", "")
+
+    stored = _store_sweep_witness(
+        binary, result.concrete_input, out_dir,
+        function_name=function_name, address=resolved,
+        cwe="CWE-122", file_path=file_path, replay=False,
+    )
+    if stored:
+        details.update(stored)
+
+    return SweepResult(
+        tool="symbolic", file_path=file_path,
+        function_name=function_name, outcome="confirmed",
+        rule_id="symbolic-heap-mismatch",
+        matches=[{
+            "rule_id": "symbolic-heap-mismatch",
+            "message": (
+                f"concrete stdin witness ({len(result.concrete_input)} "
+                f"bytes) triggers heap-copy overflow in "
+                f"{function_name} at {resolved:#x}"
+            ),
+        }],
+        details=details,
+    )

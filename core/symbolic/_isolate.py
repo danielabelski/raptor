@@ -43,9 +43,99 @@ GRACE_SECONDS = 15.0
 _KILL_GRACE_SECONDS = 5.0
 
 
+def _apply_symex_sandbox() -> None:
+    """Install Landlock: deny filesystem writes + deny TCP connect.
+
+    Best-effort — if Landlock is unavailable (old kernel, container),
+    logs a warning and returns. The process isolation (timeout +
+    SIGKILL) is the primary defence; Landlock adds defence-in-depth
+    against hostile binaries that try to write to disk or phone home.
+
+    Must be called BEFORE importing angr / the target module.
+    """
+    import ctypes
+    import ctypes.util
+    import platform
+
+    if platform.machine() not in (
+        "x86_64", "aarch64", "riscv64", "loongarch64", "s390x",
+    ):
+        return
+
+    SYS_CREATE = 444
+    SYS_RESTRICT = 446
+    PR_SET_NO_NEW_PRIVS = 38
+
+    WRITE_FILE = 1 << 1
+    REMOVE_DIR = 1 << 4
+    REMOVE_FILE = 1 << 5
+    MAKE_CHAR = 1 << 6
+    MAKE_DIR = 1 << 7
+    MAKE_REG = 1 << 8
+    MAKE_SOCK = 1 << 9
+    MAKE_FIFO = 1 << 10
+    MAKE_BLOCK = 1 << 11
+    MAKE_SYM = 1 << 12
+    NET_CONNECT_TCP = 1 << 1
+
+    class RulesetAttr(ctypes.Structure):
+        _fields_ = [
+            ("handled_access_fs", ctypes.c_uint64),
+            ("handled_access_net", ctypes.c_uint64),
+            ("scoped", ctypes.c_uint64),
+        ]
+
+    lib_path = ctypes.util.find_library("c")
+    if not lib_path:
+        return
+    try:
+        libc = ctypes.CDLL(lib_path, use_errno=True)
+    except OSError:
+        return
+
+    abi = libc.syscall(SYS_CREATE, None, 0, 1)
+    if abi < 1:
+        return
+
+    write_mask = (WRITE_FILE | REMOVE_DIR | REMOVE_FILE | MAKE_CHAR |
+                  MAKE_DIR | MAKE_REG | MAKE_SOCK | MAKE_FIFO |
+                  MAKE_BLOCK | MAKE_SYM)
+    if abi >= 2:
+        write_mask |= 1 << 13   # REFER
+    if abi >= 3:
+        write_mask |= 1 << 14   # TRUNCATE
+    if abi >= 5:
+        write_mask |= 1 << 15   # IOCTL_DEV
+    net_access = NET_CONNECT_TCP if abi >= 4 else 0
+
+    attr = RulesetAttr(
+        handled_access_fs=write_mask,
+        handled_access_net=net_access,
+        scoped=0,
+    )
+    fd = libc.syscall(
+        SYS_CREATE, ctypes.byref(attr), ctypes.sizeof(attr), 0,
+    )
+    if fd < 0:
+        return
+
+    # No rules added — every handled access is denied.
+    libc.prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)
+    import os
+    ret = libc.syscall(SYS_RESTRICT, fd, 0)
+    os.close(fd)
+    if ret < 0:
+        import logging
+        logging.getLogger(__name__).warning(
+            "symex sandbox: Landlock restrict_self failed (ret=%d)", ret,
+        )
+
+
 def _child_entry(conn, module_name: str, func_name: str, kwargs: dict) -> None:
     """Child-side runner. Everything heavyweight imports here."""
     import logging
+
+    _apply_symex_sandbox()
 
     # angr logs an ERROR at import when optional acceleration is
     # missing; that is operator noise, not a result channel.

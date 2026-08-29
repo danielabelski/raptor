@@ -19,6 +19,37 @@ rules:
       confidence: LOW
       source: decompiler
 
+  - id: decompiler-checked-memcpy-size-mismatch
+    patterns:
+      - pattern: $FN($DST, $DST_SIZE, $SRC, $COUNT)
+      - metavariable-regex:
+          metavariable: $FN
+          regex: ".*memcpy.*|.*memmove.*"
+      - metavariable-comparison:
+          metavariable: $COUNT
+          comparison: "$COUNT > $DST_SIZE"
+    message: "checked memcpy wrapper: copy count exceeds destination size"
+    languages: [c]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-122"
+      confidence: HIGH
+      source: decompiler
+
+  - id: decompiler-checked-memcpy-variable-len
+    patterns:
+      - pattern: $FN($DST, $DST_SIZE, $SRC, $COUNT)
+      - metavariable-regex:
+          metavariable: $FN
+          regex: ".*memcpy.*|.*memmove.*"
+    message: "checked memcpy wrapper — verify count <= dest_size"
+    languages: [c]
+    severity: WARNING
+    metadata:
+      cwe: "CWE-122"
+      confidence: LOW
+      source: decompiler
+
   - id: decompiler-free-then-use
     pattern: |
       free($PTR);

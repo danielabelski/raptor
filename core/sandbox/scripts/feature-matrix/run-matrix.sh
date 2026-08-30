@@ -61,13 +61,15 @@ PYEOF
         mkdir -p "$L"
         if [ "$verdict" = clean ]; then
             cp "$TMP/probe.json" "$L/probe.json"
-            python3 - "$L/probe.json" <<'PYEOF'
+            python3 - "$L/probe.json" "$HERE/profiles" <<'PYEOF'
 import json, sys
+sys.path.insert(0, sys.argv[2])
+from lanes import _MNT
 d = json.load(open(sys.argv[1]))
-# force the intended full-lane shape so the fixture is host-independent
+# match the dynamic lane expectation (host AppArmor sysctl is kernel-wide)
 d["shape"] = {"landlock": "present", "userns": "ok",
-              "mount_in_userns": "ok", "proc_mount_in_userns": "ok",
-              "pivot_root_in_userns": "ok", "seccomp": "ok"}
+              "mount_in_userns": _MNT, "proc_mount_in_userns": _MNT,
+              "pivot_root_in_userns": _MNT, "seccomp": "ok"}
 json.dump(d, open(sys.argv[1], "w"))
 PYEOF
         else

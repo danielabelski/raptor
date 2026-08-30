@@ -151,6 +151,90 @@ def test_unmark_neutralises_journaled_mark(tmp_path):
     assert rows[0]["verdict"] == "error"
 
 
+def test_mark_skips_unmatched_and_reports_count(tmp_path):
+    # A mark naming a (file, item) pair absent from the inventory must not
+    # record phantom review credit — and must be reported, not silently
+    # counted as marked.
+    run = _run_dir(tmp_path)
+    res = _run(str(run), "--mark", "a.c:f1", "a.c:ghost")
+    assert res.returncode == 0, res.stderr
+    assert "Marked 1 item as reviewed (1 unmatched)" in res.stdout
+    assert "a.c:ghost" in res.stderr
+    rec = json.loads((run / "coverage-llm.json").read_text())
+    assert rec["functions_analysed"] == [{"file": "a.c", "function": "f1"}]
+
+
+def test_mark_file_skips_unmatched_and_reports_count(tmp_path):
+    run = _run_dir(tmp_path)
+    marks = tmp_path / "marks.json"
+    marks.write_text(json.dumps([
+        {"file": "a.c", "item": "f1"},
+        {"file": "a.c", "item": "f2"},
+        {"file": "a.c", "item": "no_such_item"},
+        {"file": "missing.c", "item": "f1"},
+    ]))
+    res = _run(str(run), "--mark-file", str(marks))
+    assert res.returncode == 0, res.stderr
+    assert "Marked 2 items as reviewed (2 unmatched)" in res.stdout
+    assert "a.c:no_such_item" in res.stderr
+    assert "missing.c:f1" in res.stderr
+    rec = json.loads((run / "coverage-llm.json").read_text())
+    assert {(fa["file"], fa["function"]) for fa in rec["functions_analysed"]} \
+        == {("a.c", "f1"), ("a.c", "f2")}
+
+
+def test_mark_accepts_tool_spelled_paths(tmp_path):
+    # The store importer resolves functions_analysed paths via
+    # _to_inventory_path (exact / ./ strip / basename / suffix match) —
+    # absolute and ./-prefixed spellings must earn credit here too, and
+    # must be stored under the inventory key so the fold joins.
+    run = _run_dir(tmp_path)
+    res = _run(str(run), "--mark", "/some/build/root/a.c:f1", "./a.c:f2")
+    assert res.returncode == 0, res.stderr
+    assert "Marked 2 items as reviewed in" in res.stdout
+    assert "unmatched" not in res.stdout
+    rec = json.loads((run / "coverage-llm.json").read_text())
+    assert {(fa["file"], fa["function"]) for fa in rec["functions_analysed"]} \
+        == {("a.c", "f1"), ("a.c", "f2")}
+
+
+def test_mark_with_zero_key_inventory_stays_unvalidated(tmp_path):
+    # A checklist that yields no (file, item) keys gives the gate nothing
+    # to validate against — marks must be accepted, not all refused.
+    d = tmp_path / "scan-1"
+    d.mkdir()
+    (d / ".raptor-run.json").write_text("{}")
+    (d / "checklist.json").write_text(json.dumps(
+        {"files": [{"path": "a.c", "lines": 100, "items": []}]}))
+    res = _run(str(d), "--mark", "a.c:f1")
+    assert res.returncode == 0, res.stderr
+    assert "Marked 1 item as reviewed" in res.stdout
+    assert "unmatched" not in res.stdout
+    rec = json.loads((d / "coverage-llm.json").read_text())
+    assert rec["functions_analysed"] == [{"file": "a.c", "function": "f1"}]
+
+
+def test_mark_items_key_supersedes_legacy_functions(tmp_path):
+    # The store fold ignores legacy `functions` whenever the `items` key
+    # is present (even empty) — the gate must refuse exactly what the
+    # fold would never credit.
+    d = tmp_path / "scan-1"
+    d.mkdir()
+    (d / ".raptor-run.json").write_text("{}")
+    (d / "checklist.json").write_text(json.dumps({"files": [
+        {"path": "a.c", "lines": 100, "items": [],
+         "functions": [{"name": "legacy_f", "line_start": 1, "line_end": 5}]},
+        {"path": "b.c", "lines": 100, "items": [
+            {"name": "g1", "line_start": 1, "line_end": 5}]},
+    ]}))
+    res = _run(str(d), "--mark", "b.c:g1", "a.c:legacy_f")
+    assert res.returncode == 0, res.stderr
+    assert "Marked 1 item as reviewed (1 unmatched)" in res.stdout
+    assert "a.c:legacy_f" in res.stderr
+    rec = json.loads((d / "coverage-llm.json").read_text())
+    assert rec["functions_analysed"] == [{"file": "b.c", "function": "g1"}]
+
+
 def test_mark_without_project_context_stays_record_only(tmp_path):
     d = tmp_path / "standalone-run"
     d.mkdir()

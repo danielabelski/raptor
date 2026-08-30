@@ -228,7 +228,38 @@ def _journal_marks(run_dir, marked, verdict_by_key):
         return 0
 
 
-def _cmd_mark(mark_targets, run_dir, statuses=None):
+def _load_run_checklist(run_dir: Path) -> dict | None:
+    """checklist.json from the run dir, else its project parent."""
+    from core.json import load_json
+
+    for base in (run_dir, run_dir.parent):
+        path = base / "checklist.json"
+        if path.exists():
+            checklist = load_json(path)
+            if isinstance(checklist, dict):
+                return checklist
+    return None
+
+
+def _checklist_item_keys(checklist: dict) -> set[tuple[str, str]] | None:
+    """(file, item-name) pairs from the inventory, or None when it yields
+    no keys (nothing to validate against — marks then can't be checked
+    and are accepted as-is)."""
+    keys: set[tuple[str, str]] = set()
+    for f in checklist.get("files", []) or []:
+        if not isinstance(f, dict) or not f.get("path"):
+            continue
+        # Same key-presence semantics as the store fold: an `items` key,
+        # even an empty list, supersedes legacy `functions` — the gate
+        # must accept exactly what the fold would credit.
+        for it in f.get("items", f.get("functions", [])) or []:
+            if isinstance(it, dict) and it.get("name"):
+                keys.add((f["path"], it["name"]))
+    return keys or None
+
+
+def _cmd_mark(mark_targets: list[str], run_dir: Path | None,
+              statuses: dict[tuple[str, str], str] | None = None) -> None:
     """Mark items as reviewed in the coverage record."""
     if not run_dir:
         print("ERROR: cannot determine run directory for --mark.", file=sys.stderr)
@@ -259,13 +290,45 @@ def _cmd_mark(mark_targets, run_dir, statuses=None):
         for fa in llm_record.get("functions_analysed", [])
     }
 
+    # Validate marks against the inventory: a mark naming a nonexistent
+    # (file, item) pair must not record phantom review credit — the store
+    # and journal folds join on the checklist, so a phantom entry claims
+    # coverage no gap query can ever surface or withdraw.
+    checklist = _load_run_checklist(run_dir)
+    valid_keys = _checklist_item_keys(checklist) if checklist else None
+    normalise_path = None
+    if valid_keys is not None:
+        # Operators spell paths the way tools do (absolute, ./-prefixed,
+        # relative to another root) while the inventory keys on
+        # target-relative paths. The store importer resolves
+        # functions_analysed entries through _to_inventory_path; the gate
+        # must accept exactly the spellings the fold would credit, and
+        # store the resolved key so the join lands.
+        from core.coverage.importer import _inventory_paths, _to_inventory_path
+        from core.coverage.summary import _inventory_name_index
+        inv_paths = _inventory_paths(checklist)
+        inv_index = _inventory_name_index(inv_paths)
+
+        def normalise_path(p: str) -> str:
+            return _to_inventory_path(p, inv_paths, inv_index)
+
+    statuses = dict(statuses or {})
     added = 0
     marked = []
+    unmatched = []
     for target in mark_targets:
         if ":" not in target:
             print(f"WARNING: skipping '{target}' (expected file:function)", file=sys.stderr)
             continue
         file_path, func_name = target.rsplit(":", 1)
+        if normalise_path is not None:
+            raw_key = (file_path, func_name)
+            file_path = normalise_path(file_path)
+            if raw_key in statuses:
+                statuses.setdefault((file_path, func_name), statuses[raw_key])
+        if valid_keys is not None and (file_path, func_name) not in valid_keys:
+            unmatched.append((file_path, func_name))
+            continue
         if (file_path, func_name) not in existing_funcs:
             llm_record.setdefault("functions_analysed", []).append(
                 {"file": file_path, "function": func_name}
@@ -273,14 +336,18 @@ def _cmd_mark(mark_targets, run_dir, statuses=None):
             existing_funcs.add((file_path, func_name))
             marked.append((file_path, func_name))
             added += 1
+    for file_path, func_name in unmatched:
+        print(f"WARNING: no checklist item matches "
+              f"{file_path}:{func_name} — not marked", file=sys.stderr)
     # Marking a function records function-level review only — it must NOT add
     # the file to files_examined (which is the whole-file "tool scanned this
     # file" signal; the store would otherwise mark the entire file reviewed).
     write_record(run_dir, llm_record, tool_name="llm")
     journaled = _journal_marks(run_dir, marked, statuses or {})
     durable = " (journaled to project index)" if journaled else ""
+    skipped = f" ({len(unmatched)} unmatched)" if unmatched else ""
     print(f"Marked {added} item{'s' if added != 1 else ''} "
-          f"as reviewed in {run_dir.name}{durable}")
+          f"as reviewed{skipped} in {run_dir.name}{durable}")
 
 
 def _cmd_unmark(unmark_targets, run_dir):

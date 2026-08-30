@@ -1,26 +1,20 @@
 {
+  "core/analysis/_reach_cache.py::_MANDATORY_INDEX_FIELDS": {
+    "count": 15,
+    "kind": "literal",
+    "note": "mandatory-field manifest for the reachability adjacency cache decode gate (same persistence schema keys as _index_to_jsonable; an index missing any of them is a cache miss, not a vocabulary)"
+  },
+  "core/analysis/_reach_cache.py::_index_to_jsonable": {
+    "count": 15,
+    "kind": "literal",
+    "note": "serializer field manifest for the reachability adjacency cache JSON format (persistence schema keys, not a learned name vocabulary; must stay in lockstep with _index_from_jsonable)"
+  },
   "core/analysis/binary_oracle.py::_BOILERPLATE_NAMES": {
     "count": 10,
     "kind": "literal"
   },
-  "core/audit/integer_truncation_checker.py::_WIDE_TYPES": {
-    "count": 17,
-    "kind": "literal",
-    "note": "Fixed C/decompiler integer TYPE names (width classes for the truncation checker) - language constants like the libc/POSIX allowance, not learnable target-API vocabulary; new type spellings are additions to the language surface, not to a target's API.",
-    "reviewed": "2026-08-29"
-  },
-  "core/audit/struct_field_checker.py::_TYPE_SIZES": {
-    "count": 30,
-    "kind": "literal",
-    "note": "Fixed C/decompiler TYPE-name -> byte-size table (Ghidra undefinedN spellings included) - language constants like the libc/POSIX allowance, not learnable target-API vocabulary.",
-    "reviewed": "2026-08-29"
-  },
   "core/analysis/binary_oracle_precision.py::to_dict": {
     "count": 12,
-    "kind": "literal"
-  },
-  "core/concepts/compiler.py::to_dict": {
-    "count": 11,
     "kind": "literal"
   },
   "core/analysis/cfg_builder_cpp.py::_BULK_COPY_FUNCS": {
@@ -166,25 +160,6 @@
     "count": 12,
     "kind": "literal"
   },
-  "core/audit/api_boundary.py::_STMT_KEYWORDS": {
-    "count": 13,
-    "kind": "alternation"
-  },
-  "core/audit/defassign.py::_C_KEYWORDS": {
-    "count": 42,
-    "kind": "literal",
-    "note": "ISO C keyword set (language constant, not target API names): a macro NAMED after a keyword is conditional instrumentation the definite-assignment prover must never expand; misses only widen refusal, never a proof"
-  },
-  "core/audit/defassign.py::_CTRL_ESCAPE": {
-    "count": 17,
-    "kind": "literal",
-    "note": "C control-transfer keywords plus the setjmp family (ISO/POSIX language constants): any of these inside a macro expansion refuses the definite-assignment proof \u2014 additions widen refusal, never a proof"
-  },
-  "core/audit/defassign.py::_ALLOWED_STATEMENTS": {
-    "count": 12,
-    "kind": "literal",
-    "note": "tree-sitter C statement-node allowlist for the definite-assignment walk (grammar constants, not target API names); anything outside it refuses the proof"
-  },
   "core/audit/api_boundary.py::_CALLER_CONDITIONAL_RE": {
     "count": 34,
     "kind": "alternation",
@@ -194,6 +169,10 @@
     "count": 22,
     "kind": "literal",
     "note": "English pronoun/generic-noun stoplist for the invoked-twice target extractor (wrong-target defence) \u2014 a name in this set can never be a callee name; not an API vocabulary"
+  },
+  "core/audit/api_boundary.py::_STMT_KEYWORDS": {
+    "count": 13,
+    "kind": "alternation"
   },
   "core/audit/asm_zero_len_loop.py::check_zero_length_loop_entry": {
     "count": 11,
@@ -248,6 +227,11 @@
   "core/audit/block_sibling_analysis.py::to_dict": {
     "count": 10,
     "kind": "literal"
+  },
+  "core/audit/caller_contract.py::digest": {
+    "count": 10,
+    "kind": "literal",
+    "note": "result-dict field names of the caller-contract digest (identity, render caps, enumeration-honesty fields), not an API-name vocabulary \u2014 call sites are enumerated from the call graph / tree scan, never name-matched against this list"
   },
   "core/audit/caller_lock.py::_C_CALL_KEYWORDS": {
     "count": 12,
@@ -462,6 +446,21 @@
     "count": 13,
     "kind": "literal"
   },
+  "core/audit/defassign.py::_ALLOWED_STATEMENTS": {
+    "count": 12,
+    "kind": "literal",
+    "note": "tree-sitter C statement-node allowlist for the definite-assignment walk (grammar constants, not target API names); anything outside it refuses the proof"
+  },
+  "core/audit/defassign.py::_CTRL_ESCAPE": {
+    "count": 17,
+    "kind": "literal",
+    "note": "C control-transfer keywords plus the setjmp family (ISO/POSIX language constants): any of these inside a macro expansion refuses the definite-assignment proof \u2014 additions widen refusal, never a proof"
+  },
+  "core/audit/defassign.py::_C_KEYWORDS": {
+    "count": 42,
+    "kind": "literal",
+    "note": "ISO C keyword set (language constant, not target API names): a macro NAMED after a keyword is conditional instrumentation the definite-assignment prover must never expand; misses only widen refusal, never a proof"
+  },
   "core/audit/edge_obligations.py::build_edge_obligations": {
     "count": 10,
     "kind": "literal",
@@ -475,6 +474,11 @@
   "core/audit/evidence_fusion.py::_extract_concern_key": {
     "count": 14,
     "kind": "literal"
+  },
+  "core/audit/evidence_grade.py::_DETECTION_CLASSIFIER_MODULES": {
+    "count": 10,
+    "kind": "literal",
+    "note": "registry of evidence-channel keys -> classifier module paths (code registry, not a target-API name vocabulary; grows one entry per new evidence channel)"
   },
   "core/audit/evidence_grade.py::_TOOL_NAMESPACES": {
     "count": 15,
@@ -523,6 +527,12 @@
     "kind": "literal",
     "note": "Go predeclared type identifiers (bool, byte, ... uintptr, comparable) \u2014 a closed language-spec enumeration the goroutine-isolation walk treats as freely mentionable, like the callsite-consistency keyword entries; not a learnable function-name vocabulary"
   },
+  "core/audit/integer_truncation_checker.py::_WIDE_TYPES": {
+    "count": 17,
+    "kind": "literal",
+    "note": "Fixed C/decompiler integer TYPE names (width classes for the truncation checker) - language constants like the libc/POSIX allowance, not learnable target-API vocabulary; new type spellings are additions to the language surface, not to a target's API.",
+    "reviewed": "2026-08-29"
+  },
   "core/audit/invariant_gate.py::_ANCHOR_STOPWORDS": {
     "count": 109,
     "kind": "literal",
@@ -543,6 +553,18 @@
   "core/audit/layer_resolution.py::_VALID_EVASION_MECHANISMS": {
     "count": 13,
     "kind": "literal"
+  },
+  "core/audit/lifetime_witness.py::_ALLOWED_STMTS": {
+    "note": "Closed tree-sitter C grammar node-type enumeration (statement kinds the CFG builder models); grammar-defined, not learnable. Same class as goconc.py::_GO_BUILTIN_TYPES.",
+    "reviewed": "2026-08-28"
+  },
+  "core/audit/lifetime_witness.py::_C_KEYWORDS": {
+    "note": "Closed C-language keyword enumeration (34 names per the C standard) used to separate keywords from identifiers in the lifetime witness's token scan; not a learnable API vocabulary. Same class as caller_lock.py::_C_CALL_KEYWORDS.",
+    "reviewed": "2026-08-28"
+  },
+  "core/audit/lifetime_witness.py::_classify_occurrence": {
+    "note": "Closed tree-sitter C grammar node-type enumeration (ancestor kinds the occurrence classifier walks); grammar-defined, not learnable.",
+    "reviewed": "2026-08-28"
   },
   "core/audit/llm_review.py::REVIEW_SCHEMA": {
     "count": 18,
@@ -832,6 +854,12 @@
     "count": 20,
     "kind": "literal"
   },
+  "core/audit/struct_field_checker.py::_TYPE_SIZES": {
+    "count": 30,
+    "kind": "literal",
+    "note": "Fixed C/decompiler TYPE-name -> byte-size table (Ghidra undefinedN spellings included) - language constants like the libc/POSIX allowance, not learnable target-API vocabulary.",
+    "reviewed": "2026-08-29"
+  },
   "core/audit/sweep.py::_PROSE_STOP_WORDS": {
     "count": 51,
     "kind": "literal"
@@ -935,6 +963,10 @@
   },
   "core/concepts/audit_bridge.py::_STOPWORDS": {
     "count": 24,
+    "kind": "literal"
+  },
+  "core/concepts/compiler.py::to_dict": {
+    "count": 11,
     "kind": "literal"
   },
   "core/concepts/contract_pairs.py::_CONTRACT_SPECS": {
@@ -1054,6 +1086,11 @@
     "count": 18,
     "kind": "literal"
   },
+  "core/env/build.py::_validate_aux_name": {
+    "count": 17,
+    "kind": "literal",
+    "note": "Linux/OCI image system-directory names an aux build stage must not collide with (filesystem taxonomy, not target API names; same class as the tree-sitter node-type allowlist entry)"
+  },
   "core/env/verify.py::HTTP_REQUEST_KEY_ALIASES": {
     "count": 14,
     "kind": "literal",
@@ -1067,6 +1104,11 @@
   "core/evidence/__init__.py::to_dict": {
     "count": 10,
     "kind": "literal"
+  },
+  "core/inventory/binary_builder.py::build_binary_checklist": {
+    "count": 14,
+    "kind": "literal",
+    "note": "checklist JSON schema field names (mirrors core/inventory build_inventory output shape), not a name vocabulary"
   },
   "core/inventory/builder.py::inventory": {
     "count": 10,
@@ -1392,19 +1434,29 @@
     "kind": "literal",
     "note": "kernel-defined /sys/class/dmi/id file names (fixed external contract, one entry per world-readable DMI identity file the persona masks) - not a learnable vocabulary"
   },
+  "core/sandbox/fingerprint.py::_si_names": {
+    "count": 10,
+    "kind": "literal",
+    "note": "kernel-defined /proc/softirqs row names (fixed external contract mirrored verbatim for the persona stub) - not a learnable vocabulary"
+  },
   "core/sandbox/profiles.py::_SANDBOX_KWARGS": {
     "count": 23,
     "kind": "literal"
+  },
+  "core/sandbox/proxy.py::_PROXY_EVENT_RESULTS": {
+    "count": 11,
+    "kind": "literal",
+    "note": "pinned proxy event-result enum, drift-pinned by the structural test in test_audit_filter.py \u2014 a fixed taxonomy, not learnable vocabulary"
   },
   "core/sandbox/proxy.py::event": {
     "count": 11,
     "kind": "literal",
     "note": "proxy tunnel-event telemetry field names (framework record keys, not target API names)"
   },
-  "core/sandbox/proxy.py::_PROXY_EVENT_RESULTS": {
-    "count": 11,
+  "core/sandbox/proxy.py::marker": {
+    "count": 15,
     "kind": "literal",
-    "note": "pinned proxy event-result enum, drift-pinned by the structural test in test_audit_filter.py \u2014 a fixed taxonomy, not learnable vocabulary"
+    "note": "proxy event-record field names (schema keys), not a name vocabulary"
   },
   "core/sandbox/seatbelt.py::MACOS_STRICT_MACH_SERVICES": {
     "count": 17,
@@ -1494,9 +1546,20 @@
     "count": 24,
     "kind": "literal"
   },
+  "core/testing/git_hermeticity.py::GIT_ENV_STRIP": {
+    "count": 17,
+    "kind": "literal",
+    "note": "git-documented environment variable names (identity + repo-redirection family) stripped at test-session start for hermeticity \u2014 an env-var strip-list, not learned API vocabulary"
+  },
   "core/threat_model/__init__.py::_EVIDENCE_RAW_KEY_ALLOWLIST": {
     "count": 14,
     "kind": "literal"
+  },
+  "core/threat_model/__init__.py::_SECRET_VALUE_FIELD_NAMES": {
+    "count": 14,
+    "kind": "literal",
+    "note": "Security denylist of context-map entry field names whose values are the matched secret material itself (the redaction pass drops them wholesale) \u2014 same class as the baselined cc_trust env-var denylist, not target-API vocabulary. Additions that are API-shaped should route through the learned-vocab path.",
+    "reviewed": "2026-08-28"
   },
   "core/threat_model/__init__.py::_data_flows_from_context_map": {
     "count": 10,
@@ -1513,11 +1576,6 @@
   "core/trajectories/test_store.py::base": {
     "count": 10,
     "kind": "literal"
-  },
-  "core/testing/git_hermeticity.py::GIT_ENV_STRIP": {
-    "count": 17,
-    "kind": "literal",
-    "note": "git-documented environment variable names (identity + repo-redirection family) stripped at test-session start for hermeticity \u2014 an env-var strip-list, not learned API vocabulary"
   },
   "core/tuning/__init__.py::_DEFAULTS": {
     "count": 13,
@@ -2026,9 +2084,24 @@
     "count": 12,
     "kind": "literal"
   },
+  "packages/fuzzing/env_build.py::record": {
+    "count": 11,
+    "kind": "literal",
+    "note": "env-build.json provenance record field names (serialization schema, not name vocabulary \u2014 same class as the enforcement-stats field-names entry)"
+  },
   "packages/fuzzing/seed_corpus.py::SENSITIVE_SUBSTRINGS": {
     "count": 11,
     "kind": "literal"
+  },
+  "packages/ghidra/model.py::to_dict": {
+    "count": 13,
+    "kind": "literal",
+    "note": "REDatabase serialization field names (schema keys), not a name vocabulary"
+  },
+  "packages/ghidra/roundtrip.py::_STATUS_LABELS": {
+    "count": 10,
+    "kind": "literal",
+    "note": "annotation-status enum to human label map (core/annotations status values + understand roles), fixed taxonomy not target API names"
   },
   "packages/hypothesis_validation/adapters/codeql.py::describe": {
     "count": 10,
@@ -2061,6 +2134,11 @@
   "packages/joern/lang_config.py::_PROFILES": {
     "count": 13,
     "kind": "literal"
+  },
+  "packages/joern/lifecycle.py::new_state": {
+    "count": 10,
+    "kind": "literal",
+    "note": "lifecycle state-file field names (pid/comm/port/heap/credential/socket_path keys of joern-server.json), not name vocabulary \u2014 same class as the to_dict field-name entries"
   },
   "packages/joern/runner.py::_DANGEROUS_QUERY_PATTERNS": {
     "count": 12,
@@ -2211,18 +2289,23 @@
     "count": 11,
     "kind": "literal"
   },
-  "packages/sca/models.py::SupplyChainKind": {
-    "count": 33,
-    "kind": "literal"
-  },
   "packages/sca/models.py::FLOATING_TAGS": {
     "count": 11,
     "kind": "literal",
     "note": "OCI floating-tag release-channel names (latest/stable/nightly/...), not target API names; single shared copy after the container-parser dedup (previously baselined 3x under packages/sca/parsers/*)."
   },
+  "packages/sca/models.py::SupplyChainKind": {
+    "count": 33,
+    "kind": "literal"
+  },
   "packages/sca/osv_offline.py::_BUCKET_NAME": {
     "count": 11,
     "kind": "literal"
+  },
+  "packages/sca/parsers/binary_imports.py::_LIBRARY_SIGNATURES": {
+    "count": 12,
+    "kind": "literal",
+    "note": "seed signature sets mapping well-known exported symbols to library identities (zlib/openssl/sqlite etc.) for static-binary SCA hints; library taxonomy, not learned target vocabulary"
   },
   "packages/sca/parsers/cmake_fetchcontent.py::KEYS": {
     "count": 19,
@@ -2316,6 +2399,12 @@
     "count": 13,
     "kind": "literal"
   },
+  "packages/sca/versions/semver.py::_PRERELEASE_KEYWORDS": {
+    "count": 20,
+    "kind": "literal",
+    "note": "Semver PRERELEASE-CHANNEL terminology (alpha/beta/rc/nightly/preview...) used to tell genuine prerelease tags from org/fork suffixes \u2014 cross-ecosystem packaging convention like the libc/POSIX allowance, not a target's learnable API vocabulary; new channel names are additions to community convention, not to any project surface.",
+    "reviewed": "2026-08-30"
+  },
   "packages/sca/wheel_compat/wheel_tags.py::_PLATFORM_ARCH_ALIASES": {
     "count": 11,
     "kind": "literal"
@@ -2363,66 +2452,6 @@
   "packages/static-analysis/scanner.py::_SEMGREP_LANG_ALIASES": {
     "count": 11,
     "kind": "literal"
-  },
-  "core/analysis/_reach_cache.py::_index_to_jsonable": {
-    "count": 15,
-    "kind": "literal",
-    "note": "serializer field manifest for the reachability adjacency cache JSON format (persistence schema keys, not a learned name vocabulary; must stay in lockstep with _index_from_jsonable)"
-  },
-  "core/analysis/_reach_cache.py::_MANDATORY_INDEX_FIELDS": {
-    "count": 15,
-    "kind": "literal",
-    "note": "mandatory-field manifest for the reachability adjacency cache decode gate (same persistence schema keys as _index_to_jsonable; an index missing any of them is a cache miss, not a vocabulary)"
-  },
-  "core/env/build.py::_validate_aux_name": {
-    "count": 17,
-    "kind": "literal",
-    "note": "Linux/OCI image system-directory names an aux build stage must not collide with (filesystem taxonomy, not target API names; same class as the tree-sitter node-type allowlist entry)"
-  },
-  "packages/fuzzing/env_build.py::record": {
-    "count": 11,
-    "kind": "literal",
-    "note": "env-build.json provenance record field names (serialization schema, not name vocabulary \u2014 same class as the enforcement-stats field-names entry)"
-  },
-  "core/audit/caller_contract.py::digest": {
-    "count": 10,
-    "kind": "literal",
-    "note": "result-dict field names of the caller-contract digest (identity, render caps, enumeration-honesty fields), not an API-name vocabulary \u2014 call sites are enumerated from the call graph / tree scan, never name-matched against this list"
-  },
-  "core/inventory/binary_builder.py::build_binary_checklist": {
-    "count": 14,
-    "kind": "literal",
-    "note": "checklist JSON schema field names (mirrors core/inventory build_inventory output shape), not a name vocabulary"
-  },
-  "packages/ghidra/model.py::to_dict": {
-    "count": 13,
-    "kind": "literal",
-    "note": "REDatabase serialization field names (schema keys), not a name vocabulary"
-  },
-  "packages/ghidra/roundtrip.py::_STATUS_LABELS": {
-    "count": 10,
-    "kind": "literal",
-    "note": "annotation-status enum to human label map (core/annotations status values + understand roles), fixed taxonomy not target API names"
-  },
-  "packages/sca/parsers/binary_imports.py::_LIBRARY_SIGNATURES": {
-    "count": 12,
-    "kind": "literal",
-    "note": "seed signature sets mapping well-known exported symbols to library identities (zlib/openssl/sqlite etc.) for static-binary SCA hints; library taxonomy, not learned target vocabulary"
-  },
-  "core/audit/evidence_grade.py::_DETECTION_CLASSIFIER_MODULES": {
-    "count": 10,
-    "kind": "literal",
-    "note": "registry of evidence-channel keys -> classifier module paths (code registry, not a target-API name vocabulary; grows one entry per new evidence channel)"
-  },
-  "packages/joern/lifecycle.py::new_state": {
-    "count": 10,
-    "kind": "literal",
-    "note": "lifecycle state-file field names (pid/comm/port/heap/credential/socket_path keys of joern-server.json), not name vocabulary \u2014 same class as the to_dict field-name entries"
-  },
-  "core/sandbox/proxy.py::marker": {
-    "count": 15,
-    "kind": "literal",
-    "note": "proxy event-record field names (schema keys), not a name vocabulary"
   },
   "packages/web/api_testing.py::run_graphql_probes": {
     "count": 14,
@@ -2509,33 +2538,10 @@
     "kind": "literal",
     "note": "result-dict field names of the web scanner's evidence/summary records (schema keys), not a name vocabulary"
   },
-  "core/sandbox/fingerprint.py::_si_names": {
-    "count": 10,
-    "kind": "literal",
-    "note": "kernel-defined /proc/softirqs row names (fixed external contract mirrored verbatim for the persona stub) - not a learnable vocabulary"
-  },
-  "core/audit/lifetime_witness.py::_C_KEYWORDS": {
-    "note": "Closed C-language keyword enumeration (34 names per the C standard) used to separate keywords from identifiers in the lifetime witness's token scan; not a learnable API vocabulary. Same class as caller_lock.py::_C_CALL_KEYWORDS.",
-    "reviewed": "2026-08-28"
-  },
-  "core/audit/lifetime_witness.py::_ALLOWED_STMTS": {
-    "note": "Closed tree-sitter C grammar node-type enumeration (statement kinds the CFG builder models); grammar-defined, not learnable. Same class as goconc.py::_GO_BUILTIN_TYPES.",
-    "reviewed": "2026-08-28"
-  },
-  "core/audit/lifetime_witness.py::_classify_occurrence": {
-    "note": "Closed tree-sitter C grammar node-type enumeration (ancestor kinds the occurrence classifier walks); grammar-defined, not learnable.",
-    "reviewed": "2026-08-28"
-  },
-  "core/threat_model/__init__.py::_SECRET_VALUE_FIELD_NAMES": {
-    "count": 14,
-    "kind": "literal",
-    "note": "Security denylist of context-map entry field names whose values are the matched secret material itself (the redaction pass drops them wholesale) — same class as the baselined cc_trust env-var denylist, not target-API vocabulary. Additions that are API-shaped should route through the learned-vocab path.",
-    "reviewed": "2026-08-28"
-  },
   "packages/zkpox/reproduce.py::as_dict": {
     "count": 10,
     "kind": "literal",
-    "note": "Serialization schema keys of the reproduction-result dataclass record (report JSON field names), not a name vocabulary — same class as project.py::to_dict.",
+    "note": "Serialization schema keys of the reproduction-result dataclass record (report JSON field names), not a name vocabulary \u2014 same class as project.py::to_dict.",
     "reviewed": "2026-08-28"
   }
 }

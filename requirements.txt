@@ -88,35 +88,27 @@ defusedxml==0.7.1
 # compromise-detection corpus). Pin alongside the SCA hard deps.
 packaging==25.0
 
-# Optional: CVSS v4.0 scoring for packages/sca (GHSA publishes v4-only
-# advisories since 2024; PYSEC / RUSTSEC mirrors increasingly carry no v3
-# vector or database severity label). packages/sca/osv.py guard-imports
-# this — when absent, v4-only advisories fall back to the database
-# severity label and finally degrade to a blanket ``medium``, so
-# severity-based gates under-fire. Recommended when SCA severity accuracy
-# matters; the repo's own SCA CI jobs install it explicitly. Pure Python,
-# tiny (the reference MacroVector implementation).
+# Optional: CVSS v4.0 scoring for SCA. Without it, v4-only advisories
+# degrade to the database severity label or a blanket ``medium``.
 # cvss==3.6
 
 # Optional: Faster JSON parse/serialise (transparent fallback to stdlib json)
 # orjson==3.11.9
 
-# ELF metadata without angr: core/symbolic's load_binary falls back to
-# pyelftools when angr is absent — the fallback must not depend on the
-# heavyweight optional it exists to replace. Tiny, pure-Python.
+# ELF metadata (core/symbolic load_binary fallback when angr absent).
 pyelftools==0.33
 
-# Optional: For binary symbolic execution (core/symbolic — overflow
-# witnesses, path constraints, format-string slot analysis backing
-# binary audit verification). Heavy (~1 GB installed). NOTE: claripy
-# exact-pins z3-solver (4.13.0.0 at this angr version) — when angr is
-# installed its pin owns the interpreter's z3; do not uncomment the
-# standalone z3-solver pin below at a different version (RAPTOR's SMT
-# consumers are verified against claripy's pin).
+# Optional: Binary symbolic execution (core/symbolic — overflow
+# witnesses, path constraints, format-string slot analysis). Heavy
+# (~1 GB installed). claripy pins z3-solver==4.13.0.0; RAPTOR's SMT
+# surface (BitVec + Bool) works on both 4.13 and 4.15, so angr and
+# the standalone z3 pin below coexist at runtime.
 # angr==9.3.3
 
-# Optional: For SMT-based constraint analysis (one-gadget feasibility, etc.)
-# z3-solver==4.15.4.0  # see requirements-dev.txt for bookworm/aarch64 cap
+# Optional: SMT constraint analysis (one-gadget feasibility, path
+# validation, audit condition witnesses). Capped below 4.15.5 for
+# bookworm aarch64 glibc compat — see requirements-dev.txt.
+# z3-solver==4.15.4.0
 
 # Optional: Binary disassembly, call-graph extraction, --binary-edges
 # (packages/binary_analysis, core/analysis/binary_oracle). Requires

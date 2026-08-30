@@ -1,18 +1,30 @@
-# RAPTOR DevContainer - All Optional Dependencies
+# RAPTOR DevContainer — all optional dependencies.
 # Install with: pip install -r requirements-all-optional.txt
-# This includes ALL optional dependencies for full devcontainer functionality
 
 -r ../requirements.txt
 
-# All LLM provider SDKs
-openai==2.30.0
+# LLM provider SDKs
 anthropic==0.103.1
 google-genai==2.4.0
+botocore==1.43.16
 
-# `tabulate` is already pinned in ../requirements.txt (pulled in via
-# the `-r` above); it used to be repeated here loosely. Removed to
-# avoid the duplicate-with-different-pin footgun.
-
-# Web scanning package
+# Web scanning
 beautifulsoup4==4.15.0
 playwright==1.60.0
+
+# SMT constraint analysis
+z3-solver==4.15.4.0
+
+# SAGE persistent memory
+sage-agent-sdk==11.17.11
+httpx==0.28.1
+
+# Binary analysis
+r2pipe==1.9.8
+pyghidra==3.1.0
+
+# Dynamic instrumentation
+frida==16.7.19
+
+# SARIF schema validation
+jsonschema==4.23.0

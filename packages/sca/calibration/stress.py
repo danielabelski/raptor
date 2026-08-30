@@ -82,8 +82,10 @@ import logging
 import os
 import subprocess
 import tempfile
+import sys
+import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -137,6 +139,113 @@ class StressDiff:
     current: StressResult | None = None
 
 
+def run_sweep_and_report(
+    samples: Sequence[ProjectSample],
+    baseline_path: Path,
+    *,
+    git_clone_timeout: int = 300,
+    sca_timeout: int = 600,
+    max_workers: int = 4,
+    out: "Callable[[str], Any]" = print,
+) -> tuple[int, list[StressResult]]:
+    """Drive sweep → elapsed re-measure → baseline compare → render,
+    and NEVER exit without a summary.
+
+    A sweep run died mid-flight with neither a traceback nor a
+    summary — the worst post-mortem shape. This driver makes every
+    death mode name its killer:
+
+    * per-scan raises already degrade the affected PROJECT with a
+      named reason (endpoint distress — 429 storms, circuit-breaker
+      fail-fast ``HttpError(circuit_break=True)``, retry exhaustion —
+      lands here and shows as ``scan error: …`` in the summary);
+    * a raise in any POST-SWEEP phase (re-measure, compare, render)
+      prints the traceback AND a partial summary from whatever
+      results exist, then reports rc=2;
+    * SIGTERM (runner cancellation grace) prints the in-flight scans
+      and the partial summary before the process dies;
+    * hard kills (OOM SIGKILL) can print nothing — for those, the
+      heartbeat and per-scan "scan starting" lines in the log are
+      the post-mortem.
+
+    Returns ``(rc, results)`` — rc per :func:`diffs_to_exit_code`,
+    or 2 when a phase failed.
+    """
+    import signal
+    import traceback
+
+    results: list[StressResult] = []
+
+    def _partial_summary(note: str) -> None:
+        out(f"sweep interrupted — {note}")
+        inflight = _in_flight()
+        if inflight:
+            out(f"in-flight scans: {', '.join(inflight)}")
+        done = [r for r in results if r is not None]
+        out(f"completed scans: {len(done)}/{len(samples)}")
+        try:
+            diffs = compare_to_baseline(done, baseline_path)
+            out(render_diffs(diffs))
+        except Exception:  # noqa: BLE001 — post-mortem best effort
+            for r in done:
+                out(f"  [done] {r.ecosystem}/{r.project} "
+                    f"vulns={r.vuln_findings} err={r.error}")
+        sys.stdout.flush()
+        sys.stderr.flush()
+
+    prior_term = signal.getsignal(signal.SIGTERM)
+
+    def _on_term(signum: int, frame: object) -> None:
+        _partial_summary("SIGTERM (cancellation / shutdown)")
+        signal.signal(signal.SIGTERM, prior_term)
+        signal.raise_signal(signal.SIGTERM)
+
+    try:
+        signal.signal(signal.SIGTERM, _on_term)
+    except ValueError:
+        prior_term = None      # not the main thread — no handler
+
+    try:
+        try:
+            # ``results`` doubles as the live sink: completions land
+            # in it AS THEY HAPPEN, so the SIGTERM / interrupt
+            # post-mortem reports what actually finished instead of
+            # claiming zero after forty completed scans.
+            run_stress_sweep(
+                samples=samples,
+                git_clone_timeout=git_clone_timeout,
+                sca_timeout=sca_timeout,
+                max_workers=max_workers,
+                results_sink=results,
+            )
+            results = confirm_elapsed_regressions(
+                results, samples, baseline_path,
+                git_clone_timeout=git_clone_timeout,
+            )
+            diffs = compare_to_baseline(results, baseline_path)
+            out(render_diffs(diffs))
+            sys.stdout.flush()
+            return diffs_to_exit_code(diffs), results
+        except KeyboardInterrupt:
+            _partial_summary("KeyboardInterrupt")
+            raise
+        except BaseException as e:
+            # Includes SystemExit: dying on it prints NOTHING (no
+            # traceback, no summary). Name it, dump the partial
+            # state, and report failure honestly.
+            out("sweep driver caught "
+                f"{type(e).__name__}: {str(e)[:300]}")
+            out(traceback.format_exc())
+            _partial_summary("driver-phase failure")
+            return 2, results
+    finally:
+        if prior_term is not None:
+            try:
+                signal.signal(signal.SIGTERM, prior_term)
+            except ValueError:
+                pass
+
+
 def configure_sweep_logging(debug_log: Path) -> None:
     """Console + debug-file logging for a sweep driver process.
 
@@ -179,8 +288,15 @@ def run_stress_sweep(
     sca_timeout: int = 600,
     max_workers: int = 4,
     use_existing_clones: bool = False,
+    results_sink: "list[StressResult] | None" = None,
 ) -> list[StressResult]:
     """Walk samples, scan each, return per-sample diagnostics.
+
+    ``results_sink``: caller-owned list that receives each result AS
+    IT COMPLETES (the returned list is the same object when given).
+    Interrupt-time post-mortems need it — a signal handler cannot see
+    this function's local state, and a partial summary that claims
+    zero completions after forty finished scans is worse than none.
 
     Scans run in parallel (``max_workers`` threads). Each scan is
     bounded by ``sca_timeout`` — if ``run_sca`` hasn't returned by
@@ -229,11 +345,48 @@ def run_stress_sweep(
     out_root.mkdir(parents=True, exist_ok=True)
 
     per_scan_budget = sca_timeout + git_clone_timeout
-    results: list[StressResult] = []
+    results: list[StressResult] = (
+        results_sink if results_sink is not None else []
+    )
+
+    # Heartbeat: one INFO line a minute naming the in-flight scans
+    # (and this process's RSS). A sweep hard-killed mid-run (runner
+    # OOM, forced cancellation) dies without a traceback or summary
+    # — these lines are the post-mortem that names the killer
+    # project(s). Daemon thread; dies with the sweep.
+    _hb_stop = threading.Event()
+
+    def _heartbeat() -> None:
+        while not _hb_stop.wait(60):
+            rss = "?"
+            try:
+                with open("/proc/self/status") as st:
+                    for line in st:
+                        if line.startswith("VmRSS"):
+                            rss = f"{int(line.split()[1]) // 1024}MB"
+                            break
+            except OSError:
+                pass
+            logger.info(
+                "sca.calibration.stress: heartbeat — in flight: %s "
+                "(rss=%s)", ", ".join(_in_flight()) or "none", rss,
+            )
+
+    threading.Thread(target=_heartbeat, daemon=True).start()
     try:
-        with concurrent.futures.ThreadPoolExecutor(
+        # Explicit executor lifecycle instead of a ``with`` block: on
+        # KeyboardInterrupt the context manager's exit would call
+        # shutdown(wait=True) and JOIN the in-flight workers — the
+        # interrupt acknowledgement (partial summary, traceback)
+        # would then wait out whatever scans were mid-run, minutes in
+        # production. The interrupt path abandons them instead
+        # (interpreter exit still joins pool threads; only the
+        # acknowledgement is immediate).
+        executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=max_workers,
-        ) as executor:
+        )
+        interrupted = False
+        try:
             future_to_sample = {
                 executor.submit(
                     _scan_one, sample, out_root,
@@ -250,14 +403,27 @@ def run_stress_sweep(
                     sample = future_to_sample[future]
                     try:
                         result = future.result()
-                    except Exception as e:  # noqa: BLE001
+                    except BaseException as e:  # noqa: BLE001
+                        # BaseException, not Exception: a library
+                        # sys.exit() or comparable escape inside a
+                        # scan thread must degrade THIS project with
+                        # a named reason, never kill the sweep
+                        # summary-less (an uncaught SystemExit exits
+                        # with no traceback at all — the worst
+                        # post-mortem). KeyboardInterrupt is the
+                        # operator's and still propagates.
+                        if isinstance(e, KeyboardInterrupt):
+                            raise
                         result = StressResult(
                             project=sample.name,
                             ecosystem=sample.ecosystem,
                             elapsed_seconds=0.0,
                             deps_analysed=0, vuln_findings=0,
                             eco_breakdown={},
-                            error=f"unexpected: {str(e)[:200]}",
+                            error=(
+                                f"unexpected {type(e).__name__}: "
+                                f"{str(e)[:200]}"
+                            ),
                         )
                     results.append(result)
                     logger.info(
@@ -268,6 +434,16 @@ def run_stress_sweep(
                     )
             except concurrent.futures.TimeoutError:
                 pass
+            except KeyboardInterrupt:
+                # Ctrl-C / SIGINT: without this, a plain shutdown
+                # drains the ENTIRE queued backlog (queued items
+                # still execute) — a production interrupt could
+                # grind on for the rest of the sweep before any
+                # acknowledgement. Cancel what never started,
+                # abandon what is running, re-raise.
+                interrupted = True
+                executor.shutdown(wait=False, cancel_futures=True)
+                raise
             for future, sample in future_to_sample.items():
                 if future not in completed:
                     results.append(StressResult(
@@ -280,7 +456,11 @@ def run_stress_sweep(
                             f"scan timed out (>{per_scan_budget}s budget)"
                         ),
                     ))
+        finally:
+            if not interrupted:
+                executor.shutdown(wait=True)
     finally:
+        _hb_stop.set()
         if cleanup_dir is not None:
             try:
                 _rmtree(cleanup_dir)
@@ -289,7 +469,41 @@ def run_stress_sweep(
     return results
 
 
+# In-flight scan registry — read by the heartbeat and the
+# signal-time post-mortem so a hard-killed sweep (runner OOM,
+# cancellation) still names the scans it died holding. Keyed
+# "eco/name" → monotonic start time.
+_ACTIVE_SCANS: dict[str, float] = {}
+_ACTIVE_SCANS_LOCK = threading.Lock()
+
+
+def _in_flight() -> list[str]:
+    """Names of currently-running scans, longest-running first."""
+    with _ACTIVE_SCANS_LOCK:
+        items = sorted(_ACTIVE_SCANS.items(), key=lambda kv: kv[1])
+    return [k for k, _ in items]
+
+
 def _scan_one(
+    sample: ProjectSample,
+    out_root: Path,
+    *,
+    git_clone_timeout: int,
+) -> StressResult:
+    label = f"{sample.ecosystem}/{sample.name}"
+    logger.info("sca.calibration.stress: scan starting: %s", label)
+    with _ACTIVE_SCANS_LOCK:
+        _ACTIVE_SCANS[label] = time.monotonic()
+    try:
+        return _scan_one_inner(
+            sample, out_root, git_clone_timeout=git_clone_timeout,
+        )
+    finally:
+        with _ACTIVE_SCANS_LOCK:
+            _ACTIVE_SCANS.pop(label, None)
+
+
+def _scan_one_inner(
     sample: ProjectSample,
     out_root: Path,
     *,
@@ -843,6 +1057,7 @@ __all__ = [
     "StressDiff", "StressResult",
     "compare_to_baseline", "configure_sweep_logging",
     "confirm_elapsed_regressions",
+    "run_sweep_and_report",
     "diffs_to_exit_code",
     "render_diffs", "run_stress_sweep", "write_baseline",
 ]

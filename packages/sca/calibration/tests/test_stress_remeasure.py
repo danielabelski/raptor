@@ -250,3 +250,225 @@ def test_fails_take_remeasure_budget_before_warns(
     assert len(remeasured) == 3
     diffs = compare_to_baseline(confirmed, baseline)
     assert all(d.severity != "fail" for d in diffs)
+
+
+# ---------------------------------------------------------------------------
+# run_sweep_and_report — the never-summary-less driver
+# ---------------------------------------------------------------------------
+
+def _driver_setup(tmp_path, monkeypatch, scan_fn):
+    baseline = _baseline(tmp_path, {"proj": _BASE_ENTRY})
+    monkeypatch.setattr(stress_mod, "_scan_one_inner", scan_fn)
+    lines: list[str] = []
+    return baseline, lines
+
+
+def test_endpoint_distress_degrades_project_not_sweep(
+    tmp_path, monkeypatch,
+) -> None:
+    """A circuit-breaker fail-fast (registry 429 storm shape) raising
+    out of a scan degrades THAT project with a named reason in the
+    summary — the sweep completes and reports."""
+    from core.http import HttpError
+    from packages.sca.calibration.stress import run_sweep_and_report
+
+    def _breaker_scan(sample, out_root, *, git_clone_timeout):
+        raise HttpError(
+            "Circuit open for registry.example:443; aborting retry",
+            circuit_break=True,
+        )
+
+    baseline, lines = _driver_setup(tmp_path, monkeypatch, _breaker_scan)
+    rc, results = run_sweep_and_report(
+        [_sample()], baseline, out=lines.append, max_workers=1,
+    )
+    assert rc == 2
+    text = "\n".join(lines)
+    assert "summary:" in text
+    assert "Circuit open" in text          # named reason in the report
+    assert results and results[0].error
+
+
+def test_systemexit_in_scan_degrades_project_not_sweep(
+    tmp_path, monkeypatch,
+) -> None:
+    """A library sys.exit() inside a scan thread must not kill the
+    driver (an uncaught SystemExit exits with NO traceback and NO
+    summary — the worst post-mortem shape)."""
+    from packages.sca.calibration.stress import run_sweep_and_report
+
+    def _exiting_scan(sample, out_root, *, git_clone_timeout):
+        raise SystemExit(3)
+
+    baseline, lines = _driver_setup(tmp_path, monkeypatch, _exiting_scan)
+    rc, results = run_sweep_and_report(
+        [_sample()], baseline, out=lines.append, max_workers=1,
+    )
+    assert rc == 2
+    text = "\n".join(lines)
+    assert "summary:" in text
+    assert "SystemExit" in text
+    assert results and results[0].error and "SystemExit" in results[0].error
+
+
+def test_driver_phase_failure_prints_partial_summary(
+    tmp_path, monkeypatch,
+) -> None:
+    """A raise AFTER the scans (re-measure / compare / render) still
+    produces a traceback plus a partial summary and rc=2."""
+    from packages.sca.calibration.stress import run_sweep_and_report
+
+    def _ok_scan(sample, out_root, *, git_clone_timeout):
+        return _result(elapsed=19.0)
+
+    baseline, lines = _driver_setup(tmp_path, monkeypatch, _ok_scan)
+
+    def _boom(*a, **k):
+        raise RuntimeError("post-sweep phase exploded")
+
+    monkeypatch.setattr(
+        stress_mod, "confirm_elapsed_regressions", _boom,
+    )
+    rc, results = run_sweep_and_report(
+        [_sample()], baseline, out=lines.append, max_workers=1,
+    )
+    assert rc == 2
+    text = "\n".join(lines)
+    assert "sweep driver caught RuntimeError" in text
+    assert "post-sweep phase exploded" in text
+    assert "completed scans: 1/1" in text
+    assert "summary:" in text              # partial summary rendered
+
+
+def test_in_flight_registry_tracks_scans(tmp_path, monkeypatch) -> None:
+    seen: list[list[str]] = []
+
+    def _peeking_scan(sample, out_root, *, git_clone_timeout):
+        seen.append(stress_mod._in_flight())
+        return _result(name=sample.name, elapsed=1.0)
+
+    monkeypatch.setattr(stress_mod, "_scan_one_inner", _peeking_scan)
+    stress_mod.run_stress_sweep(
+        samples=[_sample("proj")], out_root=tmp_path, max_workers=1,
+    )
+    assert seen and seen[0] == ["PyPI/proj"]
+    assert stress_mod._in_flight() == []
+
+
+def test_sigterm_prints_in_flight_and_partial_summary(tmp_path) -> None:
+    """Runner cancellation (SIGTERM grace) must name the in-flight
+    scans and print a partial summary before the process dies."""
+    import signal
+    import subprocess
+    import sys
+    import time as _time
+    from pathlib import Path as _Path
+
+    repo = str(_Path(stress_mod.__file__).resolve().parents[3])
+    code = f"""
+import json, sys, time
+sys.path.insert(0, {repo!r})
+from pathlib import Path
+from packages.sca.calibration import stress as stress_mod
+from packages.sca.calibration.stress import StressResult, run_sweep_and_report
+from packages.sca.calibration.project_samples import ProjectSample
+
+def scan(sample, out_root, *, git_clone_timeout):
+    if sample.name == "fastproj":
+        return StressResult(project=sample.name, ecosystem=sample.ecosystem,
+                            elapsed_seconds=1.0, deps_analysed=1,
+                            vuln_findings=0, eco_breakdown={{}})
+    print("SCAN_STARTED", flush=True)
+    time.sleep(30)
+
+stress_mod._scan_one_inner = scan
+baseline = Path({str(tmp_path)!r}) / "baseline.json"
+baseline.write_text(json.dumps({{"_source": {{}}, "projects": {{}}}}))
+def mk(name):
+    return ProjectSample(name=name, ecosystem="PyPI",
+                         repo_url="https://example.invalid/x.git",
+                         git_ref="v1", license_spdx="MIT")
+run_sweep_and_report([mk("fastproj"), mk("slowproj")], baseline,
+                     max_workers=1)
+"""
+    proc = subprocess.Popen(
+        [sys.executable, "-u", "-c", code],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        env={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin",
+             "RAPTOR_DIR": repo},
+    )
+    try:
+        # Wait for the scan to be registered before signalling.
+        deadline = _time.monotonic() + 8
+        line = ""
+        while _time.monotonic() < deadline:
+            line = proc.stdout.readline()
+            if "SCAN_STARTED" in line:
+                break
+        assert "SCAN_STARTED" in line, "scan never started"
+        proc.send_signal(signal.SIGTERM)
+        out, err = proc.communicate(timeout=8)
+    finally:
+        proc.kill()
+    assert "sweep interrupted — SIGTERM" in out, out + err
+    assert "in-flight scans: PyPI/slowproj" in out, out
+    # The COMPLETED scan is visible to the post-mortem — a partial
+    # summary claiming zero after real completions is actively
+    # misleading in exactly the scenario this exists for.
+    assert "completed scans: 1/2" in out, out
+    assert "fastproj" in out, out
+    # The default disposition then terminates the process.
+    assert proc.returncode != 0
+
+
+def test_keyboard_interrupt_cancels_queued_backlog(
+    tmp_path, monkeypatch,
+) -> None:
+    """Ctrl-C must not drain the queued backlog — queued scans that
+    the worker has not dequeued when the cancel lands must NEVER run,
+    not even after the interrupt (pre-fix all four ran to completion
+    before the interrupt surfaced).
+
+    Determinism note: with instant scans this is a pure race — a
+    worker dequeues its next item in microseconds, faster than the
+    main thread can wake from as_completed and call cancel_futures,
+    so any exact bound on executed scans flakes with code warmth
+    (an earlier revision of this test did exactly that). Production
+    scans run seconds to minutes, which this models by BLOCKING the
+    scan the worker holds when the cancel lands: the queued items
+    behind it deterministically never start.
+    """
+    import threading
+
+    import pytest as _pytest
+
+    release = threading.Event()
+    started: list[str] = []
+
+    def _scan(sample, out_root, *, git_clone_timeout):
+        started.append(sample.name)
+        if sample.name == "p0":
+            raise KeyboardInterrupt
+        # Model a realistic in-flight scan: hold the worker here
+        # while the main thread processes the interrupt and cancels
+        # the backlog.
+        release.wait(timeout=30)
+        return _result(name=sample.name, elapsed=1.0)
+
+    monkeypatch.setattr(stress_mod, "_scan_one_inner", _scan)
+    samples = [_sample(f"p{i}") for i in range(4)]
+    try:
+        with _pytest.raises(KeyboardInterrupt):
+            stress_mod.run_stress_sweep(
+                samples=samples, out_root=tmp_path, max_workers=1,
+            )
+    finally:
+        # Unblock the held worker so the (non-daemon) pool thread can
+        # finish and the process exits cleanly.
+        release.set()
+    # p0 raised; the worker had at most dequeued p1 (now blocked/
+    # finishing); p2 and p3 were cancelled before dequeue and must
+    # never start — including after the release above (post-cancel
+    # dispatch would be exactly the bug class this pins).
+    assert started[0] == "p0"
+    assert set(started) <= {"p0", "p1"}, started

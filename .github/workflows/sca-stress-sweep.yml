@@ -91,8 +91,19 @@ jobs:
         id: sweep
         env:
           _RAPTOR_TRUSTED: '1'
-        # Drives the full sweep and diffs against the committed
-        # baseline. Exit codes from diffs_to_exit_code:
+          # Progress and heartbeat lines must reach the log AS THEY
+          # HAPPEN: a hard-killed run flushes nothing, and a sweep
+          # once died mid-flight leaving a block-buffered tail (and
+          # its post-mortem) unwritten.
+          PYTHONUNBUFFERED: '1'
+        # Drives the full sweep via run_sweep_and_report — the
+        # never-summary-less driver: per-scan failures (including
+        # endpoint distress: 429 storms, circuit-breaker fail-fast,
+        # retry exhaustion) degrade the affected project with a
+        # named reason; driver-phase failures print traceback +
+        # partial summary; SIGTERM prints in-flight scans before
+        # dying; heartbeat lines name in-flight scans for hard
+        # kills. Exit codes from diffs_to_exit_code:
         #   0 = ok, 1 = warn (small drift), 2 = fail (large drift
         #   or scan error).
         # When only warns are present (rc=1), the baseline-refresh
@@ -102,15 +113,13 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY'
-          import json, os, sys
+          import os, sys
           sys.path.insert(0, '.')
           from pathlib import Path
           from packages.sca.calibration.project_samples import PROJECT_SAMPLES
           from packages.sca.calibration.stress import (
-              compare_to_baseline, configure_sweep_logging,
-              confirm_elapsed_regressions,
-              diffs_to_exit_code, render_diffs,
-              run_stress_sweep, write_baseline,
+              configure_sweep_logging,
+              run_sweep_and_report, write_baseline,
           )
 
           # One console handler ([LEVEL] form) + one DEBUG file
@@ -122,29 +131,23 @@ jobs:
               Path.home() / ".raptor/cache/sca/stress/debug.log",
           )
           print(f"running {len(PROJECT_SAMPLES)} samples...", flush=True)
-          results = run_stress_sweep(
-              samples=PROJECT_SAMPLES,
-              git_clone_timeout=300,
-              sca_timeout=600,
-              max_workers=4,
-          )
           baseline = Path(
               "packages/sca/data/calibration/stress_baseline.json"
           )
-          # Elapsed is one sample of a network-dominated process;
-          # re-measure elapsed-only warns AND fails (fails first in
-          # the shared budget) so per-registry throttling roulette
-          # neither blocks the sweep nor noises the report. Genuine
-          # code regressions reproduce on the second sample and
-          # still count. Count drifts are never re-measured.
-          results = confirm_elapsed_regressions(
-              results, PROJECT_SAMPLES, baseline,
+          rendered_lines = []
+
+          def _out(line):
+              rendered_lines.append(str(line))
+              print(line, flush=True)
+
+          rc, results = run_sweep_and_report(
+              PROJECT_SAMPLES, baseline,
               git_clone_timeout=300,
+              sca_timeout=600,
+              max_workers=4,
+              out=_out,
           )
-          diffs = compare_to_baseline(results, baseline)
-          rendered = render_diffs(diffs)
-          print(rendered)
-          rc = diffs_to_exit_code(diffs)
+          rendered = "\n".join(rendered_lines)
 
           summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
           if summary_path:

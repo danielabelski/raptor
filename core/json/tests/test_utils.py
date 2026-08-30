@@ -1,6 +1,7 @@
 """Tests for core.json utilities."""
 
 import json
+import os
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -618,6 +619,43 @@ class TestLoadJsonMaxBytes(unittest.TestCase):
             load_json("/nonexistent/path.json", max_bytes=10))
         self.assertIsNone(
             load_json("/nonexistent/path.json", strict=True, max_bytes=10))
+
+
+class TestLoadJsonWithCommentsHardening(unittest.TestCase):
+    """Refusal semantics mirror ``load_json`` (non-strict): regular
+    files only, optional byte budget — both checked before any read,
+    so a planted FIFO (stats 0 bytes, then blocks the reader forever)
+    or an oversize file can never hang or bloat a config consumer."""
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "platform lacks mkfifo")
+    def test_fifo_refused_without_reading(self):
+        with TemporaryDirectory() as d:
+            p = Path(d) / "models.json"
+            os.mkfifo(p)
+            # No writer exists: any read attempt would block forever.
+            self.assertIsNone(load_json_with_comments(p))
+
+    def test_oversize_refused(self):
+        with TemporaryDirectory() as d:
+            p = Path(d) / "big.json"
+            p.write_text(json.dumps({"k": "v" * 1000}))
+            self.assertIsNone(load_json_with_comments(p, max_bytes=100))
+
+    def test_within_budget_with_comments_parses(self):
+        with TemporaryDirectory() as d:
+            p = Path(d) / "cfg.json"
+            p.write_text('{\n  // note\n  "key": "value"  # trailing\n}\n')
+            self.assertEqual(
+                load_json_with_comments(p, max_bytes=1024),
+                {"key": "value"},
+            )
+
+    def test_default_unbounded_unchanged(self):
+        with TemporaryDirectory() as d:
+            p = Path(d) / "big.json"
+            p.write_text(json.dumps({"k": "v" * 100_000}))
+            self.assertEqual(
+                load_json_with_comments(p)["k"], "v" * 100_000)
 
 
 if __name__ == "__main__":

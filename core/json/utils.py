@@ -301,16 +301,55 @@ def _strip_json_comments(text: str) -> str:
     return '\n'.join(result)
 
 
-def load_json_with_comments(path: str | Path) -> Any | None:
+def load_json_with_comments(
+    path: str | Path,
+    *,
+    max_bytes: int | None = None,
+) -> Any | None:
     """Load a JSON file that may contain ``//`` or ``#`` comments.
 
     Strips full-line and inline comments before parsing, while
     preserving comment characters inside quoted strings. Used for
     config files (e.g. ``tuning.json``, ``models.json``). Returns
     None on missing file or parse error.
+
+    Refusal semantics mirror :func:`load_json` (non-strict form),
+    checked BEFORE any read:
+
+    - Regular files only: a FIFO stats as 0 bytes (passing any size
+      gate) and then BLOCKS the reader forever — a plantable hang
+      for every consumer of files in another principal's write
+      grant. Symlink-to-regular still resolves (stat follows);
+      symlink-to-FIFO is refused with the FIFO.
+    - ``max_bytes`` (keyword-only): byte budget; an oversize file is
+      refused without ever being loaded into memory. ``None`` (the
+      default) keeps the historical unbounded behaviour.
+
+    Both refusals warn and return ``None`` — the same contract as a
+    parse failure, which every caller already tolerates.
     """
     p = Path(path)
     if not p.exists():
+        return None
+    try:
+        import stat as _stat_mod
+        st = p.stat()
+        if not _stat_mod.S_ISREG(st.st_mode):
+            logger.warning(
+                "load_json_with_comments: refusing not a regular file: %s", p,
+            )
+            return None
+    except OSError as e:
+        logger.warning(
+            "load_json_with_comments: failed to stat %s: %s", p, e,
+        )
+        return None
+    if max_bytes is not None and st.st_size > max_bytes:
+        logger.warning(
+            "load_json_with_comments: refusing oversize file: "
+            "file size %d bytes exceeds max_bytes=%d: %s",
+            st.st_size, max_bytes, p,
+        )
         return None
     try:
         # `utf-8-sig` for BOM tolerance — config files written /

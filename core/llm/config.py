@@ -652,6 +652,13 @@ _PROVIDER_BUILDERS = {
     "claudecode-resumable": _build_claudecode_resumable_config,
 }
 
+# Providers whose availability detection itself performs a network
+# probe (Ollama: HTTP GET ``/api/tags``). ``offline=True`` resolution
+# skips exactly this set. A new autodetect provider whose builder
+# touches the network MUST be listed here, or it reintroduces a
+# socket into offline callers (the startup banner).
+_NETWORK_PROBING_PROVIDERS = frozenset({"ollama"})
+
 # Default order. Anthropic first (cache-control + task-budget beta —
 # the only provider where those matter natively).  Bedrock surfaces
 # after the direct cloud providers — operators who opt-in to Bedrock
@@ -729,6 +736,8 @@ def _config_bedrock_primary() -> Optional['ModelConfig']:
 
 def _get_default_primary_model(
     prefer: list[str] | None = None,
+    *,
+    offline: bool = False,
 ) -> Optional['ModelConfig']:
     """
     Get default primary model based on available providers.
@@ -759,6 +768,17 @@ def _get_default_primary_model(
     Anthropic-first — e.g. cve-diff prefers Anthropic for
     ``cache_control`` + task-budget savings, and that linkage should
     be explicit in code rather than coincidence with the default.
+
+    ``offline`` (keyword-only): skip providers whose availability
+    detection requires a network round-trip — the
+    ``_NETWORK_PROBING_PROVIDERS`` set (currently only Ollama, whose
+    builder probes ``/api/tags`` over HTTP).  Env-var and
+    config-file detection (Anthropic/OpenAI/Gemini/Mistral keys,
+    Bedrock bearer/SigV4 signals, models.json entries, the
+    Claude Code PATH check) all still run, so an offline caller
+    (the startup banner) resolves the same primary as a real run
+    except when that primary could only ever be a live Ollama
+    endpoint.
     """
     if _operator_primary_override is not None:
         return _operator_primary_override
@@ -770,6 +790,8 @@ def _get_default_primary_model(
     # signal — try them before any other detection).
     if prefer:
         for name in prefer:
+            if offline and name in _NETWORK_PROBING_PROVIDERS:
+                continue
             builder = _PROVIDER_BUILDERS.get(name)
             if builder is None:
                 logger.warning(
@@ -821,6 +843,8 @@ def _get_default_primary_model(
     # Step 3: default-order autodetect via env vars. Skip providers
     # already tried in step 1.
     for name in _DEFAULT_PROVIDER_ORDER:
+        if offline and name in _NETWORK_PROBING_PROVIDERS:
+            continue
         if prefer_set is not None and name in prefer_set:
             continue
         builder = _PROVIDER_BUILDERS[name]

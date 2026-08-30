@@ -341,6 +341,13 @@ def _tighten_config_perms(path: Path) -> str | None:
                     f"(mode {oct(tgt_mode)[-3:]}). Fix target perms manually.")
         return None
 
+    # Regular files only: the O_RDONLY open below BLOCKS forever on a
+    # FIFO with no writer — a plantable hang at banner generation.
+    if not stat.S_ISREG(st.st_mode):
+        return (f"⚠ {path} is not a regular file "
+                f"(mode {oct(st.st_mode & 0o777)[-3:]}); refusing to touch. "
+                f"Replace it with a regular config file.")
+
     if not (st.st_mode & 0o077):
         return None
 
@@ -376,11 +383,79 @@ def _tighten_config_perms(path: Path) -> str | None:
             f"(was {oct(st.st_mode)[-3:]}; contains API keys)")
 
 
+def _bedrock_auth_source(has_bearer: bool) -> str:
+    """Human-readable Bedrock auth label for the banner LLM line.
+
+    Bedrock carries no ``api_key`` in SigV4 mode — the dispatcher
+    signs each request with whatever the AWS credential chain
+    resolves.  Classification is structural via ``aws_imds`` (config
+    sections and env-var presence only; the credentials file is never
+    read, no IMDS call is made) so the label can never leak a secret,
+    a profile name, or a host detail.
+    """
+    if has_bearer or os.getenv("AWS_BEARER_TOKEN_BEDROCK"):
+        return "bearer token"
+    try:
+        from .aws_imds import _classify_chain
+        status, _profile, _detail = _classify_chain(os.environ)
+    except Exception:  # noqa: BLE001 — label is cosmetic, never fatal
+        return "aws credential chain"
+    if status == "imds":
+        return "iam-role"
+    if status == "non-imds":
+        return "aws credentials"
+    return "aws credential chain"
+
+
+def _resolve_primary_transport() -> tuple[str, str, str] | None:
+    """Primary external transport, resolved exactly as a run would.
+
+    Delegates to the shared resolution seam
+    (:func:`core.llm.config._get_default_primary_model`) — the same
+    decision ``raptor-resolve-mode`` and ``raptor-llm-ask
+    --show-primary`` report — so the banner cannot disagree with the
+    transport (and spend) a run will actually use.  In particular it
+    covers key-less transports the env-key scan cannot see, e.g.
+    Bedrock via the AWS credential chain.
+
+    ``offline=True``: env + config-file detection only; the seam's
+    network-probing providers (``_NETWORK_PROBING_PROVIDERS``) are
+    skipped so banner generation never blocks on a socket.  Cost:
+    importing the seam pays its module-scope SDK availability probes
+    (``import anthropic`` / ``import openai`` in
+    ``core.llm.detection`` — ~0.75s once per process, no network).
+    Accepted: the banner is a one-shot session-start path, and
+    agreeing with what a run will actually resolve outranks the
+    sub-second import.
+
+    Claude Code providers map to ``None`` — the banner reports CC on
+    its own dedicated line and "external LLM" excludes it.
+
+    Returns ``(provider, model_name, auth_source)`` or ``None`` when
+    resolution genuinely finds no external provider.
+    """
+    try:
+        from core.llm.config import _get_default_primary_model
+        mc = _get_default_primary_model(offline=True)
+    except Exception:  # noqa: BLE001 — banner must render regardless
+        return None
+    if mc is None or mc.provider.startswith("claudecode"):
+        return None
+    if mc.provider == "bedrock":
+        src = _bedrock_auth_source(bool(mc.api_key))
+    else:
+        src = _key_source(mc.provider)
+    return mc.provider, mc.model_name, src
+
+
 def check_llm() -> tuple[list, list]:
     """Check LLM availability via config file + lightweight key validation.
 
     Reads ~/.config/raptor/models.json directly and tests API keys with
-    simple HTTP requests — avoids importing heavy SDKs (~4.5s of imports).
+    simple HTTP requests. The primary line itself comes from the shared
+    resolution seam via :func:`_resolve_primary_transport` — that import
+    costs ~0.75s once per process (see its docstring for why that is
+    accepted) but performs no network I/O.
 
     Returns (lines, warnings).
     """
@@ -398,8 +473,17 @@ def check_llm() -> tuple[list, list]:
             notice = _tighten_config_perms(config_path)
             if notice:
                 warnings.append(notice)
-            from core.json import load_json
-            data = load_json(config_path, max_bytes=_MAX_CONFIG_BYTES)
+            from core.json import load_json_with_comments
+            # models.json legitimately carries ``//`` comments (the
+            # dialect core.llm parses); a plain JSON parse rejects
+            # those and this scan then saw an empty model list for a
+            # perfectly valid config. The comment-tolerant loader
+            # carries load_json's refusal semantics (regular files
+            # only, byte budget) so a planted FIFO or oversize file
+            # cannot hang or bloat banner generation.
+            data = load_json_with_comments(
+                config_path, max_bytes=_MAX_CONFIG_BYTES,
+            )
             if data is not None:
                 models = data.get("models", []) if isinstance(data, dict) else data
 
@@ -416,7 +500,15 @@ def check_llm() -> tuple[list, list]:
             if key and provider not in config_providers:
                 models.append({"provider": provider, "model": "default", "api_key": key, "_from_env": True})
 
-        if models:
+        # The primary line follows the shared resolution seam — the
+        # transport a run would actually use — not the raw config/env
+        # scan above. The scan alone misses key-less transports
+        # (Bedrock via the AWS credential chain has no API key in env
+        # or config) and would report "no external LLM configured"
+        # while raptor-resolve-mode resolves a working orchestrator.
+        resolved = _resolve_primary_transport()
+
+        if models or resolved:
             # Probe the validator's own prerequisite (`requests`)
             # before spinning up the threadpool. If the venv is
             # broken (Python upgraded out from under it, missing
@@ -427,8 +519,8 @@ def check_llm() -> tuple[list, list]:
             # though no HTTP probe ever ran. Emit a single, clear
             # "validator unavailable" warning instead, and skip
             # the per-key probes entirely.
-            validator_available = _validator_available()
-            if not validator_available:
+            validator_available = _validator_available() if models else False
+            if models and not validator_available:
                 warnings.append(
                     "LLM key validation skipped — Python `requests` "
                     "package not installed (pip install requests)"
@@ -489,23 +581,41 @@ def check_llm() -> tuple[list, list]:
                 warned_providers.add(p)
                 warnings.append(f"{p} API key validation failed")
 
-            primary = models[0]
-            provider = primary.get("provider", "unknown")
-            model = primary.get("model", primary.get("model_name", "unknown"))
-            src = _key_source(provider, primary)
+            if resolved:
+                provider, model, src = resolved
+            else:
+                primary = models[0]
+                provider = primary.get("provider", "unknown")
+                model = primary.get("model", primary.get("model_name", "unknown"))
+                src = _key_source(provider, primary)
             lines.append(f"   llm: {provider}/{model} (primary, {src})")
 
             if validator_available and key_status.get(provider) is False:
                 _warn_key_failure(provider)
 
-            for fm in models[1:4]:
+            shown = 0
+            for fm in models:
+                if shown >= 3:
+                    break
                 fp = fm.get("provider", "unknown")
                 fn = fm.get("model", fm.get("model_name", "unknown"))
-                if f"{fp}/{fn}" != f"{provider}/{model}":
-                    role = fm.get("role", "fallback")
-                    lines.append(f"        {fp}/{fn} ({role}, {_key_source(fp, fm)})")
-                    if validator_available and key_status.get(fp) is False:
-                        _warn_key_failure(fp)
+                if f"{fp}/{fn}" == f"{provider}/{model}":
+                    continue
+                if fp == provider and (
+                    fm.get("_from_env")
+                    or not (fm.get("model") or fm.get("model_name"))
+                ):
+                    # Same transport as the primary, not a fallback:
+                    # the env-key pseudo-entry says "default" and a
+                    # config entry with no explicit model resolves to
+                    # whatever concrete model the seam already printed
+                    # — listing them again reads as a second model.
+                    continue
+                shown += 1
+                role = fm.get("role", "fallback")
+                lines.append(f"        {fp}/{fn} ({role}, {_key_source(fp, fm)})")
+                if validator_available and key_status.get(fp) is False:
+                    _warn_key_failure(fp)
         else:
             lines.append("   llm: no external LLM configured")
 

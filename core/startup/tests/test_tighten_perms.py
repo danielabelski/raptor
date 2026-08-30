@@ -88,3 +88,15 @@ class TestTightenConfigPerms(unittest.TestCase):
                 notice = _tighten_config_perms(p)
             self.assertTrue(notice.startswith("\u26a0"))
             self.assertIn("chmod failed", notice)
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "platform lacks mkfifo")
+    def test_fifo_warns_without_opening(self):
+        # A FIFO with no writer blocks any O_RDONLY open forever \u2014
+        # the guard must refuse before reaching the open.
+        with TemporaryDirectory() as d:
+            p = Path(d) / "models.json"
+            os.mkfifo(p, 0o644)
+            notice = _tighten_config_perms(p)
+            self.assertIsNotNone(notice)
+            self.assertTrue(notice.startswith("\u26a0"))
+            self.assertIn("not a regular file", notice)

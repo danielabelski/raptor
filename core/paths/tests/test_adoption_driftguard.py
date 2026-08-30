@@ -91,6 +91,7 @@ _CONFINE_ADOPTERS = [
     "core/audit/context.py",
     "core/concepts/receipts.py",
     "core/concepts/study.py",
+    "core/orchestration/understand_bridge.py",
 ]
 
 

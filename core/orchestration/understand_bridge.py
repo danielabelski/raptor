@@ -44,6 +44,7 @@ from core.artifacts.provenance import (
     stamp_provenance,
 )
 from core.json import load_json, save_json
+from core.paths import confine
 from core.security.log_sanitisation import escape_nonprintable
 
 logger = logging.getLogger(__name__)
@@ -592,8 +593,10 @@ def normalize_context_map(context_map: dict[str, Any], checklist: dict[str, Any]
        falling back to file-level (which over-marks unrelated helpers).
 
     3. **File-existence validation**: warns when a context-map entry
-       references a file that doesn't appear in the checklist (LLM
-       hallucination).
+       references a file that doesn't appear in the checklist. The
+       wording distinguishes a file that exists on disk under the
+       target (inventory-excluded or unsupported type) from one that
+       doesn't (LLM hallucination).
 
     4. **Line-in-file sanity**: warns when a referenced line exceeds the
        file's known length.
@@ -629,7 +632,15 @@ def normalize_context_map(context_map: dict[str, Any], checklist: dict[str, Any]
         for fi in _list_at(checklist, "files")
         if isinstance(fi, dict) and fi.get("path")
     }
-    _backfill_and_validate_locations(context_map, files_by_path)
+    # The checklist records its own target_path; use it when the caller
+    # didn't pass one so the on-disk-but-excluded wording still engages.
+    effective_target = target_path
+    if not effective_target:
+        checklist_target = checklist.get("target_path")
+        if isinstance(checklist_target, str) and checklist_target:
+            effective_target = checklist_target
+    _backfill_and_validate_locations(context_map, files_by_path,
+                                     effective_target)
     _augment_library_surface(context_map, checklist)
     return context_map
 
@@ -859,8 +870,23 @@ def _find_containing_function(file_info: dict[str, Any],
     return candidates[0][1]
 
 
+def _exists_under_target(file: str, target_path: str | None) -> bool:
+    """True when ``file`` names a real file strictly under ``target_path``.
+
+    Containment via :func:`core.paths.confine` before the ``is_file()``
+    probe: LLM-emitted paths are untrusted, so ``..`` segments, absolute
+    paths, and symlinks pointing outside the target must never make this
+    check inspect files elsewhere on the host.
+    """
+    if not target_path or not file:
+        return False
+    p = confine(target_path, file)
+    return p is not None and p.is_file()
+
+
 def _backfill_and_validate_locations(context_map: dict[str, Any],
-                                      files_by_path: dict[str, dict[str, Any]]
+                                      files_by_path: dict[str, dict[str, Any]],
+                                      target_path: str | None = None,
                                       ) -> None:
     for section in _LOCATION_BEARING_SECTIONS:
         for entry in _list_at(context_map, section):
@@ -875,11 +901,22 @@ def _backfill_and_validate_locations(context_map: dict[str, Any],
 
             file_info = files_by_path.get(file)
             if file_info is None:
-                logger.warning(
-                    "normalize_context_map: %s entry references file %s "
-                    "not present in checklist (likely LLM hallucination)",
-                    section, escape_nonprintable(file),
-                )
+                # A file the inventory skipped (exclude pattern,
+                # unsupported type) is still a real reference — only a
+                # file absent from disk warrants the hallucination label.
+                if _exists_under_target(file, target_path):
+                    logger.warning(
+                        "normalize_context_map: %s entry references file %s "
+                        "— exists on disk but is not in the inventory "
+                        "(excluded or unsupported type)",
+                        section, escape_nonprintable(file),
+                    )
+                else:
+                    logger.warning(
+                        "normalize_context_map: %s entry references file %s "
+                        "not present in checklist (likely LLM hallucination)",
+                        section, escape_nonprintable(file),
+                    )
                 continue
 
             total_lines = file_info.get("lines")

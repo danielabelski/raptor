@@ -1019,6 +1019,50 @@ class TestNormalizeContextMap:
             normalize_context_map(ctx, checklist)
         assert any("not present in checklist" in r.message for r in caplog.records)
 
+    def test_warns_excluded_wording_when_file_exists_under_target(self, tmp_path, caplog):
+        # A file present on disk under the target but absent from the
+        # inventory (exclude pattern, unsupported type) is a real
+        # reference — must not be labelled a hallucination.
+        target = tmp_path / "repo"
+        target.mkdir()
+        (target / "excluded.py").write_text("x = 1\n")
+        ctx = {"entry_points": [{"file": "excluded.py", "line": 1}]}
+        checklist = {"target_path": str(target),
+                     "files": [{"path": "real.py", "lines": 10}]}
+        with caplog.at_level("WARNING", logger="core.orchestration.understand_bridge"):
+            normalize_context_map(ctx, checklist)
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("exists on disk but is not in the inventory" in m
+                   for m in messages)
+        assert not any("hallucination" in m for m in messages)
+
+    def test_warns_hallucination_when_file_missing_on_disk(self, tmp_path, caplog):
+        target = tmp_path / "repo"
+        target.mkdir()
+        ctx = {"entry_points": [{"file": "ghost.py", "line": 1}]}
+        checklist = {"target_path": str(target),
+                     "files": [{"path": "real.py", "lines": 10}]}
+        with caplog.at_level("WARNING", logger="core.orchestration.understand_bridge"):
+            normalize_context_map(ctx, checklist)
+        assert any("likely LLM hallucination" in r.getMessage()
+                   for r in caplog.records)
+
+    def test_existence_probe_stays_inside_target(self, tmp_path, caplog):
+        # A traversal-shaped reference to a file that exists OUTSIDE the
+        # target must not earn the exists-on-disk wording — containment
+        # is checked before the filesystem probe.
+        target = tmp_path / "repo"
+        target.mkdir()
+        (tmp_path / "outside.py").write_text("x = 1\n")
+        ctx = {"entry_points": [{"file": "../outside.py", "line": 1}]}
+        checklist = {"target_path": str(target),
+                     "files": [{"path": "real.py", "lines": 10}]}
+        with caplog.at_level("WARNING", logger="core.orchestration.understand_bridge"):
+            normalize_context_map(ctx, checklist)
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("likely LLM hallucination" in m for m in messages)
+        assert not any("exists on disk" in m for m in messages)
+
     def test_warns_on_line_past_end_of_file(self, caplog):
         ctx = {"sink_details": [{"file": "app.py", "line": 9999}]}
         checklist = self._checklist([{"path": "app.py", "lines": 50}])

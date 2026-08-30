@@ -95,6 +95,8 @@ Produce a brief summary covering:
 - External service dependencies
 - Notable security controls present (WAF hints in code, CSP headers, rate limiting)
 
+Do NOT manually enumerate imports — the `imports` key in `context-map.json` is populated mechanically from `checklist.json`'s per-file `call_graph.imports` by the post-map enrichment step (MAP-5j). The mechanical data is ground truth; LLM enumeration would risk hallucinated module names or line numbers.
+
 ## Output Format
 
 `context-map.json` is a superset of `attack-surface.json`. The top-level `sources`, `sinks`, and `trust_boundaries` keys use the same required fields as Stage B's `attack-surface.json` — so `cp context-map.json attack-surface.json` works. Context-map-specific fields (`meta`, `entry_points`, `unchecked_flows`) sit alongside as extra keys.
@@ -186,6 +188,16 @@ For memory-corruption / arithmetic / bounds sinks (CWE-119/120/121/122/125/787/1
       "entry_point": "EP-003",
       "sink": "SINK-002",
       "missing_boundary": "No auth check on admin bulk endpoint"
+    }
+  ],
+  "imports": [
+    {
+      "module": "bcrypt",
+      "file": "src/auth/password.py"
+    },
+    {
+      "module": "yaml",
+      "file": "src/config/loader.py"
     }
   ]
 }
@@ -398,6 +410,22 @@ Caps at 500 (entry × sink) pairs to prevent combinatorial explosion.
 Idempotent. Downstream consumers: `/validate` Stage B imports
 `has_taint_flow` via the understand bridge, pre-confirming B-3.1
 reachability. `/diagram` renders confirmed flows as solid edges.
+
+**[MAP-5j] Enrich with mechanically-extracted imports**
+
+After normalisation, populate the `imports` key from `checklist.json`'s
+per-file `call_graph.imports` data. Ground-truth module names extracted by
+tree-sitter — no LLM enumeration.
+
+```bash
+libexec/raptor-enrich-context-map-imports "$WORKDIR"
+```
+
+Writes `imports: [{module, file}]` to the context map. Both internal
+(project-defined) and external (third-party) imports are included; the
+graph store's IMPORTS edge producer and downstream consumers handle
+classification. Idempotent. Skip if `$WORKDIR/checklist.json` doesn't
+exist or doesn't carry `target_path`.
 
 **[MAP-6] Record Coverage**
 

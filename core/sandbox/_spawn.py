@@ -68,6 +68,7 @@ import sys
 import threading
 import time
 import traceback
+import warnings
 from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -88,6 +89,21 @@ if TYPE_CHECKING:
     from .fingerprint import Persona
 
 logger = logging.getLogger(__name__)
+
+# Python 3.12+ warns on every os.fork() in a multi-threaded process.
+# All four fork sites in this module honour the fork-safety contract
+# (module docstring): the child runs only ctypes syscalls, fd plumbing
+# and execvp — no Python objects, no GIL acquisition, no malloc-arena
+# access — so the deadlock the warning guards against cannot arise.
+# The filter must live at module level: per-fork
+# ``warnings.catch_warnings()`` blocks mutate the process-global
+# filter list and race when sandboxes spawn concurrently — one
+# thread's restore re-exposes another thread's fork mid-flight, which
+# is exactly how the warning kept escaping into CI output.
+warnings.filterwarnings(
+    "ignore", category=DeprecationWarning,
+    message=r".*use of fork\(\) may lead to deadlocks in the child.*",
+)
 
 if sys.platform == "linux" and not hasattr(os, "unshare"):
     msg = (
@@ -1793,19 +1809,11 @@ def run_sandboxed(
         _proc_mount_expected_unavailable = (
             _pidns_proc_mount_expectation(skip_pid_ns))
 
-        # Suppress Python 3.12+ DeprecationWarning about multi-threaded
-        # fork(). Our post-fork code does namespace setup via ctypes
-        # syscalls + Landlock + seccomp + execvp — no Python objects,
-        # no GIL acquisition, no malloc-arena access. posix_spawn()
-        # can't do the bespoke namespace setup, so we need raw fork.
-        # See module docstring for the fork-safety contract.
-        import warnings
-        with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore", category=DeprecationWarning,
-                message=r".*fork.*may lead to deadlocks.*",
-            )
-            child_pid = os.fork()
+        # posix_spawn() can't do the bespoke namespace setup, so we
+        # need raw fork; the multi-threaded-fork DeprecationWarning is
+        # filtered once at module level (fork-safety contract in the
+        # module docstring).
+        child_pid = os.fork()
     except BaseException:
         # Any failure before fork returns: close opened pipes, release
         # the audit-config fd and evidence file if created, and remove
@@ -2135,13 +2143,7 @@ def run_sandboxed(
                 else:
                     _fwd_death_r, _fwd_death_w = os.pipe()
                     _forwarder_death_w = _fwd_death_w
-                    import warnings as _w2
-                    with _w2.catch_warnings():
-                        _w2.filterwarnings(
-                            "ignore", category=DeprecationWarning,
-                            message=r".*fork.*may lead to deadlocks.*",
-                        )
-                        _forwarder_pid = os.fork()
+                    _forwarder_pid = os.fork()
                     if _forwarder_pid == 0:
                         os.close(_fwd_death_w)
                         os.close(status_w)
@@ -2302,15 +2304,9 @@ def run_sandboxed(
             # CAP_SYS_PTRACE doesn't apply). Found via bpftrace 2026-06-14:
             # __ptrace_may_access fires with target_pid=1 target_comm=systemd
             # then returns -EPERM, breaking gdb's bp insertion.
-            import warnings as _warnings
-            with _warnings.catch_warnings():
-                _warnings.filterwarnings(
-                    "ignore", category=DeprecationWarning,
-                    message=r".*fork.*may lead to deadlocks.*",
-                )
-                if not skip_pid_ns:
-                    os.unshare(CLONE_NEWPID)
-                grand = os.fork()
+            if not skip_pid_ns:
+                os.unshare(CLONE_NEWPID)
+            grand = os.fork()
             if grand == 0:
                 # Grandchild runs as PID 1 in the new pid-ns.
                 #
@@ -2958,13 +2954,7 @@ def run_sandboxed(
             # Tracer subprocess does only fd-close + execvpe in the
             # child path — no Python objects, no GIL. Same fork-safety
             # contract as the main child fork above.
-            import warnings as _warnings
-            with _warnings.catch_warnings():
-                _warnings.filterwarnings(
-                    "ignore", category=DeprecationWarning,
-                    message=r".*fork.*may lead to deadlocks.*",
-                )
-                tracer_pid = os.fork()
+            tracer_pid = os.fork()
             if tracer_pid == 0:
                 # ===== TRACER SUBPROCESS =====
                 # Own session: the tracer must NOT share the

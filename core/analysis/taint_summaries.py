@@ -141,6 +141,83 @@ class TaintSummary:
             if c == callee and ai == arg_idx
         )
 
+    # ----- LLM context rendering -----
+
+    def _param_name(self, idx: int) -> str:
+        if 0 <= idx < len(self.params):
+            return self.params[idx]
+        return f"arg{idx}"
+
+    def format_for_context(self, depth: str = "full") -> str:
+        """Render for LLM context injection.
+
+        Same contract as
+        :meth:`core.analysis.summaries.FunctionSummary.format_for_context`
+        — the audit context renderer duck-types every callee summary on
+        this method, so any summary type reaching
+        ``ctx["callee_summaries"]`` must provide it.
+
+        depth="oneline" — one-sentence summary.
+        depth="full"    — bulleted taint facts; empty string when the
+        summary carries nothing worth prompt space.
+        """
+        tainting = sorted({eff[0] for eff in self.return_effects})
+        caveats: list[str] = []
+        if self.summary_unknown:
+            reason = (
+                f" ({self.summary_unknown_reason})"
+                if self.summary_unknown_reason else ""
+            )
+            caveats.append(f"summary unknown{reason}")
+        if self.summary_unconverged:
+            caveats.append("fixed-point unconverged")
+
+        if depth == "oneline":
+            parts: list[str] = []
+            if tainting:
+                names = ",".join(f"`{self._param_name(i)}`" for i in tainting)
+                parts.append(f"params {names} taint return")
+            if self.call_arg_taint:
+                parts.append(
+                    f"{len(self.call_arg_taint)} call-arg propagation(s)"
+                )
+            parts.extend(caveats)
+            detail = "; ".join(parts) if parts else "no taint effects"
+            return f"`{self.function}()`: {detail}."
+
+        if not tainting and not self.call_arg_taint and not caveats:
+            return ""
+
+        lines = [f"### Taint summary: `{self.function}()`"]
+        if tainting:
+            lines.append("**Param → return taint:**")
+            for i in tainting:
+                vias = sorted({
+                    c for pi, c, _a in self.return_effects
+                    if pi == i and c
+                })
+                via = (
+                    " via " + ", ".join(f"`{v}`" for v in vias)
+                    if vias else ""
+                )
+                lines.append(
+                    f"- `{self._param_name(i)}` taints the return value{via}"
+                )
+        if self.call_arg_taint:
+            lines.append("**Param → callee-arg taint:**")
+            shown = sorted(self.call_arg_taint)[:10]
+            for callee, arg_idx, pi in shown:
+                lines.append(
+                    f"- `{self._param_name(pi)}` → `{callee}()` "
+                    f"arg #{arg_idx}"
+                )
+            more = len(self.call_arg_taint) - len(shown)
+            if more > 0:
+                lines.append(f"- (+{more} more propagation(s))")
+        for c in caveats:
+            lines.append(f"- caveat: {c}")
+        return "\n".join(lines)
+
 
 # ---------------------------------------------------------------------------
 # Dynamic-dispatch detection — ``summary_unknown``

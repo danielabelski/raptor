@@ -420,3 +420,49 @@ class TestDeadSourceTextRemoved:
         assert ("html.escape", 0) in helper.return_sanitizers_for_param(0)
         handle = summaries["handle"]
         assert handle.param_taints_return(0)
+
+
+class TestFormatForContext:
+    """The audit context renderer duck-types callee summaries on
+    format_for_context — TaintSummary must satisfy the contract."""
+
+    def _summary(self, **kw):
+        from core.analysis.taint_summaries import TaintSummary
+        base = dict(
+            function="helper",
+            params=("data", "size"),
+            return_effects=frozenset({(0, "", -1), (0, "clean", 0)}),
+            call_arg_taint=frozenset({("os.system", 0, 0)}),
+        )
+        base.update(kw)
+        return TaintSummary(**base)
+
+    def test_oneline_names_tainting_params(self):
+        text = self._summary().format_for_context("oneline")
+        assert text.startswith("`helper()`:")
+        assert "`data`" in text
+        assert "taint return" in text
+        assert "1 call-arg propagation" in text
+
+    def test_full_renders_via_callables_and_call_args(self):
+        text = self._summary().format_for_context("full")
+        assert "Taint summary: `helper()`" in text
+        assert "`data` taints the return value via `clean`" in text
+        assert "`data` → `os.system()` arg #0" in text
+
+    def test_full_empty_summary_renders_nothing(self):
+        s = self._summary(
+            return_effects=frozenset(), call_arg_taint=frozenset(),
+        )
+        assert s.format_for_context("full") == ""
+
+    def test_caveats_surface_in_both_depths(self):
+        s = self._summary(
+            summary_unknown=True, summary_unknown_reason="calls getattr",
+        )
+        assert "summary unknown (calls getattr)" in s.format_for_context("oneline")
+        assert "caveat: summary unknown (calls getattr)" in s.format_for_context("full")
+
+    def test_out_of_range_param_index_degrades(self):
+        s = self._summary(return_effects=frozenset({(7, "", -1)}))
+        assert "`arg7`" in s.format_for_context("oneline")

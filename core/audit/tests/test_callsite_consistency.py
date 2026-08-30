@@ -2,6 +2,23 @@
 
 import textwrap
 
+import pytest
+
+
+def _ts_python_available() -> bool:
+    """True when the census's tree-sitter path can parse Python.
+
+    Probes _parse_file itself rather than importing grammar modules:
+    the census degrades to the regex extractor whenever the parse
+    returns nothing — absent module, broken wheel, or load failure —
+    and tests asserting tree-sitter-path semantics must skip in
+    exactly those same conditions.
+    """
+    from core.audit.callsite_consistency import _parse_file
+    tree, lang = _parse_file("x = f(1)\n", "probe.py")
+    return tree is not None and lang is not None
+
+
 from core.audit.callsite_consistency import (
     CallSiteDeviation,
     detect_callsite_deviations,
@@ -564,6 +581,8 @@ class TestCensusSelfLimits:
         COMPLETE census — no truncation stamp — with correct per-site
         classifications throughout (the index-backed read scan, not a
         per-site scope walk, makes this affordable)."""
+        if not _ts_python_available():
+            pytest.skip("tree-sitter python grammar unavailable")
         from core.audit.callsite_consistency import build_return_census
         lines = []
         for i in range(2500):
@@ -606,6 +625,8 @@ class TestScopeBoundedReadIndex:
         """A later function reading the SAME binding name must not
         mark an earlier function's binding as used — occurrences past
         the enclosing scope's end are out of range."""
+        if not _ts_python_available():
+            pytest.skip("tree-sitter python grammar unavailable")
         import textwrap
         from core.audit.callsite_consistency import build_return_census
 
@@ -623,6 +644,8 @@ class TestScopeBoundedReadIndex:
 
     def test_module_scope_read_counts(self):
         """Module-level bindings scan to end of file (root scope)."""
+        if not _ts_python_available():
+            pytest.skip("tree-sitter python grammar unavailable")
         from core.audit.callsite_consistency import build_return_census
 
         src = "r = ff(x)\n\ndef later():\n    use(r)\n"

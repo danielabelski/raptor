@@ -332,6 +332,7 @@ def envelope_prompt(
     *,
     model_id: str = "",
     transparent_payload: bool = False,
+    no_base64_payload: bool = False,
 ) -> tuple[str, str]:
     """Build a ``(user, system)`` message pair via the prompt envelope.
 
@@ -358,6 +359,21 @@ def envelope_prompt(
     conjunction, so only the two known-bad classes opt out; general
     classes keep the proven base64 configuration.
 
+    ``no_base64_payload=True`` clears ONLY the base64 layer, keeping
+    datamarking and every structural defence. Middle rendering for
+    VERDICT-shaped call classes whose base64 form is hard-refused:
+    measured on a live batch-glance workload against Claude via
+    Bedrock, the base64 rendering was refused 14/14 (whole batch and
+    every singleton, innocuous functions included, with and without
+    purpose framing, and with an explicit in-prompt explanation that
+    the encoding is the pipeline's own injection defence — the model
+    refuses the opaque-blob-plus-security-ask artifact regardless of
+    stated rationale), while the identical datamarked-plaintext
+    rendering answered 3/3 and bare plaintext 2/2. Datamarking still
+    breaks up instruction-shaped sequences inside the payload, so
+    prefer this over ``transparent_payload`` when the class does not
+    also need sentinel-free text.
+
     ``blocks`` is an iterable of ``UntrustedBlock``; ``slots`` maps
     slot names to ``TaintedString`` values.  The returned pair plugs
     straight into ``LLMClient.generate(user, system_prompt=system)``.
@@ -375,6 +391,8 @@ def envelope_prompt(
         profile = dataclasses.replace(
             profile, base64_code=False, datamarking=False,
         )
+    elif no_base64_payload and profile.base64_code:
+        profile = dataclasses.replace(profile, base64_code=False)
     bundle = build_prompt(
         system=system,
         profile=profile,

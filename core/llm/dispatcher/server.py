@@ -74,6 +74,7 @@ from pathlib import Path
 
 import httpx
 
+from core.run.tmp_ownership import remove_owner_marker, write_owner_marker
 from core.security.log_sanitisation import escape_nonprintable
 
 from .auth import (
@@ -738,6 +739,11 @@ class LLMDispatcher:
         # 0o700 = owner-only — the socket lives here and must not be
         # group/other-readable on a multi-user host.
         os.chmod(self._sock_dir, 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions
+        # Ownership marker: shutdown()/atexit remove this dir, but a
+        # SIGTERM'd or SIGKILL'd owner skips both — the marker lets
+        # the next boot's dead-owner sweep (lifecycle.py) reclaim the
+        # orphan instead of waiting on the 24 h age-based reaper.
+        write_owner_marker(self._sock_dir)
         self.socket_path = self._sock_dir / "llm.sock"
         # Child-plane UDS: same peer-UID gate, REDUCED surface (scoped
         # child tokens only — no worker tokens, no /_child/* admin, no
@@ -779,6 +785,9 @@ class LLMDispatcher:
                 self.child_socket_path.unlink(missing_ok=True)
             except OSError:
                 pass
+            # The ownership marker must go before rmdir or the dir
+            # leaks with ENOTEMPTY.
+            remove_owner_marker(self._sock_dir)
             try:
                 self._sock_dir.rmdir()
             except OSError:
@@ -1487,6 +1496,10 @@ class LLMDispatcher:
                 self.child_socket_path, exc_info=True,
             )
             errors.append("child_socket_unlink")
+        # The ownership marker must go before rmdir or a clean
+        # shutdown turns into an ENOTEMPTY leak (removal is
+        # best-effort and tolerates the marker already being gone).
+        remove_owner_marker(self._sock_dir)
         try:
             self._sock_dir.rmdir()
         except FileNotFoundError:

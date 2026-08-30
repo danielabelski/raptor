@@ -102,6 +102,28 @@ def spawn_backend_available() -> bool:
 
 logger = logging.getLogger(__name__)
 
+
+def _first_external_caller() -> str:
+    """``file:line`` of the nearest stack frame outside core/sandbox.
+
+    The bare-run posture advisory fires once per process, so without
+    caller identity a legitimately-unconfined network-only invocation
+    is indistinguishable from an untrusted-bytes call that forgot its
+    confinement arguments. Best-effort: unattributable frames report
+    a placeholder rather than raising into the warning path.
+    """
+    try:
+        pkg_dir = os.path.dirname(os.path.abspath(__file__)) + os.sep
+        frame = sys._getframe(1)
+        while frame is not None:
+            path = frame.f_code.co_filename
+            if not os.path.abspath(path).startswith(pkg_dir):
+                return f"{path}:{frame.f_lineno}"
+            frame = frame.f_back
+    except Exception:  # noqa: BLE001 — attribution must never break the warning
+        pass
+    return "<unattributable>"
+
 # Framework-named temp paths (the launcher's per-session scratch
 # <base>/raptor-<uid>/session-<pid>-<rand>, harness session dirs,
 # any /tmp component naming the framework). Values matching it are
@@ -1835,7 +1857,9 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             "sandbox: run() without target=/output=/rootfs= applies "
             "no filesystem confinement (network/seccomp/rlimits only). "
             "Pass target= or output= if this call handles untrusted "
-            "bytes. (Warned once per process.)"
+            "bytes. First caller: %s (warned once per process — later "
+            "bare-run callers are not attributed).",
+            _first_external_caller(),
         )
 
     # Degraded-mode network fallback. block_network=True is normally

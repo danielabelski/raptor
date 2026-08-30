@@ -144,6 +144,12 @@ print("STALLED:" + str(len(stalled)))
     assert proc.returncode == 0, proc.stderr[-2000:]
     assert "FILES:14" in proc.stdout, proc.stdout + proc.stderr[-1000:]
     assert "STALLED:0" in proc.stdout
+    # The doomed spawn-shaped contexts are skipped BEFORE any child
+    # is spawned — no forkserver/spawn child traceback may leak to
+    # stderr (it printed 15 lines that read like a crash before the
+    # fall-through line).
+    assert "Traceback" not in proc.stderr, proc.stderr[-2000:]
+    assert "FileNotFoundError" not in proc.stderr, proc.stderr[-2000:]
 
 
 def test_forkserver_pools_leave_process_exit_clean(tmp_path: Path) -> None:

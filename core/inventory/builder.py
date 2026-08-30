@@ -133,10 +133,34 @@ def _resolved_max_workers() -> int:
 MAX_WORKERS = _resolved_max_workers()
 
 
+def _forkserver_main_importable() -> bool:
+    """True when spawn/forkserver children can re-import ``__main__``.
+
+    multiprocessing's spawn preparation records ``__main__.__file__``
+    as ``main_path`` and forkserver children re-import it. A driver
+    running from stdin (``python - <<'PY'`` heredocs — the stress
+    sweep's own shape) has ``__file__ == "<stdin>"``: the child dies
+    in ``runpy`` with FileNotFoundError. The probe below would catch
+    that lazily, but the CHILD's raw traceback still lands on
+    inherited stderr, reading like a crash before the one-line
+    fall-through. Detect the doomed shape up front and skip the
+    candidate without ever spawning.
+    """
+    import sys as _sys
+    main_mod = _sys.modules.get("__main__")
+    main_file = getattr(main_mod, "__file__", None)
+    if not main_file:
+        # No __file__ (embedded interpreters, some REPLs): spawn
+        # preparation records no main_path; children import nothing.
+        return True
+    return os.path.exists(main_file)
+
+
 def _pool_mp_context():
     """Preferred multiprocessing context for the extractor pool:
-    forkserver when the platform offers it (Linux/macOS), else the
-    platform default.
+    forkserver when the platform offers it (Linux/macOS) AND the
+    driver's ``__main__`` is re-importable, else the platform
+    default.
 
     Callers embed inventory builds in multi-threaded processes, and
     fork from a threaded parent hands every worker a copy of any
@@ -144,6 +168,22 @@ def _pool_mp_context():
     in the child. forkserver/spawn children start clean.
     """
     import multiprocessing
+    if not _forkserver_main_importable():
+        # spawn-shaped contexts (forkserver AND spawn) all re-import
+        # __main__ in the child and die identically under this
+        # driver shape — fork is the one start method that never
+        # does. Its fork-frozen-lock hazard is mitigated separately
+        # (cached grammar imports removed the per-file lock
+        # acquisitions; the stall watchdog retries in a fresh pool).
+        logger.info(
+            "inventory: driver has no re-importable __main__ "
+            "(stdin/embedded); using the fork pool context — "
+            "spawn-shaped contexts cannot re-import this main",
+        )
+        try:
+            return multiprocessing.get_context("fork")
+        except ValueError:
+            return None
     try:
         return multiprocessing.get_context("forkserver")
     except ValueError:

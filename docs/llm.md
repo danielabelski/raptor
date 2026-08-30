@@ -545,7 +545,7 @@ and high-confidence validation.
 
 Full native support via the `google-genai` SDK (`GeminiProvider`). Features include
 native schema-constrained JSON output and accurate thinking-token tracking. Falls back
-to OpenAI-compatible mode when only the `openai` SDK is installed (loses thinking-token
+to OpenAI-compatible mode when the `google-genai` SDK is not installed (loses thinking-token
 granularity).
 
 Security-analysis prompts routinely discuss exploits, so every native-SDK call

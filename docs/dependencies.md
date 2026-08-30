@@ -47,23 +47,27 @@ Pinned versions are in `requirements.txt`. Install with
 | pydantic | MIT | Data validation and settings |
 | typer | MIT | CLI framework for libexec scripts |
 | instructor | MIT | Structured LLM output |
+| openai | Apache 2.0 | OpenAI SDK — also used for Ollama; hard-required by instructor |
 | pyyaml | MIT | YAML parsing (CodeQL pack trust, k8s manifests) |
 | defusedxml | PSF | Safe XML parsing (Maven POM) |
 | packaging | Apache 2.0 / BSD | PEP 440 version parsing (SCA) |
 | tabulate | MIT | Table formatting |
+| pyelftools | Unlicense | ELF metadata fallback when angr is absent |
 
 **Optional (install when needed):**
 
 | Package | Licence | Purpose |
 |---------|---------|---------|
 | anthropic | MIT | Anthropic Claude SDK |
-| openai | Apache 2.0 | OpenAI SDK (also used for Ollama and compatible endpoints) |
 | google-genai | Apache 2.0 | Google Gemini native SDK |
 | botocore | Apache 2.0 | AWS Bedrock SigV4 signing (parent-only, not needed for bearer-token auth) |
 | beautifulsoup4 | MIT | HTML parsing (web scanning) |
 | orjson | Apache 2.0 / MIT | Faster JSON parse and serialise (transparent fallback to stdlib `json`) |
 | pwntools | MIT | Binary exploit analysis (ELF parsing, gadget search) — used if present, not in requirements.txt |
-| r2pipe | LGPL v3 | Python bridge for radare2 — used if present, not in requirements.txt |
+| r2pipe | LGPL v3 | Python bridge for radare2 (binary disassembly, call-graph extraction, `--binary-edges`) |
+| pyghidra | Apache 2.0 | Ghidra bridge — in-process analysis via pyghidra's sandboxed JVM worker |
+| frida | wxWindows | Dynamic instrumentation (Frida validation bridge, coverage bridge) |
+| jsonschema | MIT | SARIF full-schema validation and orchestrated-report contract checking |
 | atheris | Apache 2.0 | Coverage-guided Python fuzzing engine — used if present, not in requirements.txt |
 | playwright | Apache 2.0 | Browser automation for web scanning (commented in requirements.txt) |
 | z3-solver | MIT | SMT-based constraint analysis (one-gadget feasibility, path validation) |

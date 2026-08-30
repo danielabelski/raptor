@@ -107,6 +107,42 @@ def _compare_identifier(a: str, b: str) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Fork-tag prerelease detection
+# ---------------------------------------------------------------------------
+
+_PRERELEASE_KEYWORDS = frozenset({
+    "alpha", "beta", "rc", "dev", "pre", "canary", "nightly",
+    "snapshot", "preview", "next", "experimental", "insiders",
+    "edge", "unstable", "hotfix", "patch", "test", "build",
+    "wip", "fix",
+})
+
+_DIGIT_RE = re.compile(r"\d")
+
+
+def is_fork_tag(pre: list[str]) -> bool:
+    """True when prerelease identifiers look like an org/fork tag
+    rather than a genuine prerelease.
+
+    Fork tags:   ["succinct"], ["tokio"], ["myorg"], ["tokio-rs"]
+    Prereleases: ["alpha"], ["beta", "1"], ["rc", "2"], ["pre1"],
+                 ["20250522"], ["0"], ["dev"], ["alpha", "succinct"],
+                 ["hotfix"], ["0alpha"], ["v2"], ["build"]
+    """
+    if not pre:
+        return False
+    for ident in pre:
+        if len(ident) < 2:
+            return False
+        low = ident.lower()
+        if low in _PRERELEASE_KEYWORDS:
+            return False
+        if _DIGIT_RE.search(ident):
+            return False
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Range bounds extraction (SCA bounded-pinning: corridor floor/ceiling)
 # ---------------------------------------------------------------------------
 

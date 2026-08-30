@@ -271,3 +271,123 @@ def test_in_range_dangling_introduced_open_ended() -> None:
     events = [{"introduced": "1.0.0"}]
     assert in_range("npm", "99.0.0", events) is True
     assert in_range("npm", "0.1.0", events) is False
+
+
+# ---------------------------------------------------------------------------
+# Fork-tag prerelease detection.
+# ---------------------------------------------------------------------------
+
+from packages.sca.versions.semver import is_fork_tag
+
+
+class TestIsForkTag:
+    """Distinguish org/fork suffixes from genuine prereleases."""
+
+    def test_fork_tags(self) -> None:
+        assert is_fork_tag(["succinct"]) is True
+        assert is_fork_tag(["tokio"]) is True
+        assert is_fork_tag(["facebook"]) is True
+        assert is_fork_tag(["myorg"]) is True
+
+    def test_fork_tags_with_hyphens(self) -> None:
+        assert is_fork_tag(["tokio-rs"]) is True
+
+    def test_genuine_prereleases(self) -> None:
+        assert is_fork_tag(["alpha"]) is False
+        assert is_fork_tag(["beta"]) is False
+        assert is_fork_tag(["rc", "1"]) is False
+        assert is_fork_tag(["dev"]) is False
+        assert is_fork_tag(["preview"]) is False
+        assert is_fork_tag(["canary"]) is False
+        assert is_fork_tag(["nightly"]) is False
+
+    def test_expanded_keywords(self) -> None:
+        assert is_fork_tag(["hotfix"]) is False
+        assert is_fork_tag(["patch"]) is False
+        assert is_fork_tag(["test"]) is False
+        assert is_fork_tag(["build"]) is False
+        assert is_fork_tag(["wip"]) is False
+        assert is_fork_tag(["fix"]) is False
+
+    def test_digit_bearing_identifiers(self) -> None:
+        """Identifiers containing digits are version markers, not org names."""
+        assert is_fork_tag(["pre1"]) is False
+        assert is_fork_tag(["patch1"]) is False
+        assert is_fork_tag(["0alpha"]) is False
+        assert is_fork_tag(["v2"]) is False
+        assert is_fork_tag(["build123"]) is False
+
+    def test_numeric_identifiers(self) -> None:
+        assert is_fork_tag(["20250522"]) is False
+        assert is_fork_tag(["0"]) is False
+        assert is_fork_tag(["1"]) is False
+
+    def test_single_char_not_fork_tag(self) -> None:
+        assert is_fork_tag(["a"]) is False
+        assert is_fork_tag(["b"]) is False
+
+    def test_mixed_with_keyword(self) -> None:
+        assert is_fork_tag(["alpha", "succinct"]) is False
+        assert is_fork_tag(["succinct", "beta"]) is False
+
+    def test_mixed_with_numeric(self) -> None:
+        assert is_fork_tag(["succinct", "1"]) is False
+
+    def test_empty(self) -> None:
+        assert is_fork_tag([]) is False
+
+
+# ---------------------------------------------------------------------------
+# Fork-tag false-positive avoidance in in_range.
+# ---------------------------------------------------------------------------
+
+class TestForkTagInRange:
+    """A version like ``0.4.3-succinct`` should NOT match a range
+    ``[introduced, fixed=0.4.3)`` because the ``-succinct`` suffix is
+    an org/fork tag, not a genuine prerelease."""
+
+    def test_fork_tag_at_fix_not_in_range(self) -> None:
+        events = [{"introduced": "0"}, {"fixed": "0.4.3"}]
+        assert in_range("Cargo", "0.4.3-succinct", events) is False
+        assert in_range("npm", "0.4.3-succinct", events) is False
+
+    def test_fork_tag_via_crates_io_alias(self) -> None:
+        """Real OSV data uses ``crates.io``, not ``Cargo``."""
+        events = [{"introduced": "0"}, {"fixed": "0.4.3"}]
+        assert in_range("crates.io", "0.4.3-succinct", events) is False
+
+    def test_genuine_prerelease_at_fix_still_in_range(self) -> None:
+        events = [{"introduced": "0"}, {"fixed": "2.0.0"}]
+        assert in_range("npm", "2.0.0-rc.1", events) is True
+        assert in_range("npm", "2.0.0-alpha", events) is True
+        assert in_range("npm", "2.0.0-beta.1", events) is True
+        assert in_range("Cargo", "2.0.0-dev", events) is True
+
+    def test_digit_bearing_prerelease_at_fix_still_in_range(self) -> None:
+        """pre1, hotfix1, 0alpha — contain digits, not fork tags."""
+        events = [{"introduced": "0"}, {"fixed": "2.0.0"}]
+        assert in_range("Cargo", "2.0.0-pre1", events) is True
+        assert in_range("Cargo", "2.0.0-hotfix", events) is True
+        assert in_range("Cargo", "2.0.0-0alpha", events) is True
+        assert in_range("npm", "2.0.0-patch1", events) is True
+
+    def test_fork_tag_below_fix_still_in_range(self) -> None:
+        """Fork at a base version BELOW the fix: genuinely affected."""
+        events = [{"introduced": "0"}, {"fixed": "0.5.0"}]
+        assert in_range("Cargo", "0.4.3-succinct", events) is True
+
+    def test_fork_tag_at_fix_go_excluded(self) -> None:
+        """Go uses prerelease for pseudo-versions — skip the heuristic."""
+        events = [{"introduced": "0"}, {"fixed": "0.4.3"}]
+        assert in_range("Go", "v0.4.3-succinct", events) is True
+
+    def test_fork_tag_at_fix_last_affected_inclusive(self) -> None:
+        """last_affected is inclusive — fork-tag bypass only applies to
+        exclusive upper bounds (fixed versions)."""
+        events = [{"introduced": "0"}, {"last_affected": "0.4.3"}]
+        assert in_range("Cargo", "0.4.3-succinct", events) is True
+
+    def test_fork_tag_version_above_fix(self) -> None:
+        """Fork base above the fix: not in range regardless."""
+        events = [{"introduced": "0"}, {"fixed": "0.4.3"}]
+        assert in_range("Cargo", "0.5.0-succinct", events) is False

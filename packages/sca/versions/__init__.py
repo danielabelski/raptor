@@ -214,7 +214,39 @@ def _within(
     c_hi = compare(ecosystem, version, hi)
     if hi_incl:
         return c_hi <= 0
+    if c_hi < 0 and _is_fork_tagged_at_fix(ecosystem, version, hi):
+        return False
     return c_hi < 0
+
+
+def _is_fork_tagged_at_fix(ecosystem: str, version: str, fixed: str) -> bool:
+    """True when *version* is ``X.Y.Z-forktag`` and *fixed* is ``X.Y.Z``
+    — the fork-tag prerelease pattern that causes semver false positives
+    in OSV range checks.
+
+    Semver says ``0.4.3-succinct < 0.4.3``, so a range ``[introduced,
+    0.4.3)`` matches.  But ``-succinct`` is an org/fork tag, not a
+    genuine prerelease — the fork was almost certainly published from
+    the same ``0.4.3`` codebase that contains the fix.
+
+    Only applies to ecosystems that use semver (Cargo, npm).  Go is
+    excluded because Go pseudo-versions legitimately use prereleases
+    for timestamp-hash identifiers.
+    """
+    eco = _canonical_ecosystem(ecosystem)
+    if eco not in ("npm", "Cargo"):
+        return False
+    from .semver import is_fork_tag, parse as _parse_semver
+    try:
+        v = _parse_semver(version)
+        f = _parse_semver(fixed)
+    except ValueError:
+        return False
+    if v[:3] != f[:3]:
+        return False
+    if v[3] is None or f[3] is not None:
+        return False
+    return is_fork_tag(v[3])
 
 
 def _canonical_ecosystem(eco: str) -> str:

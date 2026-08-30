@@ -18,6 +18,24 @@ from packages.sca.calibration.stress import (
     confirm_elapsed_regressions,
 )
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _clean_in_flight_registry():
+    """The in-flight registry is module state that DELIBERATELY keeps
+    entries for scans whose workers were abandoned (cancellation
+    post-mortems must name them). Tests that abandon blocked workers
+    therefore leak entries into later tests in the same process —
+    order-dependent under randomised scheduling. Reset around every
+    test; production semantics are untouched."""
+    with stress_mod._ACTIVE_SCANS_LOCK:
+        stress_mod._ACTIVE_SCANS.clear()
+    yield
+    with stress_mod._ACTIVE_SCANS_LOCK:
+        stress_mod._ACTIVE_SCANS.clear()
+
+
 
 def _baseline(tmp_path: Path, projects: dict) -> Path:
     p = tmp_path / "baseline.json"
@@ -350,15 +368,25 @@ def test_in_flight_registry_tracks_scans(tmp_path, monkeypatch) -> None:
     seen: list[list[str]] = []
 
     def _peeking_scan(sample, out_root, *, git_clone_timeout):
-        seen.append(stress_mod._in_flight())
+        # Keyed by invoking sample: a straggler worker from a
+        # cancellation test can execute ITS scan under this test's
+        # monkeypatch, appending a snapshot that is not ours.
+        seen.append((sample.name, stress_mod._in_flight()))
         return _result(name=sample.name, elapsed=1.0)
 
     monkeypatch.setattr(stress_mod, "_scan_one_inner", _peeking_scan)
     stress_mod.run_stress_sweep(
         samples=[_sample("proj")], out_root=tmp_path, max_workers=1,
     )
-    assert seen and seen[0] == ["PyPI/proj"]
-    assert stress_mod._in_flight() == []
+    # Label-scoped and sample-keyed: an abandoned worker from a
+    # cancellation test can lazily run ITS scan on this test's clock
+    # (the interrupt path deliberately never joins a worker holding a
+    # blocked scan), so neither registry exclusivity nor seen[0]
+    # identity is assertable — this test pins that OUR scan is
+    # registered while it runs.
+    ours = [snap for name, snap in seen if name == "proj"]
+    assert ours and "PyPI/proj" in ours[0]
+    assert "PyPI/proj" not in stress_mod._in_flight()
 
 
 def test_sigterm_prints_in_flight_and_partial_summary(tmp_path) -> None:

@@ -443,3 +443,25 @@ def test_dangling_symlink_does_not_jam_eviction(monkeypatch):
     _reach_cache._evict_oldest()
     remaining = _reach_cache._cache_entries()
     assert len(remaining) <= 3, [p.name for p in remaining]
+
+
+def test_save_skips_entry_past_the_loaders_cap(monkeypatch):
+    """An entry the loader would refuse is never written — writing it
+    wastes the work AND squats an eviction slot with a dead file."""
+    fp = "c" * 64
+    idx = _AdjacencyIndex()
+    fn = InternalFunction(file_path="big.py", name="g", line=1)
+    idx.definitions[("big.py", "g")] = {fn}
+    monkeypatch.setattr(_reach_cache, "_MAX_INDEX_BYTES", 8)
+    _reach_cache.save_index(fp, idx)
+    path = _reach_cache._cache_path_for(fp)
+    assert path is not None and not path.exists()
+
+
+def test_save_within_cap_still_writes(monkeypatch):
+    fp = "d" * 64
+    idx = _AdjacencyIndex()
+    fn = InternalFunction(file_path="ok.py", name="h", line=1)
+    idx.definitions[("ok.py", "h")] = {fn}
+    _reach_cache.save_index(fp, idx)
+    assert _reach_cache.load_index(fp) is not None

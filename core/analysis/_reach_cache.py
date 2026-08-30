@@ -567,6 +567,18 @@ def save_index(
     payload = _HEADER_MAGIC + json.dumps(
         _index_to_jsonable(index), separators=(",", ":"),
     ).encode("utf-8")
+    # Write-time budget mirroring the loader's read cap: an entry the
+    # loader will refuse is pure waste — the target re-pays the full
+    # reachability computation every run AND the dead entry squats an
+    # eviction slot. Skip caching loudly instead of writing it.
+    if len(payload) > _MAX_INDEX_BYTES:
+        logger.warning(
+            "reach_cache: index for this target serializes to %d bytes, "
+            "past the loader's %d-byte cap — not caching (reachability "
+            "recomputes each run for targets this large)",
+            len(payload), _MAX_INDEX_BYTES,
+        )
+        return
     try:
         write_bytes_atomically(
             path, payload,

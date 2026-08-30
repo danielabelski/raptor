@@ -100,7 +100,7 @@ pyelftools==0.33
 
 # Optional: Binary symbolic execution (core/symbolic — overflow
 # witnesses, path constraints, format-string slot analysis). Heavy
-# (~1 GB installed). claripy pins z3-solver==4.13.0.0; RAPTOR's SMT
+# (~1 GB installed). Requires Python >=3.12. claripy pins z3-solver==4.13.0.0; RAPTOR's SMT
 # surface (BitVec + Bool) works on both 4.13 and 4.15, so angr and
 # the standalone z3 pin below coexist at runtime.
 # angr==9.3.3

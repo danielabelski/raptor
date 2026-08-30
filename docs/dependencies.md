@@ -71,6 +71,7 @@ Pinned versions are in `requirements.txt`. Install with
 | atheris | Apache 2.0 | Coverage-guided Python fuzzing engine — used if present, not in requirements.txt |
 | playwright | Apache 2.0 | Browser automation for web scanning (commented in requirements.txt) |
 | z3-solver | MIT | SMT-based constraint analysis (one-gadget feasibility, path validation) |
+| angr | BSD | Binary symbolic execution (overflow witnesses, path constraints) — Python >=3.12; conflicts with standalone z3 pin |
 | tree-sitter + grammars | MIT | Rich inventory metadata (decorators, typed params); audit mechanical witnesses (C and Go parsing) — absent grammars degrade to no-witness, never to a wrong verdict |
 | sage-agent-sdk | -- | SAGE persistent memory (see [sage.md](sage.md)) |
 | httpx | BSD | HTTP client used by the SAGE SDK (installed alongside it) |

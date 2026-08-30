@@ -800,6 +800,28 @@ _C_CPP_EXTS: tuple[str, ...] = (
 )
 
 
+def _checklist_has_c_cpp(checklist: dict[str, Any] | None) -> bool:
+    """True when the run's inventory records any C-family file.
+
+    The inventory's ``files`` list is in-scope-only by construction
+    (excluded records go to ``excluded_files``) and exhaustive over
+    that scope, unlike the bounded on-disk walk — a C-family record
+    here is proof that in-scope C/C++ exists.
+    """
+    if not isinstance(checklist, dict):
+        return False
+    files = checklist.get("files")
+    if not isinstance(files, list):
+        return False
+    return any(
+        isinstance(f, dict) and (
+            f.get("language") in ("c", "cpp")
+            or str(f.get("path", "")).lower().endswith(_C_CPP_EXTS)
+        )
+        for f in files
+    )
+
+
 def _has_c_cpp_source(target: Path, max_files: int = 200) -> bool:
     """Bounded rglob — same heuristic as PR-3 scan + PR-4 prereqs.
     Quick reject for pure-Python / pure-Go targets so we don't waste
@@ -885,6 +907,8 @@ def analyze(
     Skip-silent semantics:
       * spatch not on PATH → ``skipped_reason="spatch_not_available"``
       * target has no C/C++ source → ``skipped_reason="no_c_cpp_source"``
+        (a provided ``checklist`` recording C-family files defeats the
+        bounded on-disk quick-reject — the analysis then runs)
       * shipped rules dir missing → ``skipped_reason="rules_dir_missing"``
 
     ``progress`` is an optional callback invoked as each rule STARTS:
@@ -923,7 +947,13 @@ def analyze(
             target=str(target),
             skipped_reason="spatch_not_available",
         )
-    if not _has_c_cpp_source(target):
+    # The on-disk walk is bounded (first ``max_files`` entries, no
+    # exclusion pruning) and can miss C files buried deep in a large
+    # tree. The checklist inventory's ``files`` list is in-scope-only
+    # by construction (excluded records go to ``excluded_files``), so
+    # a C-family record there is proof in-scope C/C++ exists — the
+    # quick-reject must not fire on it.
+    if not _has_c_cpp_source(target) and not _checklist_has_c_cpp(checklist):
         return SourceIntelResult(
             target=str(target),
             skipped_reason="no_c_cpp_source",

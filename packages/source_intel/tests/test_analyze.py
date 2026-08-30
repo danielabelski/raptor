@@ -80,6 +80,49 @@ def test_analyze_skips_for_pure_python_target(tmp_path):
     assert r.skipped_reason == "no_c_cpp_source"
 
 
+def test_analyze_checklist_c_census_defeats_bounded_walk_reject(tmp_path):
+    """The on-disk quick-reject is bounded (first 200 files, no
+    exclusion pruning) and can miss deep C files; a checklist that
+    records in-scope C-family files is proof they exist, so the
+    analysis must RUN, not skip."""
+    (tmp_path / "app.py").write_text("# python only\n")
+    rules_root = tmp_path / "rules"
+    rules_root.mkdir()
+    checklist = {
+        "target_path": str(tmp_path),
+        "files": [{"path": "corpus/gen.c", "language": "c", "items": []}],
+    }
+    run_rules = MagicMock(return_value=[])
+    with patch(
+        "packages.coccinelle.runner.is_available",
+        return_value=True,
+    ), patch(
+        "packages.coccinelle.runner.run_rules",
+        run_rules,
+    ), patch(
+        "packages.source_intel.analyze._shipped_rules_root",
+        return_value=rules_root,
+    ):
+        r = analyze(tmp_path, checklist=checklist)
+    assert r.is_skipped is False
+    assert r.skipped_reason is None
+    assert run_rules.called
+
+
+def test_analyze_absence_reason_when_checklist_has_no_c(tmp_path):
+    (tmp_path / "app.py").write_text("# python only\n")
+    checklist = {
+        "target_path": str(tmp_path),
+        "files": [{"path": "app.py", "language": "python", "items": []}],
+    }
+    with patch(
+        "packages.coccinelle.runner.is_available",
+        return_value=True,
+    ):
+        r = analyze(tmp_path, checklist=checklist)
+    assert r.skipped_reason == "no_c_cpp_source"
+
+
 def test_analyze_skips_when_rules_dir_missing(tmp_path):
     (tmp_path / "x.c").write_text("int main(void){return 0;}\n")
     with patch(

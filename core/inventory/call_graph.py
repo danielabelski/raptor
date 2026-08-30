@@ -6396,8 +6396,16 @@ def load_call_graphs(
             logger.debug("call-graph extraction failed for %s", rel,
                          exc_info=True)
     if skipped:
-        logger.info(
-            "load_call_graphs: file cap (%d) reached — %d candidates skipped",
+        # Hitting the cap means cross-function context is INCOMPLETE
+        # for every consumer of this mapping — loud, not info-level.
+        # Callers with a checklist rarely get here (in-scope files
+        # bound the candidate set); a bare tree walk on a large target
+        # is the case that overflows.
+        logger.warning(
+            "load_call_graphs: file cap (%d) reached — %d candidates "
+            "skipped; cross-function detectors run with partial "
+            "call-graph context (pass the run checklist to bound "
+            "extraction to in-scope files)",
             max_files, skipped,
         )
     return graphs

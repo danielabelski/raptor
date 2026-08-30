@@ -213,6 +213,34 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Single-entry cache for per-run call-graph extraction: three phases
+# (IRIS compositional analysis, the postcondition tier, structural
+# detectors) load call graphs with identical (target, checklist)
+# arguments, and each uncached load re-parses up to the file cap of
+# sources from scratch. One target per orchestrator process, so one
+# entry suffices; keyed on the checklist's identity fields so a
+# rebuilt inventory refreshes it.
+_call_graphs_cache: dict[tuple[str, Any, Any], dict[str, Any]] = {}
+
+
+def _load_call_graphs_cached(
+    target_path: Any, checklist: dict[str, Any] | None,
+) -> dict[str, Any]:
+    from core.inventory.call_graph import load_call_graphs
+
+    key = (
+        str(target_path),
+        (checklist or {}).get("generated_at"),
+        (checklist or {}).get("total_files"),
+    )
+    hit = _call_graphs_cache.get(key)
+    if hit is not None:
+        return hit
+    graphs = load_call_graphs(target_path, checklist)
+    _call_graphs_cache.clear()
+    _call_graphs_cache[key] = graphs
+    return graphs
+
 # Byte budgets for the orchestrator's own artifact reads: 8 MiB for
 # small state sidecars, 64 MiB for findings/chains/study documents
 # (findings-class budget, matching the validate bridge).
@@ -4564,6 +4592,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
             context_map=context_map,
             evidence_index=evidence_index,
             joern_server=joern_server,
+            checklist=checklist,
         )
     except Exception:
         logger.debug("mechanical detectors phase failed", exc_info=True)
@@ -5834,10 +5863,11 @@ def _iris_refine_and_bypass(
 
             bypass_runner = None
             try:
-                from core.inventory.call_graph import load_call_graphs
                 from core.iris import CompositionalAnalyzer
 
-                call_graphs = load_call_graphs(config.target_path, checklist)
+                call_graphs = _load_call_graphs_cached(
+                    config.target_path, checklist,
+                )
                 if call_graphs:
                     analyzer = CompositionalAnalyzer(call_graphs)
 
@@ -7815,11 +7845,15 @@ def _run_audit_body(
         # tier — every production call used to pass None here, so
         # that whole tier had never executed. Same loader the
         # compositional analyzer and sentinel collapse use; a load
-        # failure degrades to extraction-only, as before.
+        # failure degrades to extraction-only, as before. The
+        # checklist bounds extraction to in-scope files — a bare tree
+        # walk enumerates test/vendored candidates in arbitrary order
+        # and large targets then lose in-scope files to the file cap.
         _pc_call_graphs = None
         try:
-            from core.inventory.call_graph import load_call_graphs
-            _pc_call_graphs = load_call_graphs(config.target_path, None)
+            _pc_call_graphs = _load_call_graphs_cached(
+                config.target_path, checklist,
+            )
         except Exception:
             logger.debug("postcondition: call-graph load failed",
                          exc_info=True)
@@ -9005,6 +9039,7 @@ def _run_mechanical_detectors(
     context_map: dict[str, Any] | None = None,
     evidence_index: dict[str, EvidenceRecord] | None = None,
     joern_server: Any = None,
+    checklist: dict[str, Any] | None = None,
 ) -> tuple[dict[str, list[dict[str, Any]]], set[str]]:
     """Run pre-loop mechanical detectors over all source files.
 
@@ -9286,12 +9321,12 @@ def _run_mechanical_detectors(
 
     # --- Structural detectors ---
     call_graphs = None
-    # Tree walk + pure-AST extraction over hostile source: IO errors,
-    # parse quirks and pathological nesting are the legitimate set.
+    # Pure-AST extraction over hostile source: IO errors, parse quirks
+    # and pathological nesting are the legitimate set. The checklist
+    # bounds extraction to in-scope files (a bare tree walk loses
+    # in-scope files to the file cap on large targets).
     with contextlib.suppress(OSError, ValueError, RecursionError):
-        from core.inventory.call_graph import load_call_graphs
-
-        call_graphs = load_call_graphs(config.target_path, None)
+        call_graphs = _load_call_graphs_cached(config.target_path, checklist)
 
     try:
         from .sentinel_collapse import detect_sentinel_collapses

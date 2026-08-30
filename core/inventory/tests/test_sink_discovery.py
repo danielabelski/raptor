@@ -565,3 +565,51 @@ class TestIterDiscoverySourceFiles:
         rels = [rel for _p, rel, _l in
                 sd.iter_discovery_source_files(tmp_path)]
         assert len(rels) == 1
+
+
+# ── discovery summary log ───────────────────────────────────────────
+
+class TestDiscoverySummaryLog:
+    """The unreachable-verdict summary must partition one pool with
+    explicit units: verdicts are per (file, function), and eligible +
+    indirection-blocked always sum to the pool size."""
+
+    def test_log_counts_partition_the_verdict_pool(self, caplog) -> None:
+        import logging
+
+        graphs = {
+            "app.lua": _make_graph([
+                ("handler", ["os", "execute"], 10),
+                ("lonely", ["print"], 20),
+            ]),
+            "cb.c": FileCallGraph(
+                imports={},
+                calls=[CallSite(line=5, chain=["helper"],
+                                caller="cb_user")],
+                indirection={"fn_pointer"},
+            ),
+        }
+        with caplog.at_level(
+            logging.INFO, logger="core.inventory.sink_discovery",
+        ):
+            result = discover_sinks(graphs)
+
+        record = next(
+            r for r in caplog.records
+            if r.msg.startswith("sink_discovery:")
+        )
+        message = record.getMessage()
+        assert "functions have no sink path" in message
+        assert "eligible for sink_unreachable scope-narrowing" in message
+        assert "blocked by indirection" in message
+
+        # args: direct, transitive, framework, pool, eligible, blocked
+        _d, _t, _f, pool, eligible, blocked = record.args
+        assert pool == eligible + blocked
+        assert pool == len(result.unreachable_eligible)
+        assert eligible == sum(
+            1 for v in result.unreachable_eligible.values() if v.eligible
+        )
+        # Fixture ground truth: lonely is eligible, cb_user is blocked.
+        assert result.unreachable_eligible[("app.lua", "lonely")].eligible
+        assert not result.unreachable_eligible[("cb.c", "cb_user")].eligible

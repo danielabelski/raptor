@@ -843,12 +843,16 @@ def discover_sinks(
             reason="no transitive reach, no indirection",
         )
 
+    # One verdict per (file, function) with no transitive sink path;
+    # ``eligible`` + ``blocked by indirection`` partition that pool.
+    n_eligible = sum(1 for v in unreachable_eligible.values() if v.eligible)
     logger.info(
-        "sink_discovery: %d direct sinks, %d transitive, %d framework APIs, "
-        "%d unreachable verdicts (%d eligible)",
+        "sink_discovery: %d direct sinks, %d transitive, %d framework APIs; "
+        "%d functions have no sink path (%d eligible for sink_unreachable "
+        "scope-narrowing, %d blocked by indirection)",
         len(direct_sinks), len(transitive_reach), len(framework_apis),
-        len(unreachable_eligible),
-        sum(1 for v in unreachable_eligible.values() if v.eligible),
+        len(unreachable_eligible), n_eligible,
+        len(unreachable_eligible) - n_eligible,
     )
 
     return SinkDiscoveryResult(

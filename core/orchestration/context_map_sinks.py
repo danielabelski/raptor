@@ -323,11 +323,15 @@ def _populate_sinks_array(
         key = (sink.file, sink.function, sink.target)
         if key not in existing:
             existing.add(key)
+            # ``source`` marks machine provenance: the size-budget
+            # enforcer may shed these (regenerable by re-running this
+            # enricher), and only stamped entries are candidates.
             sinks.append({
                 "file": sink.file,
                 "function": sink.function,
                 "target": sink.target,
                 "direct": sink.direct,
+                "source": "mechanical",
             })
             added += 1
 
@@ -339,6 +343,7 @@ def _populate_sinks_array(
                 "function": sink.target,
                 "target": sink.target,
                 "direct": True,
+                "source": "mechanical",
             })
             added += 1
 

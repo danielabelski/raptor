@@ -171,3 +171,67 @@ def test_llm_only_overage_is_never_degraded():
 def test_producer_budget_below_consumer_cap():
     assert (cmb.CONTEXT_MAP_PRODUCER_BUDGET_BYTES
             < cmb.CONTEXT_MAP_CONSUMER_MAX_BYTES)
+
+
+def _machine_sink(i: int, source: str = "mechanical") -> dict[str, Any]:
+    return {
+        "id": f"SINK-{i:04d}",
+        "type": "dangerous_call",
+        "file": "lib.c",
+        "line": i,
+        "source": source,
+        "description": "machine-discovered sink " + "s" * 500,
+    }
+
+
+def _llm_sink(i: int) -> dict[str, Any]:
+    return {
+        "id": f"SINK-N-{i:03d}",
+        "type": "shell_exec",
+        "file": "app.py",
+        "line": i,
+        "notes": "LLM-authored sink narrative " + "n" * 100,
+    }
+
+
+def test_machine_sinks_capped_before_synth_entry_points():
+    m = _context_map(n_llm=1, n_synth=2)
+    m["sink_details"] = [_llm_sink(1)] + [
+        _machine_sink(i, "mechanical" if i % 2 else "heuristic")
+        for i in range(400)
+    ]
+    budget = cmb._serialized_size(_context_map(n_llm=1, n_synth=2)) + 2_000
+    applied = cmb.enforce_context_map_budget(m, budget_bytes=budget)
+    assert any("machine-generated sink" in a for a in applied)
+    # LLM-authored sink survives every step.
+    assert any(s.get("id") == "SINK-N-001" for s in m["sink_details"])
+    # Synthesized entry points are the LAST resort — with the sink cap
+    # able to shed enough, they must survive.
+    assert len(_synth_eps(m)) == 2
+    assert cmb._serialized_size(m) <= budget
+
+
+def test_stamped_flat_sinks_are_capped():
+    m = _context_map(n_llm=1, n_synth=0)
+    m["sinks"] = [_llm_sink(0)] + [
+        {"file": f"lib{i}.c", "function": f"f{i}", "target": "os.system",
+         "direct": True, "source": "mechanical",
+         "pad": "p" * 500}
+        for i in range(300)
+    ]
+    budget = cmb._serialized_size(_context_map(n_llm=1, n_synth=0)) + 2_000
+    applied = cmb.enforce_context_map_budget(m, budget_bytes=budget)
+    assert any("machine-generated sink" in a for a in applied)
+    assert any(s.get("id") == "SINK-N-000" for s in m["sinks"])
+    assert cmb._serialized_size(m) <= budget
+
+
+def test_llm_sinks_never_dropped():
+    m = _context_map(n_llm=1, n_synth=0)
+    m["sink_details"] = [_llm_sink(i) for i in range(50)]
+    m["sinks"] = [_llm_sink(i) for i in range(50)]
+    tiny = 1_000
+    before = copy.deepcopy(m["sink_details"])
+    cmb.enforce_context_map_budget(m, budget_bytes=tiny)
+    assert m["sink_details"] == before
+    assert len(m["sinks"]) == 50

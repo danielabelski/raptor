@@ -41,9 +41,23 @@ CONTEXT_MAP_PRODUCER_BUDGET_BYTES = 48 * 1024 * 1024
 # LLM-authored and is never degraded.
 _SYNTHESIZED_ORIGINS = frozenset({"inventory-entry"})
 
+# ``source`` values stamped on machine-generated sink entries (the sink
+# enricher's call-graph discovery and heuristic project sinks). Fully
+# regenerable by re-running the enricher; LLM-authored sinks carry no
+# such stamp and are never degraded.
+_MACHINE_SINK_SOURCES = frozenset({"mechanical", "heuristic"})
+
+# Sink-carrying arrays the machine-sink cap may shrink.
+_SINK_KEYS = ("sinks", "sink_details")
+
 
 def _is_synthesized(entry: Any) -> bool:
     return isinstance(entry, dict) and entry.get("origin") in _SYNTHESIZED_ORIGINS
+
+
+def _is_machine_sink(entry: Any) -> bool:
+    return (isinstance(entry, dict)
+            and entry.get("source") in _MACHINE_SINK_SOURCES)
 
 
 def _serialized_size(data: Any) -> int:
@@ -83,34 +97,71 @@ def _drop_synth_reachable_names(context_map: dict[str, Any]) -> int:
     return dropped
 
 
+def _cap_list_entries(
+    entries: list[Any],
+    candidate_indices: list[int],
+    overshoot: int,
+) -> int:
+    """Drop candidates from the tail until ``overshoot`` bytes are shed.
+
+    Tail-first keeps the earliest entries (stable ids from the
+    producers' emission order). Returns the number removed.
+    """
+    if not candidate_indices or overshoot <= 0:
+        return 0
+    removed: list[int] = []
+    shed = 0
+    for i in reversed(candidate_indices):
+        if shed >= overshoot:
+            break
+        # Per-entry serialized size understates the true saving (list
+        # separators, indentation) — acceptable: the caller re-checks
+        # the real size and the budget already carries headroom.
+        shed += _serialized_size(entries[i])
+        removed.append(i)
+    for i in removed:  # already in descending index order
+        del entries[i]
+    return len(removed)
+
+
+def _cap_machine_sinks(context_map: dict[str, Any],
+                       budget_bytes: int) -> int:
+    """Drop machine-generated sink entries until the map fits.
+
+    Applies to every sink-carrying array; LLM-authored sinks (no
+    machine ``source`` stamp) are never candidates. Returns the total
+    number of entries removed.
+    """
+    removed = 0
+    for key in _SINK_KEYS:
+        entries = _entries(context_map, key)
+        candidates = [i for i, e in enumerate(entries)
+                      if _is_machine_sink(e)]
+        # Candidates first: serializing the whole map costs hundreds
+        # of ms on budget-sized artifacts — never pay it for a key
+        # with nothing to shed.
+        if not candidates:
+            continue
+        overshoot = _serialized_size(context_map) - budget_bytes
+        if overshoot <= 0:
+            break
+        removed += _cap_list_entries(entries, candidates, overshoot)
+    return removed
+
+
 def _cap_synth_entries(context_map: dict[str, Any],
                        budget_bytes: int) -> int:
     """Drop synthesized entry points from the tail until the map fits.
 
-    Tail-first keeps the earliest synthesized entries (stable ids from
-    the backfill's emission order). Non-synthesized entries are never
-    candidates. Returns the number of entries removed.
+    Non-synthesized entries are never candidates. Returns the number
+    of entries removed.
     """
     eps = _entries(context_map, "entry_points")
     synth_indices = [i for i, e in enumerate(eps) if _is_synthesized(e)]
     if not synth_indices:
         return 0
     overshoot = _serialized_size(context_map) - budget_bytes
-    if overshoot <= 0:
-        return 0
-    removed: list[int] = []
-    shed = 0
-    for i in reversed(synth_indices):
-        if shed >= overshoot:
-            break
-        # Per-entry serialized size understates the true saving (list
-        # separators, indentation) — acceptable: the loop re-checks the
-        # real size below and the budget already carries headroom.
-        shed += _serialized_size(eps[i])
-        removed.append(i)
-    for i in removed:  # already in descending index order
-        del eps[i]
-    return len(removed)
+    return _cap_list_entries(eps, synth_indices, overshoot)
 
 
 def enforce_context_map_budget(
@@ -127,7 +178,9 @@ def enforce_context_map_budget(
        recoverable by re-running the ast-view enricher).
     2. Drop ``forward_reachable`` name lists on synthesized entry points
        (counts survive; ``truncated`` flags the loss).
-    3. Cap the number of synthesized entry points themselves.
+    3. Cap machine-generated sink entries (``source`` mechanical /
+       heuristic — regenerable by re-running the sink enricher).
+    4. Cap the number of synthesized entry points themselves.
 
     LLM-authored entries are untouched at every step. Returns the list
     of applied degradation descriptions (empty when the map already
@@ -155,6 +208,13 @@ def enforce_context_map_budget(
             size = _serialized_size(context_map)
 
     if size > budget_bytes:
+        n = _cap_machine_sinks(context_map, budget_bytes)
+        if n:
+            applied.append(
+                f"capped machine-generated sink entries ({n} dropped)")
+            size = _serialized_size(context_map)
+
+    if size > budget_bytes:
         n = _cap_synth_entries(context_map, budget_bytes)
         if n:
             applied.append(f"capped synthesized entry points ({n} dropped)")
@@ -168,13 +228,16 @@ def enforce_context_map_budget(
             "; ".join(applied), size,
         )
     if size > budget_bytes:
-        # Nothing degradable is left (the overage is LLM-authored
-        # content). Consumers bounded at the read cap may refuse the
-        # artifact; say so rather than silently shipping it.
+        # Every degradable class (synthesized entry-point payloads and
+        # entries, machine-stamped sinks) has been exhausted; whatever
+        # remains carries no machine provenance stamp and is never
+        # dropped here. Consumers bounded at the read cap may refuse
+        # the artifact; say so rather than silently shipping it.
         logger.warning(
             "context-map size budget: still %d bytes after degradation "
-            "(budget %d) — remaining content is LLM-authored and is "
-            "never dropped here", size, budget_bytes,
+            "(budget %d) — remaining content carries no machine "
+            "provenance stamp (treated as LLM-authored) and is never "
+            "dropped here", size, budget_bytes,
         )
     return applied
 

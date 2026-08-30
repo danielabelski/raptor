@@ -36,6 +36,9 @@ if not (os.environ.get("CLAUDECODE")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import core.startup.process_init  # noqa: E402,F401
+from core.artifacts.context_map_budget import (  # noqa: E402
+    enforce_context_map_budget,
+)
 from core.json import load_json, save_json  # noqa: E402
 
 
@@ -114,6 +117,15 @@ def main() -> int:
     # stderr (stdout stays reserved for the result line): one line per
     # cocci rule as it starts plus a 30s idle heartbeat — a large C
     # target used to sit >300s with zero output here.
+    # Reuse the checklist as source_intel's pre-built inventory
+    # (invariants in core.orchestration.checklist_inventory): saves
+    # its own tree parse, and its in-scope C/C++ census overrides the
+    # bounded on-disk quick-reject.
+    from core.orchestration.checklist_inventory import (
+        inventory_from_checklist,
+    )
+    inventory = inventory_from_checklist(checklist)
+
     try:
         from packages.source_intel.progress import RuleProgressPrinter
         print(
@@ -121,7 +133,10 @@ def main() -> int:
             f"(cocci) on {target_path} ...", file=sys.stderr, flush=True,
         )
         with RuleProgressPrinter(sys.stderr, label="cocci") as prog:
-            si = analyze(Path(target_path), progress=prog.on_rule)
+            si = analyze(
+                Path(target_path), checklist=inventory,
+                progress=prog.on_rule,
+            )
     except Exception as e:  # noqa: BLE001 — never abort the run on this
         print(
             f"raptor-enrich-context-map-sites: source_intel analysis "
@@ -134,6 +149,7 @@ def main() -> int:
     )
     total = counts["ownership_model"] + counts["privilege_model"]
     if total:
+        enforce_context_map_budget(context_map)
         save_json(context_map_path, context_map)
         print(
             f"raptor-enrich-context-map-sites: enriched "

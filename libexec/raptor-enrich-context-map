@@ -34,6 +34,9 @@ if not (os.environ.get("CLAUDECODE")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import core.startup.process_init  # noqa: E402,F401
+from core.artifacts.context_map_budget import (  # noqa: E402
+    enforce_context_map_budget,
+)
 from core.json import load_json, save_json  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -104,9 +107,14 @@ def main() -> int:
     except Exception as e:
         logger.debug("callgraph enrichment failed: %s", e, exc_info=True)
 
-    # 2. Build inventory once (shared by ast-view and forward-reachable)
-    inventory = None
-    if target_path:
+    # 2. Inventory shared by ast-view, forward-reachable, and sites.
+    # Reuse the checklist as the inventory — no re-parse of the
+    # target tree (invariants in core.orchestration.checklist_inventory).
+    from core.orchestration.checklist_inventory import (
+        inventory_from_checklist,
+    )
+    inventory = inventory_from_checklist(checklist)
+    if inventory is None and target_path:
         try:
             from core.inventory.builder import build_inventory
             with tempfile.TemporaryDirectory() as td:
@@ -152,7 +160,10 @@ def main() -> int:
                 enrich_context_map_with_sites,
             )
             from packages.source_intel import analyze
-            si = analyze(Path(target_path))
+            # The shared inventory doubles as source_intel's pre-built
+            # checklist (enclosing-function lookups + truthful skip
+            # reasons) — saves another tree parse.
+            si = analyze(Path(target_path), checklist=inventory)
             counts = enrich_context_map_with_sites(
                 context_map, si, repo_root=target_path,
             )
@@ -202,6 +213,10 @@ def main() -> int:
         except Exception as e:
             logger.warning("sink enrichment failed: %s", e, exc_info=True)
 
+    # Budget check even when nothing changed: an already-oversize map
+    # from an earlier writer must not survive a pass through here.
+    if enforce_context_map_budget(context_map):
+        changed = True
     if changed:
         save_json(context_map_path, context_map)
 

@@ -12,6 +12,10 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from core.artifacts.context_map_budget import (
+    CONTEXT_MAP_CONSUMER_MAX_BYTES,
+    enforce_context_map_budget,
+)
 from core.json import load_json, save_json
 
 from .lifecycle_model import StateField
@@ -19,8 +23,8 @@ from .lifecycle_model import StateField
 logger = logging.getLogger(__name__)
 
 # context-map.json is RAPTOR-written run output (multi-MiB on big
-# targets) — the audit-artifact budget class.
-_MAX_CONTEXT_MAP_BYTES = 64 * 1024 * 1024
+# targets). Read cap shared with the producer-side budget.
+_MAX_CONTEXT_MAP_BYTES = CONTEXT_MAP_CONSUMER_MAX_BYTES
 
 
 def load_state_fields(out_dir: Path) -> list[StateField]:
@@ -62,6 +66,7 @@ def save_state_fields(
 
     data["state_fields"] = [f.to_dict() for f in fields]
 
+    enforce_context_map_budget(data)
     save_json(cm_path, data)
     return cm_path
 

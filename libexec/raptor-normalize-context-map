@@ -36,6 +36,9 @@ if not (os.environ.get("CLAUDECODE")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import core.startup.process_init  # noqa: E402,F401
+from core.artifacts.context_map_budget import (  # noqa: E402
+    enforce_context_map_budget,
+)
 from core.artifacts.provenance import (  # noqa: E402
     CONTEXT_MAP_TEXT_SCHEMA,
     sanitise_free_text,
@@ -82,6 +85,7 @@ def main() -> int:
     sanitised = sanitise_free_text(context_map, CONTEXT_MAP_TEXT_SCHEMA)
     stamp_provenance(context_map, "understand:map",
                      untrusted=True, overwrite_generator=False)
+    enforce_context_map_budget(context_map)
     save_json(context_map_path, context_map)
     if sanitised:
         print(f"raptor-normalize-context-map: sanitised {len(sanitised)} "

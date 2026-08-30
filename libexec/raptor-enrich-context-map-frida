@@ -34,11 +34,16 @@ if not (os.environ.get("CLAUDECODE")
 _RAPTOR_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_RAPTOR_DIR))
 import core.startup.process_init  # noqa: E402,F401
+import logging  # noqa: E402
+
+from core.artifacts.context_map_budget import (  # noqa: E402
+    CONTEXT_MAP_CONSUMER_MAX_BYTES as _MAX_CONTEXT_MAP_BYTES,
+)
 from core.json import load_json, save_json  # noqa: E402
 
-# context-map.json is a RAPTOR-written run artifact; checklist.json
-# can grow with the target's function inventory.
-_MAX_CONTEXT_MAP_BYTES = 64 * 1024 * 1024
+logger = logging.getLogger(__name__)
+
+# checklist.json can grow with the target's function inventory.
 _MAX_CHECKLIST_BYTES = 256 * 1024 * 1024
 
 
@@ -57,16 +62,21 @@ def main() -> int:
     except ImportError:
         return 0
 
+    # Skip-silent contract: frida enrichment is best-effort — an
+    # oversize, unreadable, or malformed map must not fail the caller's
+    # pipeline; the map's own consumers will surface it.
     try:
         ctx = load_json(
             ctx_path, strict=True, max_bytes=_MAX_CONTEXT_MAP_BYTES,
         )
     except (ValueError, OSError) as e:
-        print(f"✗ Cannot read context-map: {e}", file=sys.stderr)
-        return 1
+        logger.debug("frida enrichment skipped: cannot read %s: %s",
+                     ctx_path, e)
+        return 0
     if not isinstance(ctx, dict):
-        print("✗ context-map.json is not a JSON object", file=sys.stderr)
-        return 1
+        logger.debug("frida enrichment skipped: %s is not a JSON object",
+                     ctx_path)
+        return 0
     search_dirs = [workdir, workdir.parent]
 
     target_path = None

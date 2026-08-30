@@ -19,6 +19,7 @@ from pathlib import Path
 from collections.abc import Callable, Iterable
 from typing import Any
 
+from core.artifacts.context_map_budget import CONTEXT_MAP_CONSUMER_MAX_BYTES
 from core.coverage.journal import make_function_key
 from core.json import load_json, save_json
 
@@ -89,8 +90,9 @@ _MAX_HYDRATED_FILE_BYTES = 8 * 1024 * 1024
 _MAX_HYDRATED_TOTAL_BYTES = 64 * 1024 * 1024
 
 # context-map.json is RAPTOR-written run output (measured multi-MiB
-# on big targets) — the audit-artifact budget class.
-_MAX_CONTEXT_MAP_BYTES = 64 * 1024 * 1024
+# on big targets). Read cap shared with the producer-side budget —
+# writers degrade to CONTEXT_MAP_PRODUCER_BUDGET_BYTES, below this.
+_MAX_CONTEXT_MAP_BYTES = CONTEXT_MAP_CONSUMER_MAX_BYTES
 
 
 def compute_gaps(

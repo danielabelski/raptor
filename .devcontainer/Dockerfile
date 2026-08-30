@@ -139,7 +139,7 @@ RUN apt-get update \
 RUN curl -fsSL https://deb.nodesource.com/setup_24.x -o /tmp/nodesource_setup.sh \
     && bash /tmp/nodesource_setup.sh \
     && rm /tmp/nodesource_setup.sh \
-    && apt-get install -y --no-install-recommends nodejs=24.15.0-1nodesource1 \
+    && apt-get install -y --no-install-recommends nodejs=24.20.0-1nodesource1 \
     && apt-get clean && rm -rf /var/lib/apt/lists/* \
     && npm install -g @anthropic-ai/claude-code@2.1.163
 

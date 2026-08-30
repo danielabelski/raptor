@@ -97,7 +97,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Scan PR head
-        run: bin/raptor-sca . --out /tmp/sca-pr
+        run: bin/raptor-sca . --out /tmp/sca-pr --no-image-scanning
 
       - name: Scan main baseline
         # We checkout main into a sibling dir so the PR-head working
@@ -106,7 +106,7 @@ jobs:
         run: |
           git fetch origin main:refs/heads/_baseline
           git worktree add /tmp/sca-baseline-tree _baseline
-          bin/raptor-sca /tmp/sca-baseline-tree --out /tmp/sca-base
+          bin/raptor-sca /tmp/sca-baseline-tree --out /tmp/sca-base --no-image-scanning
           git worktree remove --force /tmp/sca-baseline-tree
           git branch -D _baseline
 

@@ -11,11 +11,13 @@ no real Joern process is started.
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from unittest.mock import patch
 
-from packages.joern.server import JoernServer
+from packages.joern.models import JoernResult, TaintFlow
+from packages.joern.server import _RESTARTING_ERROR, JoernServer
 
 
 class TestSingleRestarter:
@@ -132,6 +134,144 @@ class TestQueryFailsFastDuringRestart:
         assert not result.errors
 
 
+class TestTaintRetryAfterRestartWindow:
+    """Taint entry points retry exactly once after a restart-window
+    fail-fast, so a restart no longer drops every claim whose query
+    landed in the window. ``query()`` itself keeps failing fast."""
+
+    def _server(self) -> JoernServer:
+        srv = JoernServer()
+        srv._cpg_loaded = True
+        srv._base_url = "http://127.0.0.1:9999"
+        return srv
+
+    @staticmethod
+    def _restarting_result(q: str = "q") -> JoernResult:
+        return JoernResult(query=q, errors=[_RESTARTING_ERROR])
+
+    @staticmethod
+    def _healthy_result(q: str = "q") -> JoernResult:
+        flow = TaintFlow(source_method="readData", source_param="p0",
+                         sink_call="writeData", sink_arg_idx=0)
+        return JoernResult(query=q, flows=[flow], raw_output="ok")
+
+    def test_restart_marker_retried_once_flows_recovered(self, caplog):
+        """Restart finishes inside the deadline → one retry, evidence
+        recovered, both INFO trail lines emitted."""
+        srv = self._server()
+        results = [self._restarting_result(), self._healthy_result()]
+        calls: list[str] = []
+
+        def fake_query(q, **kw):
+            calls.append(q)
+            return results[len(calls) - 1]
+
+        errors_out: list[str] = []
+        with patch.object(srv, "query", side_effect=fake_query), \
+             caplog.at_level(logging.INFO, logger="packages.joern.server"):
+            flows = srv.run_taint_query(
+                "readData", "writeData", errors_out=errors_out,
+            )
+
+        assert len(calls) == 2
+        assert len(flows) == 1
+        assert errors_out == []
+        assert "retrying once" in caplog.text
+        assert "taint query retried after server restart" in caplog.text
+
+    def test_non_restarting_errors_not_retried(self):
+        """Timeouts / scala errors keep today's single-shot behavior."""
+        srv = self._server()
+        calls: list[str] = []
+
+        def fake_query(q, **kw):
+            calls.append(q)
+            return JoernResult(query=q, errors=["timeout (async poll)"])
+
+        errors_out: list[str] = []
+        with patch.object(srv, "query", side_effect=fake_query):
+            flows = srv.run_taint_query(
+                "readData", "writeData", errors_out=errors_out,
+            )
+
+        assert len(calls) == 1
+        assert flows == []
+        assert errors_out == ["timeout (async poll)"]
+
+    def test_deadline_expiry_returns_original_failfast(self):
+        """Server still restarting when the deadline lapses → the
+        original fail-fast errors come back, no retry attempted."""
+        srv = self._server()
+        srv._restarting.set()
+        srv._cpg_loaded = False
+        srv._last_import_timeout = 1
+        calls: list[str] = []
+
+        def fake_query(q, **kw):
+            calls.append(q)
+            return self._restarting_result(q)
+
+        errors_out: list[str] = []
+        # Negative margin collapses the deadline to "already expired"
+        # so the too-short direction is exercised without wall-clock
+        # waiting (the too-long direction is the retried-once test,
+        # where the restart completes inside the window).
+        with patch.object(srv, "query", side_effect=fake_query), \
+             patch("packages.joern.server._RESTART_RETRY_MARGIN_S", -1.0), \
+             patch("packages.joern.server._RESTART_RETRY_POLL_S", 0.01):
+            flows = srv.run_taint_query(
+                "readData", "writeData", errors_out=errors_out,
+            )
+
+        assert len(calls) == 1
+        assert flows == []
+        assert errors_out == [_RESTARTING_ERROR]
+
+    def test_retry_failure_returned_as_is(self, caplog):
+        """The single retry also fails → its errors propagate, exactly
+        two calls total (never a loop), no success INFO."""
+        srv = self._server()
+        results = [
+            self._restarting_result(),
+            JoernResult(query="q", errors=["query failed: boom"]),
+        ]
+        calls: list[str] = []
+
+        def fake_query(q, **kw):
+            calls.append(q)
+            return results[len(calls) - 1]
+
+        errors_out: list[str] = []
+        with patch.object(srv, "query", side_effect=fake_query), \
+             caplog.at_level(logging.INFO, logger="packages.joern.server"):
+            flows = srv.run_taint_query(
+                "readData", "writeData", errors_out=errors_out,
+            )
+
+        assert len(calls) == 2
+        assert flows == []
+        assert errors_out == ["query failed: boom"]
+        assert "retrying once" in caplog.text
+        assert "taint query retried after server restart" not in caplog.text
+
+    def test_exists_query_shares_the_retry_policy(self):
+        """run_taint_exists_query routes through the same helper."""
+        srv = self._server()
+        results = [
+            self._restarting_result(),
+            JoernResult(query="q", raw_output="JOERN_EXISTS:true"),
+        ]
+        calls: list[str] = []
+
+        def fake_query(q, **kw):
+            calls.append(q)
+            return results[len(calls) - 1]
+
+        with patch.object(srv, "query", side_effect=fake_query):
+            assert srv.run_taint_exists_query("readData", "writeData") is True
+        assert len(calls) == 2
+
+
 class TestBudgetClampedVerificationTimeouts:
     """Audit verification paths clamp Joern per-query timeouts to the
     remaining run budget."""
@@ -224,3 +364,52 @@ class TestBudgetClampedVerificationTimeouts:
         # itself (default_query_timeout()).
         timeout = self._run_chain(tmp_path, monkeypatch, None)
         assert timeout is None
+
+
+class TestRetryWaitBounds:
+    """The restart-window wait must not outlive its usefulness."""
+
+    @staticmethod
+    def _restarting_result(q: str = "q") -> JoernResult:
+        return JoernResult(query=q, errors=[_RESTARTING_ERROR])
+
+    def test_failed_restart_exits_wait_immediately(self):
+        """``restarting`` cleared with no loaded CPG = the restart
+        FAILED; waiting further can only stall every waiter for the
+        full deadline on a server that already reported failure."""
+        srv = JoernServer()
+        srv._restarting.clear()
+        srv._cpg_loaded = False
+        calls: list[int] = []
+
+        def fake_query() -> JoernResult:
+            calls.append(1)
+            return self._restarting_result()
+
+        t0 = time.monotonic()
+        result = srv._retry_once_after_restart(fake_query)
+        assert time.monotonic() - t0 < 1.0
+        assert result.errors == [_RESTARTING_ERROR]
+        assert len(calls) == 1
+
+    def test_caller_timeout_caps_the_wait(self):
+        """A budget-clamped query must not wait past its own timeout."""
+        srv = JoernServer()
+        srv._restarting.set()
+        srv._cpg_loaded = False
+        calls: list[int] = []
+
+        def fake_query() -> JoernResult:
+            calls.append(1)
+            return self._restarting_result()
+
+        try:
+            t0 = time.monotonic()
+            result = srv._retry_once_after_restart(
+                fake_query, max_wait_s=0.0,
+            )
+            assert time.monotonic() - t0 < 1.0
+            assert result.errors == [_RESTARTING_ERROR]
+            assert len(calls) == 1
+        finally:
+            srv._restarting.clear()

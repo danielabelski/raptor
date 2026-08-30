@@ -126,6 +126,21 @@ _RESTARTING_ERROR = (
     "(no Joern evidence for this claim)"
 )
 
+# Poll interval for taint-layer waiters riding out a restart window
+# (see ``_retry_once_after_restart``). Pure polling on existing state —
+# no lock a restart could wedge. Smaller burns CPU re-checking a
+# minutes-long JVM boot; larger adds dead time between "restart done"
+# and "evidence recovered" for every waiting sweep thread.
+_RESTART_RETRY_POLL_S = 2.0
+
+# Margin added on top of the restart's CPG re-import timeout when
+# deriving the retry deadline. Covers the stop + JVM boot phases that
+# precede the re-import. Too short re-loses the evidence the retry
+# exists to save (gives up while the CPG is still deserialising); too
+# long spends a bounded-wall-clock run's budget waiting on a server
+# that may never come back.
+_RESTART_RETRY_MARGIN_S = 60.0
+
 # Bounded relaunch-on-death window (see ``ensure_alive``): at most one
 # relaunch attempt per this many seconds. A relaunch costs a JVM boot
 # + CPG reload (~1-2 min) — retrying faster than this would spend the
@@ -1480,6 +1495,71 @@ class JoernServer:
             logger.warning("workspace.reset failed: %s",
                            resp.get("stderr", "")[:200])
 
+    def _retry_once_after_restart(
+        self, call: Callable[[], JoernResult],
+        *, max_wait_s: float | None = None,
+    ) -> JoernResult:
+        """Run *call*; retry exactly once if it hit a restart window.
+
+        ``query()`` fails fast with ``_RESTARTING_ERROR`` while a
+        restart is in flight — load-bearing at that layer (pre-fix,
+        callers piled up on the restart lock for the whole boot + CPG
+        reload). But at the taint-consumer layer a fail-fast is lost
+        evidence: every claim whose query lands in the restart window
+        books "no Joern evidence". So here we wait boundedly for the
+        restart to finish and retry ONCE. The wait is pure polling on
+        existing state (``restarting`` / ``_cpg_loaded``) — concurrent
+        sweep threads wait independently, no new lock. One retry only,
+        so the worst case is one restart-length wait per restart
+        window, not per query — queries arriving after the first
+        waiter proceed immediately once the restart completes.
+
+        Only the restarting marker triggers the retry; timeouts,
+        scala errors, and every other failure keep their existing
+        fail-fast behavior. On deadline expiry, or when the retry
+        fails too, the caller gets that failure as-is — never a loop.
+        """
+        result = call()
+        if result.errors != [_RESTARTING_ERROR]:
+            return result
+        # Deadline derives from the import timeout the restart's CPG
+        # re-import will use (the dominant phase of a restart), plus a
+        # margin for stop + JVM boot. Trade-off on both constants at
+        # their definitions.
+        wait_s = (
+            self._last_import_timeout or JoernTunables.import_timeout_s
+        ) + _RESTART_RETRY_MARGIN_S
+        # The caller's own time budget caps the wait: a query whose
+        # remaining run budget was clamped to seconds must not block
+        # minutes for the restart — it re-loses this one claim's
+        # evidence but protects the run's wall clock and its sibling
+        # workers.
+        if max_wait_s is not None:
+            wait_s = min(wait_s, max(0.0, max_wait_s))
+        deadline = time.monotonic() + wait_s
+        logger.info(
+            "taint query hit restart window — waiting up to %.0fs "
+            "for the restart, then retrying once", wait_s,
+        )
+        while time.monotonic() < deadline:
+            if not self.restarting:
+                # Restart concluded. Retry only if it actually
+                # produced a loaded CPG — a FAILED restart clears
+                # ``restarting`` with ``_cpg_loaded`` False, and
+                # waiting further (or retrying) can only stall every
+                # waiter for the full deadline on a server that
+                # already reported failure.
+                if not self._cpg_loaded:
+                    return result
+                retried = call()
+                if retried.ok:
+                    logger.info(
+                        "taint query retried after server restart",
+                    )
+                return retried
+            time.sleep(_RESTART_RETRY_POLL_S)
+        return result
+
     def run_taint_query(
         self,
         source_method: str,
@@ -1519,7 +1599,10 @@ class JoernServer:
         query = _build_taint_query(safe_source, safe_sink, source_param,
                                    max_call_depth=max_call_depth)
 
-        result = self.query(query, timeout=timeout, validate=True)
+        result = self._retry_once_after_restart(
+            lambda: self.query(query, timeout=timeout, validate=True),
+            max_wait_s=timeout,
+        )
         if result.errors:
             logger.warning("server taint query errors: %s", result.errors)
             if errors_out is not None:
@@ -1557,7 +1640,10 @@ class JoernServer:
         query = _build_taint_exists_query(safe_source, safe_sink,
                                           max_call_depth=max_call_depth)
 
-        result = self.query(query, timeout=timeout, validate=True)
+        result = self._retry_once_after_restart(
+            lambda: self.query(query, timeout=timeout, validate=True),
+            max_wait_s=timeout,
+        )
         if not result.ok:
             return False
         return "JOERN_EXISTS:true" in (result.raw_output or "")
@@ -1658,7 +1744,12 @@ class JoernServer:
         )
         query = "\n".join(lines)
 
-        result = self.query(query, timeout=timeout, validate=True, check_length=False)
+        result = self._retry_once_after_restart(
+            lambda: self.query(
+                query, timeout=timeout, validate=True, check_length=False,
+            ),
+            max_wait_s=timeout,
+        )
         if result.errors:
             logger.warning("batch taint query errors: %s", result.errors)
         return result.flows

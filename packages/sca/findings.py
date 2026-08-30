@@ -108,6 +108,14 @@ def build_vuln_findings(
     for r in osv_results:
         deduped_results[r.dep_key] = _dedup_alias_advisories(r.advisories)
 
+    # Post-filter: the live OSV API does version matching server-side
+    # using standard semver, which treats fork-tag prereleases (e.g.
+    # 0.4.3-succinct) as less than the fixed version (0.4.3).  Our
+    # local in_range has fork-tag detection that avoids this false
+    # positive class.  Re-validate API-returned advisories here so
+    # both the offline-DB and live-API paths get the same result.
+    deduped_results = _filter_fork_tag_false_positives(deps, deduped_results)
+
     # First pass: compute related-finding IDs per dep so each finding can
     # carry the cross-references in one shot.
     related_by_dep: dict[str, list[str]] = {}
@@ -149,6 +157,54 @@ def build_vuln_findings(
                 vulnrichment=vulnrichment,
             ))
     return out
+
+
+def _filter_fork_tag_false_positives(
+    deps: Sequence[Dependency],
+    deduped: dict[str, list[list[Advisory]]],
+) -> dict[str, list[list[Advisory]]]:
+    """Drop advisory groups whose match is a fork-tag false positive.
+
+    The live OSV API matches versions server-side using standard semver,
+    which treats ``0.4.3-succinct`` as a prerelease below the fixed
+    ``0.4.3``.  Our local ``in_range`` detects fork-tag prereleases and
+    returns False for that class.  This post-filter re-validates each
+    advisory's affected ranges against the dep's installed version so
+    both the offline-DB and live-API paths agree.
+    """
+    from .versions import VersionError, in_range
+
+    dep_by_key = {d.key(): d for d in deps}
+    out: dict[str, list[list[Advisory]]] = {}
+    for key, groups in deduped.items():
+        dep = dep_by_key.get(key)
+        if dep is None or dep.version is None:
+            out[key] = groups
+            continue
+        filtered: list[list[Advisory]] = []
+        for group in groups:
+            if _group_is_fork_tag_fp(dep, group, in_range, VersionError):
+                continue
+            filtered.append(group)
+        out[key] = filtered
+    return out
+
+
+def _group_is_fork_tag_fp(dep, group, in_range_fn, ver_error):
+    """True when EVERY advisory in the group matches only via ranges
+    that our local in_range (with fork-tag detection) rejects."""
+    saw_semver_range = False
+    for adv in group:
+        for ar in adv.affected:
+            if ar.type != "SEMVER":
+                return False
+            saw_semver_range = True
+            try:
+                if in_range_fn(dep.ecosystem, dep.version, ar.events):
+                    return False
+            except ver_error:
+                return False
+    return saw_semver_range
 
 
 def _dedup_alias_advisories(advisories: list[Advisory]) -> list[list[Advisory]]:

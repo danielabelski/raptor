@@ -501,3 +501,72 @@ def test_related_findings_capped() -> None:
     )
     # Still navigational — every finding keeps some siblings.
     assert all(f.related_findings for f in findings)
+
+
+# ---------------------------------------------------------------------------
+# Fork-tag prerelease false-positive filter
+# ---------------------------------------------------------------------------
+
+def test_fork_tag_prerelease_filtered_from_findings() -> None:
+    """A Cargo dep at 0.4.3-succinct with a SEMVER advisory fixed at
+    0.4.3 must be dropped — the fork-tag suffix is an org tag, not a
+    genuine prerelease."""
+    d = _dep(
+        name="p3-challenger", version="0.4.3-succinct",
+        ecosystem="crates.io",
+    )
+    adv = Advisory(
+        osv_id="GHSA-vj64-rjf3-w3v7",
+        aliases=["CVE-2026-46654"],
+        summary="transcript malleability",
+        details="",
+        affected=[AffectedRange(
+            type="SEMVER",
+            events=[{"introduced": "0"}, {"fixed": "0.4.3"}],
+        )],
+        severity=CVSSScore(
+            score=7.4,
+            vector="CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:N",
+            severity="high",
+        ),
+        fixed_versions=["0.4.3"],
+        references=[],
+    )
+    findings = build_vuln_findings(
+        [d], [OsvResult(dep_key=d.key(), advisories=[adv])],
+    )
+    assert findings == [], (
+        "fork-tagged version at the fix base should not produce a finding"
+    )
+
+
+def test_genuine_prerelease_not_filtered() -> None:
+    """A genuine prerelease (rc.1) at the fix version must still produce
+    a finding — only fork tags are filtered."""
+    d = _dep(
+        name="some-crate", version="2.0.0-rc.1",
+        ecosystem="crates.io",
+    )
+    adv = Advisory(
+        osv_id="GHSA-test",
+        aliases=["CVE-2099-0001"],
+        summary="test",
+        details="",
+        affected=[AffectedRange(
+            type="SEMVER",
+            events=[{"introduced": "0"}, {"fixed": "2.0.0"}],
+        )],
+        severity=CVSSScore(
+            score=9.8,
+            vector="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+            severity="critical",
+        ),
+        fixed_versions=["2.0.0"],
+        references=[],
+    )
+    findings = build_vuln_findings(
+        [d], [OsvResult(dep_key=d.key(), advisories=[adv])],
+    )
+    assert len(findings) == 1, (
+        "genuine prerelease should still produce a finding"
+    )

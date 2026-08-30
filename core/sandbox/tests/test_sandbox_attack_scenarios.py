@@ -367,8 +367,8 @@ class TestAPIContract(unittest.TestCase):
         """An inherited AF_UNIX socket FD can reach the docker daemon
         socket. Defense: stat each pass_fds entry and refuse S_ISSOCK.
         Pipe FDs (S_ISFIFO) remain allowed for legitimate stdin piping."""
-        if not check_net_available():
-            self.skipTest("User namespaces not available")
+        if not check_net_available() or not check_mount_available():
+            self.skipTest("User/mount namespaces not available")
         # Create a socket FD — should be rejected
         s1, s2 = socket.socketpair()
         try:
@@ -910,8 +910,9 @@ class TestRestrictReadsCredentialExfil(unittest.TestCase):
     restrict_reads blocks host-pid /proc/<pid>/environ."""
 
     def setUp(self):
-        if not check_net_available() or not check_landlock_available():
-            self.skipTest("Needs user-ns + Landlock")
+        if (not check_net_available() or not check_landlock_available()
+                or not check_mount_available()):
+            self.skipTest("Needs user-ns + Landlock + mount-ns")
         self.tmp = TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
 

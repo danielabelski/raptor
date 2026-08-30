@@ -958,9 +958,15 @@ def _is_content_filter_error(exc: Exception) -> bool:
     (core.llm.structured_call) — the substring-marker list this module
     carried false-positived on phrases like "thread-safety violation";
     the shared vocabulary is the union of both pipelines' markers.
+
+    Walks the cause/context chain (the shared, depth-bounded walk):
+    the client's all-models-failed wrapper re-raises ``from
+    last_error``, and a wrapper whose own message does not quote the
+    cause would otherwise hide the refusal from this classifier.
     """
+    from core.llm.client import _exception_chain
     from core.llm.structured_call import is_content_filter_text
-    return is_content_filter_text(str(exc))
+    return any(is_content_filter_text(str(e)) for e in _exception_chain(exc))
 
 
 _LLM_ONLY_EVIDENCE = frozenset({

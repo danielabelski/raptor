@@ -9,8 +9,10 @@ repetitions and (N-1) round trips.  For 600 GLANCE items at batch size
 from __future__ import annotations
 
 import json
+import re
 import logging
 import time
+from collections import deque
 from typing import Any, TYPE_CHECKING
 
 from core.security.prompt_framing import with_audit_framing
@@ -105,7 +107,15 @@ def format_batch_prompt(
             value="; ".join(listing), trust="untrusted",
         ),
     }
-    return envelope_prompt(system, blocks, slots, model_id=model_id)
+    # Datamarked-plaintext rendering: the glance ask is verdict-shaped
+    # ("classify these functions"), and its base64 form joins the
+    # measured hard-refusal conjunction (opaque payload + security
+    # ask) — see envelope_prompt's no_base64_payload notes for the
+    # measurements. Datamarking stays: it still breaks up
+    # instruction-shaped sequences inside the reviewed source.
+    return envelope_prompt(
+        system, blocks, slots, model_id=model_id, no_base64_payload=True,
+    )
 
 
 # Strict element schema for the batch response (mirrors
@@ -188,7 +198,41 @@ def _response_text(response: Any) -> str:
     return str(response)
 
 
+# Refusal-SPECIFIC vocabulary. Deliberately narrower than the
+# content-filter keyword set: providers phrase model refusals with
+# "refused"/"refusal" (providers.py raises "model refused request
+# (stop_reason=refusal, ...)"), while transport-layer blocks (proxy /
+# WAF 403 bodies echoed into SDK exceptions) say "blocked"/"denied" —
+# matching those here would send a retryable outage into bisection
+# (up to 2N-1 doomed calls) AND stamp it error_class="refusal", which
+# the orchestrator's end-of-run re-queue deliberately skips.
+_REFUSAL_TEXT_RE = re.compile(r"refus", re.IGNORECASE)
+
+
+def _is_refusal_error(exc: BaseException) -> bool:
+    """True when *exc* — or any exception on its cause/context chain —
+    is a MODEL refusal (not a transport/content block).
+
+    The provider raises the refusal as ``RuntimeError("Anthropic model
+    refused request (stop_reason=refusal, ...)")``; the client's
+    all-models-failed wrapper re-raises ``from last_error``, so the
+    refusal vocabulary reliably survives on ``__cause__`` even when
+    the wrapper's own message has been sanitised. The chain walk is
+    the shared, depth-bounded one every other classifier uses.
+    """
+    from core.llm.client import _exception_chain
+
+    return any(
+        _REFUSAL_TEXT_RE.search(str(e)) for e in _exception_chain(exc)
+    )
+
+
 def _classify_batch_error(exc: Exception) -> str:
+    # Refusal first: the aggregate wrapper message also contains
+    # "failed"/transport-looking text, and a refusal must never be
+    # bucketed retryable — an identical retry cannot change it.
+    if _is_refusal_error(exc):
+        return "refusal"
     msg = str(exc).lower()
     if "rate limit" in msg or "timeout" in msg or "overloaded" in msg:
         return "api_error"
@@ -199,6 +243,18 @@ def _classify_batch_error(exc: Exception) -> str:
     if isinstance(exc, json.JSONDecodeError):
         return "json_parse"
     return "api_error"
+
+
+# Refusal-bisection retry budget, as a multiple of the original batch
+# size. Full binary bisection of an all-refused batch of N members
+# issues at most 2N-2 retry calls (a binary tree with N leaves has
+# 2N-1 nodes; the root call is not a retry), so a factor of 2 never
+# truncates a legitimate bisection — it is a backstop that bounds
+# spend if the split invariant ever regressed. Lower would abandon
+# still-recoverable functions mid-split on large refused batches;
+# higher buys nothing (the worst case already fits) and would only
+# extend runaway spend under a splitting-logic bug.
+_BISECTION_CALL_CAP_FACTOR = 2
 
 
 def make_batch_review_fn(
@@ -213,6 +269,12 @@ def make_batch_review_fn(
     a list of ReviewOutcomes — one per context, in order.
     Functions that can't be parsed from the batch response get
     status='error' so the caller can fall back to individual review.
+
+    A refusal-classified dispatch failure bisects the batch and
+    retries each half (down to singletons, bounded by
+    :data:`_BISECTION_CALL_CAP_FACTOR`) so one refusal-bait member
+    does not error-route its N-1 unrelated batch mates; refused
+    singletons and every non-refusal failure error-route as before.
     """
     model_config_override = None
     if model_name:
@@ -221,13 +283,13 @@ def make_batch_review_fn(
         except (ValueError, AttributeError):
             logger.warning("model override %r not resolved — using default", model_name)
 
-    def batch_review_fn(
+    def _call_sub_batch(
         contexts: list[dict[str, Any]],
-        _config: OrchestratorConfig,
     ) -> list[ReviewOutcome]:
-        if not contexts:
-            return []
-
+        """One batch LLM call over *contexts*: prompt, dispatch, parse,
+        keyed match. Raises whatever ``generate`` raises — the caller
+        decides between error-routing and refusal bisection.
+        """
         prompt, system_prompt = format_batch_prompt(
             contexts,
             model_id=model_name or getattr(llm_client, "model_name", "") or "",
@@ -248,28 +310,16 @@ def make_batch_review_fn(
         # failure.
         from .llm_review import SHORT_CALL_TIMEOUT_S
         kwargs["timeout_s"] = SHORT_CALL_TIMEOUT_S
-        # Telemetry label: distinguish batched glances from full reviews.
+        # Telemetry label: distinguish batched glances from full
+        # reviews. Refusal-bisected sub-batches keep the same label —
+        # they are the same call class, just smaller.
         kwargs["call_class"] = "glance_batch"
 
-        try:
-            response = llm_client.generate(
-                prompt,
-                system_prompt=system_prompt,
-                **kwargs,
-            )
-        except Exception as exc:  # noqa: BLE001 — any dispatch failure error-routes the whole batch
-            logger.warning("batch glance review failed: %s", exc)
-            ec = _classify_batch_error(exc)
-            return [
-                ReviewOutcome(
-                    file=ctx["file"],
-                    function=ctx["function"],
-                    status="error",
-                    body=f"batch review failed: {exc}",
-                    error_class=ec,
-                )
-                for ctx in contexts
-            ]
+        response = llm_client.generate(
+            prompt,
+            system_prompt=system_prompt,
+            **kwargs,
+        )
 
         # LLMResponse carries the model output in ``content`` (there
         # is no ``text`` attribute) — falling through to
@@ -331,6 +381,106 @@ def make_batch_review_fn(
             "batch glance: %d functions in %.1fs, $%.4f",
             len(contexts), duration, cost,
         )
+        return outcomes
+
+    def batch_review_fn(
+        contexts: list[dict[str, Any]],
+        _config: OrchestratorConfig,
+    ) -> list[ReviewOutcome]:
+        if not contexts:
+            return []
+
+        total = len(contexts)
+        # Refusal bisection: ONLY refusal-shaped failures split the
+        # batch — a refusal is content-dependent, so isolating the
+        # bait member rescues the unrelated functions sharing its
+        # call. Timeouts / transport errors keep whole-batch
+        # error-routing exactly as before (they are not
+        # content-dependent; splitting just multiplies cost).
+        retry_cap = _BISECTION_CALL_CAP_FACTOR * total
+        retries_used = 0
+        first_call = True
+        bisected = False
+        slots: list[ReviewOutcome | None] = [None] * total
+        pending: deque[tuple[int, ...]] = deque([tuple(range(total))])
+
+        while pending:
+            idxs = pending.popleft()
+            if first_call:
+                first_call = False
+            elif retries_used >= retry_cap:
+                for i in idxs:
+                    slots[i] = ReviewOutcome(
+                        file=contexts[i]["file"],
+                        function=contexts[i]["function"],
+                        status="error",
+                        body=(
+                            "batch review failed: refusal bisection "
+                            "call cap reached — error-routed without "
+                            "a further call"
+                        ),
+                        error_class="refusal",
+                    )
+                continue
+            else:
+                retries_used += 1
+
+            sub = [contexts[i] for i in idxs]
+            try:
+                sub_outcomes = _call_sub_batch(sub)
+            except Exception as exc:  # noqa: BLE001 — any dispatch failure error-routes (or bisects on refusal)
+                if _is_refusal_error(exc) and len(idxs) > 1:
+                    bisected = True
+                    mid = len(idxs) // 2
+                    lo, hi = idxs[:mid], idxs[mid:]
+                    logger.info(
+                        "glance batch refused — bisecting %dx%d "
+                        "(sub-batches of %d and %d)",
+                        len(idxs), 2, len(lo), len(hi),
+                    )
+                    pending.append(lo)
+                    pending.append(hi)
+                    continue
+                logger.warning("batch glance review failed: %s", exc)
+                ec = _classify_batch_error(exc)
+                for i in idxs:
+                    slots[i] = ReviewOutcome(
+                        file=contexts[i]["file"],
+                        function=contexts[i]["function"],
+                        status="error",
+                        body=f"batch review failed: {exc}",
+                        error_class=ec,
+                    )
+                continue
+
+            for i, oc in zip(idxs, sub_outcomes):
+                slots[i] = oc
+
+        if bisected:
+            recovered = sum(
+                1 for o in slots if o is not None and o.status != "error"
+            )
+            logger.info(
+                "batch glance: recovered %d of %d functions from "
+                "refused batch",
+                recovered, total,
+            )
+
+        outcomes: list[ReviewOutcome] = []
+        for i, slot in enumerate(slots):
+            if slot is None:
+                # Unreachable by construction (every popped sub-batch
+                # either fills or re-queues each member) — error-route
+                # rather than misalign the positional contract with
+                # the executor.
+                slot = ReviewOutcome(
+                    file=contexts[i]["file"],
+                    function=contexts[i]["function"],
+                    status="error",
+                    body="batch review failed: member never dispatched",
+                    error_class="api_error",
+                )
+            outcomes.append(slot)
         return outcomes
 
     return batch_review_fn

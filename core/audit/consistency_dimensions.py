@@ -40,6 +40,7 @@ from .callsite_consistency import (
     USAGE_TESTED,
     _KEYWORDS,
     _SECURITY_CALLEE_RE,
+    _ScopeReadIndex,
     _callee_name_ts,
     _classify_usage_ts,
     parse_source_cached,
@@ -1583,6 +1584,10 @@ def _call_events_for_file(
         return
     src = source.encode("utf-8", errors="replace")
     lines = source.splitlines()
+    # One read index per file: the per-site fallback would rebuild a
+    # full scope index for every call site, costing more than the
+    # per-site walk it replaced.
+    read_index = _ScopeReadIndex(tree.root_node, src)
     for node in _walk_descendants(tree.root_node):
         if node.type not in call_types:
             continue
@@ -1601,7 +1606,7 @@ def _call_events_for_file(
         bucket.append(_CallEvent(
             callee=callee,
             line=line,
-            tested=_classify_usage_ts(node, lang, src)
+            tested=_classify_usage_ts(node, lang, src, index=read_index)
             == USAGE_TESTED,
             lhs_names=_call_lhs_names(node, src),
             arg_idents=_call_arg_idents(node, src),

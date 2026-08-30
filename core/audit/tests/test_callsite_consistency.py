@@ -557,3 +557,74 @@ class TestCensusSelfLimits:
         census = build_return_census({"ok.py": src})
         assert census["gg"].truncated is False
         assert "truncated" not in census["gg"].to_dict()
+
+    def test_large_file_complete_above_old_cap(self):
+        """Cap trade-off, admit direction: a file with well over 2000
+        sites (the old per-file cap) but under the current cap gets a
+        COMPLETE census — no truncation stamp — with correct per-site
+        classifications throughout (the index-backed read scan, not a
+        per-site scope walk, makes this affordable)."""
+        from core.audit.callsite_consistency import build_return_census
+        lines = []
+        for i in range(2500):
+            lines.append(f"z{i} = hh(a)")
+            if i % 3 == 0:
+                lines.append(f"use(z{i})")
+        src = "\n".join(lines)
+        census = build_return_census({"big.py": src})
+        entry = census["hh"]
+        assert entry.n == 2500
+        assert entry.truncated is False
+        assert "truncated" not in entry.to_dict()
+        counts = entry.counts
+        assert counts["captured_used"] == 834
+        assert counts["captured_unused"] == 1666
+        assert census["use"].n == 834
+
+    def test_default_cap_still_truncates_hostile_file(self):
+        """Cap trade-off, bound direction: sites past the default cap
+        still stop the build and stamp every entry ``truncated`` — the
+        raised cap is a real bound, not decoration."""
+        from core.audit.callsite_consistency import (
+            _CENSUS_MAX_SITES_PER_FILE,
+            build_return_census,
+        )
+        n = _CENSUS_MAX_SITES_PER_FILE + 50
+        src = "\n".join(f"z{i} = hh(a)" for i in range(n))
+        census = build_return_census({"big.py": src})
+        entry = census["hh"]
+        assert entry.n == _CENSUS_MAX_SITES_PER_FILE
+        assert entry.truncated is True
+        assert entry.to_dict()["truncated"] is True
+
+
+class TestScopeBoundedReadIndex:
+    """The captured-binding read scan is index-backed; the index is
+    file-wide, so the scan must still honour scope boundaries."""
+
+    def test_read_in_later_function_does_not_count(self):
+        """A later function reading the SAME binding name must not
+        mark an earlier function's binding as used — occurrences past
+        the enclosing scope's end are out of range."""
+        import textwrap
+        from core.audit.callsite_consistency import build_return_census
+
+        src = textwrap.dedent("""\
+            def a():
+                r = ff(x)
+
+            def b():
+                r = gg(y)
+                use(r)
+        """)
+        census = build_return_census({"app.py": src})
+        assert census["ff"].sites[0].usage == "captured_unused"
+        assert census["gg"].sites[0].usage == "captured_used"
+
+    def test_module_scope_read_counts(self):
+        """Module-level bindings scan to end of file (root scope)."""
+        from core.audit.callsite_consistency import build_return_census
+
+        src = "r = ff(x)\n\ndef later():\n    use(r)\n"
+        census = build_return_census({"app.py": src})
+        assert census["ff"].sites[0].usage == "captured_used"

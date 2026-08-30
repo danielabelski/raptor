@@ -34,6 +34,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from bisect import bisect_left
 from collections import OrderedDict, defaultdict
 from dataclasses import dataclass, field
 from typing import Any
@@ -612,39 +613,96 @@ def _is_write_target(id_node) -> bool:
     return False
 
 
+_ID_NODE_TYPES = ("identifier", "name", "field_identifier")
+
+# Shared empty row list for index misses (callers never mutate rows).
+_NO_OCCURRENCES: list[tuple[int, bool, bool]] = []
+
+
+class _ScopeReadIndex:
+    """Identifier-occurrence index for one subtree (usually the file).
+
+    A single pre-order walk records, for every identifier leaf, its
+    start byte plus the two anchor-independent predicates the binding
+    scan needs (is it an assignment target? does the read feed a
+    condition?), grouped by identifier text in document order. Each
+    captured-binding classification is then a bisect plus a short
+    forward scan per bound name instead of a fresh descendant walk of
+    the enclosing scope per call site — O(file) once per file instead
+    of O(sites × file).
+
+    Built lazily: a file whose sites never reach a binding
+    classification pays nothing.
+    """
+
+    __slots__ = ("_root", "_src", "_by_name")
+
+    def __init__(self, root: Node, src: bytes) -> None:
+        self._root = root
+        self._src = src
+        self._by_name: dict[str, list[tuple[int, bool, bool]]] | None = None
+
+    def occurrences(self, name: str) -> list[tuple[int, bool, bool]]:
+        """Document-ordered ``(start_byte, is_write, is_tested)`` rows
+        for every occurrence of *name* under the indexed root."""
+        if self._by_name is None:
+            by_name: dict[str, list[tuple[int, bool, bool]]] = (
+                defaultdict(list)
+            )
+            # Pre-order yields leaves in document order, so each
+            # per-name list arrives already sorted by start byte.
+            for n in _walk_descendants(self._root):
+                if n.type not in _ID_NODE_TYPES:
+                    continue
+                is_write = _is_write_target(n)
+                is_tested = (not is_write) and _read_is_tested(n)
+                by_name[_node_text(n, self._src)].append(
+                    (n.start_byte, is_write, is_tested),
+                )
+            self._by_name = dict(by_name)
+        return self._by_name.get(name, _NO_OCCURRENCES)
+
+
 def _classify_binding_usage(
     anchor: Node, names: list[str], lang: str, src: bytes,
+    index: _ScopeReadIndex | None = None,
 ) -> str:
     """Classify a captured binding: is it later tested, read, rebound
     without a read, or never touched (§2.1 ``captured_used`` vs
-    ``captured_unused`` vs ``tested``)."""
+    ``captured_unused`` vs ``tested``).
+
+    Reads come from *index* rather than a per-site descendant walk.
+    Only occurrences in ``[anchor.end_byte, scope.end_byte)`` count —
+    identifier leaves never straddle scope boundaries, so that byte
+    interval selects exactly the scope-descendant occurrences after
+    the anchor. Without an *index*, one is built eagerly over the
+    enclosing scope — costlier than the old per-call walk when called
+    per site, so callers in a loop must build ONE index per file and
+    pass it through.
+    """
     live = {n for n in names if n and n != "_"}
     if not live:
         return USAGE_CAPTURED_UNUSED
     func = _find_enclosing_function(anchor, lang)
     scope = func if func is not None else _root_of(anchor)
-    tested = False
+    if index is None:
+        index = _ScopeReadIndex(scope, src)
     used = False
-    rebound: set[str] = set()
-    for n in _walk_descendants(scope):
-        if n.start_byte < anchor.end_byte:
-            continue
-        if n.type not in ("identifier", "name", "field_identifier"):
-            continue
-        text = _node_text(n, src)
-        if text not in live or text in rebound:
-            continue
-        if _is_write_target(n):
-            # Rebinding ends the scan for this name (§2.1: a read must
-            # dominate the rebinding to count).
-            rebound.add(text)
-            continue
-        used = True
-        if _read_is_tested(n):
-            tested = True
-            break
-    if tested:
-        return USAGE_TESTED
+    for name in live:
+        occ = index.occurrences(name)
+        i = bisect_left(occ, (anchor.end_byte,))
+        while i < len(occ):
+            start, is_write, is_tested = occ[i]
+            if start >= scope.end_byte:
+                break
+            if is_write:
+                # Rebinding ends the scan for this name (§2.1: a read
+                # must dominate the rebinding to count).
+                break
+            used = True
+            if is_tested:
+                return USAGE_TESTED
+            i += 1
     if used:
         return USAGE_CAPTURED_USED
     return USAGE_CAPTURED_UNUSED
@@ -675,12 +733,16 @@ def _read_is_tested(id_node) -> bool:
     return False
 
 
-def _classify_usage_ts(call_node, lang: str, src: bytes) -> str:
+def _classify_usage_ts(
+    call_node, lang: str, src: bytes,
+    index: _ScopeReadIndex | None = None,
+) -> str:
     """Six-value usage classification for one call site (§2.1).
 
     This grew out of the phase-0 ``_is_discarded_ts`` seam; the walk
     structure is the same, each step now lands in a usage class
-    instead of a boolean.
+    instead of a boolean. *index* (one per file) makes the captured-
+    binding read scan a lookup instead of a scope walk.
     """
     node = call_node
     while node.parent:
@@ -708,7 +770,7 @@ def _classify_usage_ts(call_node, lang: str, src: bytes) -> str:
                 return USAGE_CAPTURED_UNUSED
             lhs = parent.child_by_field_name("left")
             return _classify_binding_usage(
-                parent, _lhs_identifiers(lhs, src), lang, src,
+                parent, _lhs_identifiers(lhs, src), lang, src, index,
             )
 
         if lang == "python" and ptype == "assignment":
@@ -716,14 +778,14 @@ def _classify_usage_ts(call_node, lang: str, src: bytes) -> str:
             names = _lhs_identifiers(lhs, src)
             if names == ["_"]:
                 return USAGE_ACKNOWLEDGED
-            return _classify_binding_usage(parent, names, lang, src)
+            return _classify_binding_usage(parent, names, lang, src, index)
 
         if lang == "rust" and ptype == "let_declaration":
             pat = parent.child_by_field_name("pattern")
             if pat is not None and _node_text(pat, src).strip() == "_":
                 return USAGE_ACKNOWLEDGED
             return _classify_binding_usage(
-                parent, _lhs_identifiers(pat, src), lang, src,
+                parent, _lhs_identifiers(pat, src), lang, src, index,
             )
 
         lhs_field = _ASSIGN_LHS_FIELDS.get(ptype)
@@ -734,7 +796,7 @@ def _classify_usage_ts(call_node, lang: str, src: bytes) -> str:
                 node = parent
                 continue
             return _classify_binding_usage(
-                parent, _lhs_identifiers(lhs, src), lang, src,
+                parent, _lhs_identifiers(lhs, src), lang, src, index,
             )
 
         if _condition_consumes(parent, node):
@@ -793,14 +855,24 @@ def _parse_file(source: str, file_path: str):
     return parse_source_cached(file_path, source)
 
 
-# Self-limits for the census build: per-site usage classification
-# walks the enclosing scope, so a hostile file of module-level
-# assignments is O(sites x file) — and the census runs BEFORE the
-# prepass budget's first check. On cap/deadline the build STOPS and
-# every produced entry is stamped ``truncated`` (partial majority
-# statistics may hint, never mint definitive verdicts).
+# Self-limits for the census build: the census runs BEFORE the
+# prepass budget's first check, so it must bound itself. Usage
+# classification is index-backed (one identifier walk per file, then
+# bisect lookups per site — see _ScopeReadIndex), so per-file cost is
+# O(file) and the wall-clock deadline is the primary DoS backstop; the
+# site cap is a secondary bound on census size. On cap/deadline the
+# build STOPS and every produced entry is stamped ``truncated``
+# (partial majority statistics may hint, never mint definitive
+# verdicts).
 _CENSUS_BUDGET_S = 30.0
-_CENSUS_MAX_SITES_PER_FILE = 2000
+# Trade-off, both directions: HIGHER admits honest large first-party
+# modules whole (a 24k-line module with >2000 sites used to truncate,
+# degrading cross-file majority statistics to partial data); LOWER
+# tightens the per-file work and index memory a hostile file can
+# demand before the deadline notices. 20000 gives ~10x headroom over
+# the observed honest-module shape while the deadline above remains
+# the hard stop for pathological inputs.
+_CENSUS_MAX_SITES_PER_FILE = 20000
 
 
 class _CensusLimiter:
@@ -839,6 +911,9 @@ def _extract_callsites_ts(
 
     src = source.encode("utf-8", errors="replace")
     sites: list[CallSite] = []
+    # One lazily-built identifier index shared by every site in the
+    # file — the captured-binding read scan is a lookup, not a walk.
+    read_index = _ScopeReadIndex(tree.root_node, src)
 
     for node in _walk_descendants(tree.root_node):
         if node.type not in call_types:
@@ -865,7 +940,7 @@ def _extract_callsites_ts(
             line=_node_line(node),
             callee=callee,
             enclosing_function=func_name,
-            usage=_classify_usage_ts(node, lang, src),
+            usage=_classify_usage_ts(node, lang, src, read_index),
             on_error_path=_on_error_path_ts(node, lang, src),
         ))
 
@@ -1048,8 +1123,8 @@ def build_return_census(
     the deviation detector and the flag/mode comparator share.
 
     Self-limiting: ``budget_s`` (wall-clock, None = unlimited) and
-    ``max_sites_per_file`` bound the per-site scope walks so a
-    hostile file cannot stall prep for hours. When either trips, the
+    ``max_sites_per_file`` bound the extraction so a hostile file
+    cannot stall prep for hours. When either trips, the
     remaining extraction is skipped and every produced entry is
     stamped ``truncated`` — partial statistics never read as a
     complete census downstream.

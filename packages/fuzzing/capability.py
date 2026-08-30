@@ -401,8 +401,6 @@ def _probe_clang_sanitiser(clang: str, sanitizer: str) -> bool:
     test mimics what a real harness compilation looks like. For other
     sanitisers we compile a normal main() program.
     """
-    import tempfile
-
     if sanitizer == "fuzzer":
         # libFuzzer replaces main with its own driver. We must provide
         # LLVMFuzzerTestOneInput rather than main, otherwise the link
@@ -420,36 +418,33 @@ def _probe_clang_sanitiser(clang: str, sanitizer: str) -> bool:
         flag = f"-fsanitize={sanitizer}"
 
     try:
-        with tempfile.NamedTemporaryFile(
-            mode="w", prefix="raptor-fuzz-probe-", suffix=".c",
-            delete=False, dir=exec_workdir(),
-        ) as src:
-            src.write(test_src)
-            src_path = src.name
-        with tempfile.NamedTemporaryFile(
-            prefix="raptor-fuzz-probe-", suffix=".out",
-            delete=False, dir=exec_workdir(),
-        ) as out:
-            out_path = out.name
+        # One self-deleting dir for the probe source, the probe output,
+        # AND the compiler's own scratch: clang derives its intermediate
+        # object names from the source basename and parks them in
+        # TMPDIR, so a timeout-killed compile stranded a
+        # raptor-fuzz-probe-*.o in the system temp dir on every probe.
+        # Pointing TMPDIR into the context-managed dir routes those
+        # intermediates through the same cleanup on success and failure.
+        with tempfile.TemporaryDirectory(
+            prefix="raptor-fuzz-probe-", dir=exec_workdir(),
+        ) as tmp:
+            src_path = os.path.join(tmp, "probe.c")
+            with open(src_path, "w") as src:
+                src.write(test_src)
+            out_path = os.path.join(tmp, "probe.out")
 
-        result = subprocess.run(
-            [clang, flag, src_path, "-o", out_path],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            env=scrub_identity_env(RaptorConfig.get_safe_env()),
-        )
-        return result.returncode == 0
+            env = scrub_identity_env(RaptorConfig.get_safe_env())
+            env["TMPDIR"] = tmp
+            result = subprocess.run(
+                [clang, flag, src_path, "-o", out_path],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=env,
+            )
+            return result.returncode == 0
     except Exception:
         return False
-    finally:
-        import os
-        for p in (locals().get("src_path"), locals().get("out_path")):
-            if p:
-                try:
-                    os.unlink(p)
-                except OSError:
-                    pass
 
 
 def _check_macos_afl_shmem(afl_fuzz: str) -> bool:

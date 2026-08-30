@@ -25,7 +25,7 @@ val results = sinkCalls.flatMap { call =>
   val controlled = call.controlledBy.isControlStructure.l.nonEmpty
   if (!dominated && !controlled) {
     val line = call.lineNumber.getOrElse(0)
-    val code = call.code.take(200).replace("\\", "\\\\").replace("\"", "\\\"")
+    val code = call.code.take(200).replace("\\", "\\\\").replace("\"", "\\\"").replace("\r", "").replace("\n", " ")
     val name = call.name
     Some(s"""JOERN_UNGUARDED:{"sink":"$name","line":$line,"code":"$code","guarded":false}""")
   } else None

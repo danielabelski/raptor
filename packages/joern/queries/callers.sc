@@ -17,7 +17,7 @@ val callerLines = callSites.map { c =>
   val callerFn = c.method.name
   val callerFile = c.method.filename
   val line = c.lineNumber.getOrElse(0)
-  val code = c.code.take(200).replace("\\", "\\\\").replace("\"", "\\\"")
+  val code = c.code.take(200).replace("\\", "\\\\").replace("\"", "\\\"").replace("\r", "").replace("\n", " ")
   s"""JOERN_CALLER:{"caller":"$callerFn","file":"$callerFile","line":$line,"code":"$code"}"""
 }.l
 

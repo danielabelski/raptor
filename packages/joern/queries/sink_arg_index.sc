@@ -24,9 +24,9 @@ val flows = sinkArgs.reachableByFlows(source).l
 val results = flows.flatMap { flow =>
   flow.elements.lastOption.map { lastElem =>
     val argIdx = lastElem.argumentIndex.getOrElse(-1)
-    val argCode = lastElem.code.take(100).replace("\\", "\\\\").replace("\"", "\\\"")
+    val argCode = lastElem.code.take(100).replace("\\", "\\\\").replace("\"", "\\\"").replace("\r", "").replace("\n", " ")
     val srcParam = flow.elements.headOption.map(_.code.take(50)).getOrElse("")
-    val srcParamEsc = srcParam.replace("\\", "\\\\").replace("\"", "\\\"")
+    val srcParamEsc = srcParam.replace("\\", "\\\\").replace("\"", "\\\"").replace("\r", "").replace("\n", " ")
     s"""JOERN_SINK_ARG:{"sink":"$sinkName","arg_index":$argIdx,"arg_code":"$argCode","source_param":"$srcParamEsc"}"""
   }
 }

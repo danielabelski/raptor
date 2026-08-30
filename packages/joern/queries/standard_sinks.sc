@@ -29,14 +29,14 @@ for (sinkName <- dangerousSinks) {
   val flowLines = flows.map { flow =>
     val steps = flow.elements.map { e =>
       val ln = e.lineNumber.getOrElse(0)
-      val cd = e.code.take(200).replace("\\", "\\\\").replace("\"", "\\\"")
+      val cd = e.code.take(200).replace("\\", "\\\\").replace("\"", "\\\"").replace("\r", "").replace("\n", " ")
       val (fn, fl) = e match {
         case n: CfgNode =>
           (Try(n.method.name).getOrElse(""), Try(n.method.filename).getOrElse(""))
         case _ => ("", "")
       }
-      val fnEsc = fn.replace("\\", "\\\\").replace("\"", "\\\"")
-      val flEsc = fl.replace("\\", "\\\\").replace("\"", "\\\"")
+      val fnEsc = fn.replace("\\", "\\\\").replace("\"", "\\\"").replace("\r", "").replace("\n", " ")
+      val flEsc = fl.replace("\\", "\\\\").replace("\"", "\\\"").replace("\r", "").replace("\n", " ")
       s"""{"line":$ln,"code":"$cd","function":"$fnEsc","file":"$flEsc"}"""
     }.mkString(",")
     "JOERN_FLOW:[" + steps + "]"

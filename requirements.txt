@@ -6,6 +6,7 @@
 # breakage is bisectable. See requirements-dev.txt for the parallel
 # pinning rationale on pytest et al.
 requests==2.34.2
+
 # core.http.urllib_backend uses urllib3 directly for connection pooling
 # and to avoid the no_proxy bypass that stdlib urllib.request.ProxyHandler
 # silently performs. Already a transitive dep of `requests` but pinned
@@ -21,6 +22,7 @@ typer==0.25.1
 # (CVE-2025-69872 was the trigger; raptor doesn't use the cache
 # layer).
 instructor==1.15.4
+
 # instructor hard-requires openai>=2.0.0,<3.0.0, so openai is always
 # installed when instructor is. Pin explicitly rather than relying on
 # the transitive pull — it is also used directly by core/llm/providers.
@@ -29,6 +31,7 @@ openai==2.30.0
 # Optional: LLM provider SDKs (uncomment to install)
 # anthropic==0.103.1        # Anthropic Claude (native structured output)
 # google-genai==2.4.0       # Google Gemini (native SDK, accurate thinking token costs)
+
 # AWS Bedrock: botocore is PARENT-ONLY — imported only by the credential-
 # isolation dispatcher (core/llm/dispatcher) to SigV4-sign Bedrock requests on
 # the worker's behalf. NOT needed for Bedrock API-key (AWS_BEARER_TOKEN_BEDROCK)

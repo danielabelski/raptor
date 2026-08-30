@@ -223,10 +223,12 @@ class TestSandboxedChildLayoutScrub(unittest.TestCase):
 
     def test_gate_untrusted_refuses_by_default(self):
         """run_untrusted: divergence refusal is on by default."""
-        from core.sandbox import SandboxSetupError, check_net_available
+        from core.sandbox import (
+            SandboxSetupError, check_mount_available, check_net_available,
+        )
         from core.sandbox.context import run_untrusted
-        if not check_net_available():
-            pytest.skip("User namespaces not available")
+        if not check_net_available() or not check_mount_available():
+            pytest.skip("User/mount namespaces not available")
         self._divergent_pip_dirs()
         with pytest.raises(SandboxSetupError, match="resolves to"):
             run_untrusted(["pip", "--version"],

@@ -48,6 +48,9 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
     binutils \
     file \
     #
+    # --- Sandbox mount-ns (newuidmap/newgidmap for non-root user-ns) ---
+    uidmap \
+    #
     # --- Network Tools (web package, github-forensics skills) ---
     curl \
     wget \

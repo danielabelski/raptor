@@ -35,6 +35,11 @@ def _userns_available() -> bool:
     return check_net_available()
 
 
+def _mount_ns_available() -> bool:
+    from core.sandbox.probes import check_mount_available
+    return check_mount_available()
+
+
 requires_landlock = pytest.mark.skipif(
     not _landlock_available(),
     reason="requires Landlock: exercises confinement that the sandbox "
@@ -46,4 +51,10 @@ requires_userns = pytest.mark.skipif(
     reason="requires unprivileged user namespaces: exercises the "
            "namespace backend, which the sandbox refuses (by design) "
            "on this host",
+)
+
+requires_mount = pytest.mark.skipif(
+    not _mount_ns_available(),
+    reason="requires mount namespace: exercises isolation that needs "
+           "newuidmap/newgidmap (uidmap package) on non-root hosts",
 )

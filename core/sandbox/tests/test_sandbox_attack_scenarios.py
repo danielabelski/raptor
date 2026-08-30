@@ -19,6 +19,7 @@ from tempfile import TemporaryDirectory
 
 from core.sandbox import (
     check_landlock_available,
+    check_mount_available,
     check_net_available,
     run_untrusted,
     sandbox,
@@ -104,8 +105,8 @@ class TestSyscallFilterBlocks(unittest.TestCase):
     socket must be unreachable either way."""
 
     def setUp(self):
-        if not check_net_available():
-            self.skipTest("User namespaces not available")
+        if not check_net_available() or not check_mount_available():
+            self.skipTest("User/mount namespaces not available")
         self.tmp = TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.out = Path(self.tmp.name) / "out"
@@ -442,8 +443,9 @@ class TestFakeHomeXDGRedirection(unittest.TestCase):
     """Claim: fake_home redirects not just HOME but every XDG_*_HOME."""
 
     def setUp(self):
-        if not check_net_available() or not check_landlock_available():
-            self.skipTest("Needs user-ns + Landlock")
+        if (not check_net_available() or not check_landlock_available()
+                or not check_mount_available()):
+            self.skipTest("Needs user-ns + Landlock + mount-ns")
         self.tmp = TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
 
@@ -563,8 +565,8 @@ class TestOOMScoreAdjWrite(unittest.TestCase):
     pressure this bumps other host processes ahead of the malicious child."""
 
     def setUp(self):
-        if not check_net_available():
-            self.skipTest("User namespaces not available")
+        if not check_net_available() or not check_mount_available():
+            self.skipTest("User/mount namespaces not available")
         self.tmp = TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
 
@@ -604,8 +606,8 @@ class TestNewMountAPIBlocked(unittest.TestCase):
     bounded by user-ns rules; the new API may have different semantics."""
 
     def setUp(self):
-        if not check_net_available():
-            self.skipTest("User namespaces not available")
+        if not check_net_available() or not check_mount_available():
+            self.skipTest("User/mount namespaces not available")
         self.tmp = TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
 
@@ -659,8 +661,8 @@ class TestProcNetTCPLeak(unittest.TestCase):
     Gap check: confirm no host sockets leak through."""
 
     def setUp(self):
-        if not check_net_available():
-            self.skipTest("User namespaces not available")
+        if not check_net_available() or not check_mount_available():
+            self.skipTest("User/mount namespaces not available")
         self.tmp = TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
 
@@ -776,8 +778,8 @@ class TestMapRootGetuid(unittest.TestCase):
     so a switch to identity-mapping becomes a visible test change."""
 
     def setUp(self):
-        if not check_net_available():
-            self.skipTest("User namespaces not available")
+        if not check_net_available() or not check_mount_available():
+            self.skipTest("User/mount namespaces not available")
         self.tmp = TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
 
@@ -844,8 +846,8 @@ class TestPidNamespaceDefenses(unittest.TestCase):
     """Claims: PID ns hides host PIDs (kill/ptrace/procfs cross-lookup)."""
 
     def setUp(self):
-        if not check_net_available():
-            self.skipTest("User namespaces not available")
+        if not check_net_available() or not check_mount_available():
+            self.skipTest("User/mount namespaces not available")
         self.tmp = TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
 
@@ -886,8 +888,8 @@ class TestForkBombBounded(unittest.TestCase):
     """Claim: RLIMIT_NPROC via prlimit-wrapper bounds fork bombs per sandbox."""
 
     def setUp(self):
-        if not check_net_available():
-            self.skipTest("User namespaces not available")
+        if not check_net_available() or not check_mount_available():
+            self.skipTest("User/mount namespaces not available")
         self.tmp = TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
 

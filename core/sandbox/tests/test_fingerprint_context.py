@@ -16,7 +16,7 @@ import tempfile
 
 import pytest
 from pathlib import Path
-from core.sandbox.tests.capability import requires_landlock, requires_userns
+from core.sandbox.tests.capability import requires_landlock, requires_mount, requires_userns
 
 pytestmark = pytest.mark.skipif(
     sys.platform != "linux",
@@ -263,6 +263,7 @@ def _required_sanitisation_ctx(monkeypatch, tmp_path):
 
 @requires_landlock
 @requires_userns
+@requires_mount
 def test_required_sanitisation_accepts_input_kwarg(
         monkeypatch, tmp_path):
     """input= no longer demotes (it converts to a stdin spool on the

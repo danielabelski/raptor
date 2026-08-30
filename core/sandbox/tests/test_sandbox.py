@@ -21,7 +21,7 @@ from core.sandbox import (
 from core.sandbox import (
     run as sandbox_run,
 )
-from core.sandbox.tests.capability import requires_landlock, requires_userns
+from core.sandbox.tests.capability import requires_landlock, requires_mount, requires_userns
 
 
 class TestAvailabilityCheck(unittest.TestCase):
@@ -1265,6 +1265,7 @@ class TestRunUntrustedGuard(unittest.TestCase):
 
     @requires_landlock
     @requires_userns
+    @requires_mount
     def test_run_untrusted_with_output_works(self):
         from core.sandbox import run_untrusted
         with TemporaryDirectory() as out:

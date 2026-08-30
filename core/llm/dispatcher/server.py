@@ -2051,6 +2051,9 @@ def _make_request_handler(
             _up_http_version = None
             response_started = False
             response_is_sse = False
+            # Booking is not idempotent — the abort handler must know
+            # whether the ok-path already settled this scanner.
+            _usage_booked = False
             try:
                 with dispatcher._upstream_client().stream(
                     method, url, content=body, headers=forwarded,
@@ -2093,6 +2096,7 @@ def _make_request_handler(
                     relay_deadline = (
                         time.monotonic() + _relay_deadline_s()
                     )
+                    _prev_chunk: bytes | None = None
                     for chunk in up.iter_raw():
                         relayed_bytes += len(chunk)
                         if relayed_bytes > max_relay_bytes:
@@ -2115,14 +2119,39 @@ def _make_request_handler(
                                 "upstream relay exceeded the "
                                 f"{_relay_deadline_s()}s total deadline"
                             )
-                        if scanner is not None:
-                            scanner.feed(chunk)
-                        self.wfile.write(chunk)
+                        if scanner is None:
+                            # No spend ledger on this token: nothing
+                            # to order against — relay directly.
+                            self.wfile.write(chunk)
+                            continue
+                        scanner.feed(chunk)
+                        # One-chunk lookahead (scoped tokens only):
+                        # the final chunk is held until the scanned
+                        # usage is BOOKED, so a client can never
+                        # observe a completed response whose cost has
+                        # not yet landed on spent_usd — pipelining a
+                        # follow-up request the instant the body ends
+                        # must meet the updated ledger at admission.
+                        # Reservations bound the overrun only while
+                        # actual cost stays within the admission
+                        # ceiling; this ordering closes the gap for
+                        # responses that over-report usage relative
+                        # to the request. Cost: each chunk is
+                        # delayed by one upstream inter-chunk gap.
+                        if _prev_chunk is not None:
+                            self.wfile.write(_prev_chunk)
+                        _prev_chunk = chunk
+                    if scanner is not None:
+                        dispatcher._book_child_usage(
+                            rec, scanner, aborted=False,
+                        )
+                        # Booking is not idempotent (spent_usd +=):
+                        # a write failure below must not book the
+                        # same scanner again in the abort handler.
+                        _usage_booked = True
+                    if _prev_chunk is not None:
+                        self.wfile.write(_prev_chunk)
                     self.wfile.flush()
-                if scanner is not None:
-                    dispatcher._book_child_usage(
-                        rec, scanner, aborted=False,
-                    )
                 dispatcher._audit(AuditEvent(
                     ts=time.time(), event="request.dispatch",
                     peer_pid=None, peer_uid=None,
@@ -2138,11 +2167,14 @@ def _make_request_handler(
                     },
                 ))
             except (httpx.HTTPError, OSError) as exc:
-                if scanner is not None:
+                if scanner is not None and not _usage_booked:
                     # Aborted mid-stream — book what the upstream
                     # already reported (message_start input tokens at
                     # minimum). A failed call still spent real money;
-                    # nothing vanishes from the token's ledger.
+                    # nothing vanishes from the token's ledger. When
+                    # the ok-path booking already ran (the failure
+                    # was the final client write), booking again
+                    # would double the spend.
                     dispatcher._book_child_usage(
                         rec, scanner, aborted=True,
                     )

@@ -620,7 +620,26 @@ class TestRestart:
              patch.object(srv, "import_cpg", return_value=True) as mock_import:
             result = srv.restart()
         assert result is True
-        mock_import.assert_called_once_with(cpg_file)
+        # No import ran before the restart, so no remembered timeout —
+        # import_cpg resolves its own tunables-backed default.
+        mock_import.assert_called_once_with(cpg_file, timeout=None)
+
+    def test_restart_reimport_inherits_import_timeout(self, tmp_path):
+        """A mid-run restart re-imports with the timeout the original
+        import resolved, not a per-call default."""
+        cpg_file = tmp_path / "cpg.bin"
+        cpg_file.write_bytes(b"")
+
+        srv = JoernServer()
+        srv._cpg_path = cpg_file
+        srv._last_import_timeout = 900
+
+        with patch.object(srv, "stop"), \
+             patch.object(srv, "start"), \
+             patch.object(srv, "import_cpg", return_value=True) as mock_import:
+            result = srv.restart()
+        assert result is True
+        mock_import.assert_called_once_with(cpg_file, timeout=900)
 
 
 class TestRunTaintExistsQuery:

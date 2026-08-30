@@ -252,8 +252,19 @@ def _ensure_cpg_loaded(srv, target_path, tunables=None,
         logger.debug("joern runner not importable; skipping CPG import")
         return False
 
-    cpg_timeout = getattr(tunables, "cpg_timeout_s", 600) if tunables else 600
-    import_timeout = getattr(tunables, "import_timeout_s", 120) if tunables else 120
+    from packages.joern.tunables import JoernTunables
+
+    # Fallbacks defer to the canonical tunables defaults — a local
+    # literal here silently drifts from the policy import_cpg and
+    # from_tuning own (a 120s local import fallback once killed the
+    # whole Joern tier for runs without resolved tunables).
+    cpg_timeout = (
+        getattr(tunables, "cpg_timeout_s", JoernTunables.cpg_timeout_s)
+        if tunables else JoernTunables.cpg_timeout_s
+    )
+    import_timeout = (
+        getattr(tunables, "import_timeout_s", None) if tunables else None
+    )
 
     cache_dir = Path.home() / ".cache" / "raptor" / "joern-cpg"
     cache_dir.mkdir(parents=True, exist_ok=True)

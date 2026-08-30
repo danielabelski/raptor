@@ -389,6 +389,7 @@ class JoernServer:
         self._base_url: str | None = None
         self._cpg_loaded = False
         self._cpg_path: Path | None = None
+        self._last_import_timeout: int | None = None
         self._last_post_error: str = ""
         self._restart_lock = threading.Lock()
         # Set while a restart is in progress so concurrent queries
@@ -882,17 +883,32 @@ class JoernServer:
                         cpg_path,
                     )
                     return False
-                return self.import_cpg(cpg_path)
+                return self.import_cpg(
+                    cpg_path, timeout=self._last_import_timeout,
+                )
             return True
         finally:
             self._restarting.clear()
             self._restart_lock.release()
 
-    def import_cpg(self, cpg_path: Path, *, timeout: int = 120) -> bool:
+    def import_cpg(
+        self, cpg_path: Path, *, timeout: int | None = None,
+    ) -> bool:
         """Load a pre-built CPG into the running server.
 
         Returns True on success, False on failure.
+
+        ``timeout`` defaults to ``JoernTunables.import_timeout_s`` — the
+        JVM-side deserialise of a large CPG routinely needs several
+        minutes (an observed ~575k-SLOC import took ~610s), so a short
+        per-call default silently kills the whole Joern tier for big
+        targets. Callers that resolved tunables still pass their value
+        explicitly; the resolved value is remembered so a mid-run
+        ``restart()`` re-import inherits it instead of a default.
         """
+        if timeout is None:
+            from .tunables import JoernTunables
+            timeout = JoernTunables.import_timeout_s
         cpg_path = Path(cpg_path).resolve()
         if not cpg_path.exists():
             logger.error("CPG file not found: %s", cpg_path)
@@ -952,6 +968,11 @@ class JoernServer:
         logger.info("CPG imported into Joern server in %.1fs", elapsed)
         self._cpg_loaded = True
         self._cpg_path = cpg_path
+        # Remembered ONLY on success, alongside _cpg_path: restart()
+        # re-imports the last SUCCESSFUL CPG, so it must reuse the
+        # timeout that import proved sufficient — a failed probe
+        # import with a short timeout must not poison it.
+        self._last_import_timeout = timeout
 
         self._warmup_dataflow()
 

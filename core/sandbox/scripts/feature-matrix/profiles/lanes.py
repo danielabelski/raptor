@@ -41,6 +41,20 @@ import sys
 
 LANE_ORDER = ["full", "default", "no-landlock", "no-userns", "no-both"]
 
+
+def _host_blocks_mount_in_userns() -> bool:
+    """The host kernel's apparmor_restrict_unprivileged_userns sysctl is
+    kernel-wide — Docker --privileged cannot override it. When set,
+    mount/proc/pivot inside a user namespace fail even with full caps."""
+    try:
+        with open("/proc/sys/kernel/apparmor_restrict_unprivileged_userns") as f:
+            return f.read().strip() == "1"
+    except OSError:
+        return False
+
+
+_MNT = "fail" if _host_blocks_mount_in_userns() else "ok"
+
 _COMMON = [
     "--security-opt", "apparmor=unconfined",
     "--cap-add", "SYS_ADMIN",
@@ -52,8 +66,8 @@ LANES: dict[str, dict[str, object]] = {
     "full": {
         "docker_args": ["--privileged"],
         "expect": {"landlock": "present", "userns": "ok",
-                   "mount_in_userns": "ok", "proc_mount_in_userns": "ok",
-                   "pivot_root_in_userns": "ok", "seccomp": "ok"},
+                   "mount_in_userns": _MNT, "proc_mount_in_userns": _MNT,
+                   "pivot_root_in_userns": _MNT, "seccomp": "ok"},
         "intent": "namespaces AND Landlock available",
     },
     "default": {
@@ -70,8 +84,8 @@ LANES: dict[str, dict[str, object]] = {
                         "--cap-add", "ALL",
                         "--user", "root", "-e", "SXV_UNMASK=1"],
         "expect": {"landlock": "enosys", "userns": "ok",
-                   "mount_in_userns": "ok", "proc_mount_in_userns": "ok",
-                   "pivot_root_in_userns": "ok", "seccomp": "ok"},
+                   "mount_in_userns": _MNT, "proc_mount_in_userns": _MNT,
+                   "pivot_root_in_userns": _MNT, "seccomp": "ok"},
         "intent": "pre-5.13-kernel fake: namespaces yes, Landlock ENOSYS",
     },
     "no-userns": {

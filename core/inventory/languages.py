@@ -62,6 +62,60 @@ def detect_language(filepath: str) -> str | None:
     return LANGUAGE_MAP.get(ext)
 
 
+# Interpreter basename → inventory language, for extensionless scripts
+# (launcher/dispatch surfaces like a repo's script dirs are routinely
+# extension-free; extension-only detection made every one of them
+# invisible to the inventory and every downstream scanner). Only
+# languages that already exist in LANGUAGE_MAP's value set are mapped —
+# a shebang must never introduce a language no extractor handles.
+_SHEBANG_INTERPRETERS = {
+    # OS-level interpreter basenames (baselined vocabulary — not project
+    # API names for DomainVocabulary/IRIS to learn). Version suffixes
+    # (python3, python3.12) are stripped before lookup.
+    'python': 'python',
+    'sh': 'shell', 'bash': 'shell', 'dash': 'shell', 'ksh': 'shell',
+    'zsh': 'shell',
+    'node': 'javascript', 'nodejs': 'javascript',
+    'perl': 'perl',
+    'ruby': 'ruby',
+}
+_SHEBANG_PROBE_BYTES = 160
+
+
+def detect_language_from_shebang(filepath: str) -> str | None:
+    """Detect language from a ``#!`` interpreter line.
+
+    Only consulted for files without a recognised extension. Reads a
+    bounded prefix; anything unreadable, non-``#!``, or naming an
+    interpreter outside the known set returns None (the file stays
+    uninventoried exactly as before). Version-suffixed interpreters
+    (``python3.12``) resolve by stripping trailing ``.``/digit runs.
+    """
+    try:
+        with open(filepath, 'rb') as f:
+            head = f.read(_SHEBANG_PROBE_BYTES)
+    except OSError:
+        return None
+    if not head.startswith(b'#!'):
+        return None
+    line = head[2:].split(b'\n', 1)[0].decode('latin-1').strip()
+    tokens = line.split()
+    if not tokens:
+        return None
+    interp = Path(tokens[0]).name
+    # `#!/usr/bin/env python3` — the interpreter is env's first
+    # non-flag argument (`env -S python3` included).
+    if interp == 'env':
+        interp = next(
+            (Path(t).name for t in tokens[1:] if not t.startswith('-')),
+            '',
+        )
+    base = _SHEBANG_INTERPRETERS.get(interp.rstrip('0123456789.'))
+    if base is not None and base not in LANGUAGE_MAP.values():
+        return None
+    return base
+
+
 # ---------------------------------------------------------------------
 # Content-based refinement — extension alone misroutes two file classes:
 #   * ``.h`` headers: C by default, but a C++ header (classes, templates,

@@ -1181,6 +1181,11 @@
     "count": 25,
     "kind": "literal"
   },
+  "core/inventory/languages.py::_SHEBANG_INTERPRETERS": {
+    "count": 10,
+    "kind": "literal",
+    "note": "OS-level interpreter basename -> inventory language map for extensionless-script shebang detection (sh/bash/dash/ksh/zsh, python, node, perl, ruby); platform vocabulary like libc names, not project API names for DomainVocabulary/IRIS to learn"
+  },
   "core/inventory/macro_resolve.py::_SKIP_IDENTS_C": {
     "count": 46,
     "kind": "literal"

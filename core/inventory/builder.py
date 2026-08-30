@@ -52,9 +52,11 @@ from .dead_scope import detect_dead_scopes
 from .diff import compare_inventories
 from .exclusions import (
     DEFAULT_EXCLUDES,
+    PKG_EXEMPTIBLE_BUILD_DIRS,
     ROOT_ANCHORED_EXCLUDE_DIRS,
     generated_marker_corroborated,
     is_binary_file,
+    is_first_party_package_dir,
     is_generated_file,
     match_exclusion_reason,
 )
@@ -63,6 +65,7 @@ from .languages import (
     LANGUAGE_MAP,
     RECORD_ONLY_EXTENSIONS,
     detect_language,
+    detect_language_from_shebang,
     refine_language,
 )
 from .module_load_abort import detect_module_load_abort
@@ -994,6 +997,14 @@ def _collect_source_files(
                 if d in ROOT_ANCHORED_EXCLUDE_DIRS and Path(root) != target:
                     kept_dirs.append(d)
                     continue
+                # Nested build-output names that are actually first-party
+                # Python packages (direct __init__.py) are source, not
+                # artifacts — keep them (mirrored in the per-file check via
+                # match_exclusion_reason's target_root exemption).
+                if (d in PKG_EXEMPTIBLE_BUILD_DIRS
+                        and is_first_party_package_dir(Path(root) / d)):
+                    kept_dirs.append(d)
+                    continue
                 rel = str((Path(root) / d).relative_to(target))
                 # Never SILENTLY drop source: if a pruned top-level anchored dir
                 # holds source files, warn with a count so the exclusion is
@@ -1037,6 +1048,12 @@ def _collect_source_files(
             # pass records them in ``excluded_files`` with a reason
             # instead of leaving them silently invisible.
             if ext in extensions or ext in RECORD_ONLY_EXTENSIONS:
+                file_list.append(filepath)
+            elif not ext and detect_language_from_shebang(str(filepath)):
+                # Extensionless interpreter scripts (launcher / dispatch
+                # surfaces) carry their language in the shebang line; the
+                # extension gate alone left them invisible to every
+                # downstream scanner.
                 file_list.append(filepath)
 
     return file_list, pruned_dirs
@@ -1127,13 +1144,20 @@ def _process_single_file(
     rel_path = str(filepath.relative_to(target) if target.is_dir() else filepath.name)
 
     # Check exclusions against relative path (not absolute — avoids false
-    # positives when parent directories match patterns like "tests/")
-    excluded, reason, pattern = match_exclusion_reason(rel_path, exclude_patterns)
+    # positives when parent directories match patterns like "tests/").
+    # target_root arms the first-party package exemption for nested
+    # build-output dir names, matching the walk-time prune.
+    excluded, reason, pattern = match_exclusion_reason(
+        rel_path, exclude_patterns,
+        target_root=target if target.is_dir() else None,
+    )
     if excluded:
         return {"path": rel_path, "_excluded": True, "_reason": reason, "_pattern": pattern}
 
     # Detect language
     language = detect_language(str(filepath))
+    if not language and not filepath.suffix:
+        language = detect_language_from_shebang(str(filepath))
     if not language:
         # Source-like files we still don't parse (parser grammars,
         # inline-include fragments, Solidity) were previously dropped

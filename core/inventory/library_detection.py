@@ -76,6 +76,16 @@ _MAX_DIRS = 4000
 _MAX_PER_CAT = 100
 _MAX_MANIFEST_BYTES = 2_000_000
 
+# Extracted-tarball shape: a version-suffixed directory (``pkg-1.2.3``) is a
+# vendored/unpacked foreign package, not the host project — its manifest must
+# not drive the host's library verdict (an unpacked npm tarball at the scan
+# root once classified an entire application as an npm library). Skipped for
+# MANIFEST DETECTION ONLY; the dir's files still inventory normally. Miss
+# direction is FN-safe: a first-party dir legitimately named ``foo-1.2``
+# contributes no signal and the verdict falls back to the remaining
+# manifests, worst case ``unknown`` (today's surface-only default).
+_VERSION_SUFFIX_DIR_RE = re.compile(r".+-\d+(\.\d+)+$")
+
 
 def _rel(p: Path, root: Path) -> str:
     try:
@@ -117,7 +127,9 @@ def _collect_manifests(root: Path) -> dict[str, list[Path]]:
                 if e.is_symlink():
                     continue
                 if e.is_dir():
-                    if e.name not in _SKIP_DIRS and not e.name.startswith("."):
+                    if (e.name not in _SKIP_DIRS
+                            and not e.name.startswith(".")
+                            and not _VERSION_SUFFIX_DIR_RE.match(e.name)):
                         stack.append(e)
                     continue
                 n = e.name
@@ -140,7 +152,13 @@ def _collect_manifests(root: Path) -> dict[str, list[Path]]:
             except OSError:
                 continue
     for k in out:
-        out[k] = out[k][:_MAX_PER_CAT]
+        # Root-most first: the per-ecosystem checks return on the first
+        # manifest that yields a verdict, and a scan-root manifest defines
+        # the project — a nested one (sub-package, corpus, monorepo member)
+        # must not outrank it just by walk order.
+        out[k] = sorted(
+            out[k], key=lambda p: len(p.relative_to(root).parts),
+        )[:_MAX_PER_CAT]
     return out
 
 

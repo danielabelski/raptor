@@ -18,6 +18,8 @@ import os
 import subprocess
 import sys
 import unittest
+
+import pytest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -1214,6 +1216,7 @@ class LedgerBudgetDisciplineTest(_RegistryCase):
     otherwise hoard the whole budget — an over-budget file reads as
     EMPTY and the next RMW would wipe every record AND witness."""
 
+    @pytest.mark.slow
     def test_witness_hoard_cannot_push_the_file_over_budget(self):
         sessions.record_session("myapp", pid=os.getpid())
         deep = Path(self._tmp.name) / ("p" * 220) / ("q" * 220)

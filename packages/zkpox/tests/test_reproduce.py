@@ -869,6 +869,7 @@ int main() {
 """
 
 
+@pytest.mark.slow
 @pytest.mark.skipif(not _has_libasan(),
                     reason="gcc -fsanitize=address not usable")
 @pytest.mark.skipif(not _untrusted_contract_available(),

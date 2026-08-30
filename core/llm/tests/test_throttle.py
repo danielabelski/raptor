@@ -98,37 +98,43 @@ class TestAdaptiveThrottle:
         clk.advance(0.11)
         assert t.effective_workers == 8
 
-    def test_recovery_ramps_one_doubling_per_interval(self):
+    def test_recovery_ramps_one_doubling_per_interval(self, monkeypatch):
+        clk = _FakeMonotonic()
+        monkeypatch.setattr(time, "monotonic", clk)
         t = AdaptiveThrottle(8, cooldown_s=0.05, auto_register=False)
         for _ in range(3):
             t.signal_rate_limit()
         assert t.effective_workers == 1
-        time.sleep(0.06)
+        clk.advance(0.06)
         assert t.effective_workers == 2
-        time.sleep(0.06)
+        clk.advance(0.06)
         assert t.effective_workers == 4
-        time.sleep(0.06)
+        clk.advance(0.06)
         assert t.effective_workers == 8
         assert not t.is_throttled
 
-    def test_long_idle_credits_every_quiet_interval(self):
+    def test_long_idle_credits_every_quiet_interval(self, monkeypatch):
+        clk = _FakeMonotonic()
+        monkeypatch.setattr(time, "monotonic", clk)
         t = AdaptiveThrottle(8, cooldown_s=0.02, auto_register=False)
         for _ in range(3):
             t.signal_rate_limit()
         assert t._effective == 1
         # Three full quiet intervals in one wake-up: 1 -> 2 -> 4 -> 8.
-        time.sleep(0.07)
+        clk.advance(0.07)
         assert t.effective_workers == 8
 
-    def test_signal_during_ramp_restarts_the_window(self):
+    def test_signal_during_ramp_restarts_the_window(self, monkeypatch):
+        clk = _FakeMonotonic()
+        monkeypatch.setattr(time, "monotonic", clk)
         t = AdaptiveThrottle(8, cooldown_s=0.05, auto_register=False)
         for _ in range(3):
             t.signal_rate_limit()
-        time.sleep(0.06)
+        clk.advance(0.06)
         assert t.effective_workers == 2  # first ramp step
         t.signal_rate_limit()            # re-trip mid-ramp
         assert t.effective_workers == 1
-        time.sleep(0.03)
+        clk.advance(0.03)
         assert t.effective_workers == 1  # window restarted, not stale
 
     def test_max_workers_clamped_to_one(self):

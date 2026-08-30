@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
 from core.inventory.dead_scope import detect_dead_scopes
 
 
@@ -446,6 +448,7 @@ def test_c_name_in_string_does_not_count_as_caller():
 _TIME_BOUND_S = 20.0
 
 
+@pytest.mark.slow
 def test_c_many_tiny_statics_completes_quickly():
     n_funcs = 20000
     src = "".join(

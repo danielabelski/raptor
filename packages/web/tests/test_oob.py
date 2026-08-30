@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import http.client
+import pytest
 import tempfile
 import unittest
 from pathlib import Path
@@ -185,6 +186,7 @@ class TestListenerHardening(unittest.TestCase):
         self.listener.start()
         self.addCleanup(self.listener.stop)
 
+    @pytest.mark.slow
     def test_idle_connection_flood_stays_bounded_and_responsive(self):
         import socket
         import threading

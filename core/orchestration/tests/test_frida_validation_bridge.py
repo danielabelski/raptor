@@ -4,6 +4,8 @@ import copy
 import json
 from pathlib import Path
 
+import pytest
+
 from core.orchestration.frida_validation_bridge import (
     RuntimeEvidence,
     collect_runtime_evidence,
@@ -831,6 +833,7 @@ class TestObservedCallsites:
         assert site["source"] is None          # nothing to resolve
         assert "_base" not in site             # working keys stripped
 
+    @pytest.mark.slow
     def test_real_binary_resolves_to_source(self, tmp_path):
         import shutil as sh
         import subprocess

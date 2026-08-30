@@ -546,6 +546,7 @@ class TestLayer4TokenLifecycle:
             ]
             assert len(warnings) == 1
 
+    @pytest.mark.slow
     def test_client_renewal_outlives_original_ttl(self, fake_creds, tmp_path):
         """End-to-end regression for the incident class: a worker that
         keeps dispatching PAST the original TTL keeps a live token

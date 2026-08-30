@@ -182,6 +182,7 @@ def test_docker_build_rejects_empty_context() -> None:
 
 @patch("core.container.proc.subprocess.run")
 def test_docker_build_success(mock_run: MagicMock, tmp_path: object) -> None:
+    reset_docker_build_state()
     mock_run.return_value = MagicMock(
         returncode=0, stdout="Successfully built abc123\n", stderr=""
     )

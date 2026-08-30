@@ -35,7 +35,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from core.sandbox.tests.capability import requires_landlock, requires_userns
 
 pytestmark = pytest.mark.skipif(
     sys.platform != "linux", reason="mount-ns spawn path is Linux-only",
@@ -107,7 +106,6 @@ class _Base(unittest.TestCase):
             return False
 
 
-@requires_landlock
 class TestHostSocketInOutputDenied(_Base):
     _CONNECT = textwrap.dedent("""
         import errno, socket, sys
@@ -253,7 +251,6 @@ class TestHostSocketInOutputDenied(_Base):
                       f"the dgram deny: {r.stdout!r}")
 
 
-@requires_landlock
 class TestLegitimateUsesKeepWorking(_Base):
     def test_private_tmp_bind_and_connect(self):
         """Forkserver shape: bind + connect inside the sandbox-private
@@ -395,7 +392,6 @@ class TestPrivateTmpfsPinning(unittest.TestCase):
         self.assertTrue(sup._target_allowed(st))
 
 
-@requires_landlock
 class TestThreadedCallers(_Base):
     """connect(2) from a spawned thread notifies with the THREAD's tid.
 
@@ -476,7 +472,6 @@ class TestThreadedCallers(_Base):
         self.assertFalse(self._accepted(srv))
 
 
-@requires_landlock
 class TestSupervisorAppliesChildNetworkPolicy(_Base):
     """The supervisor executes connects in the (unconfined) parent, so
     the child's task-scoped Landlock network rules never evaluate for
@@ -609,8 +604,6 @@ class TestSupervisorAppliesChildNetworkPolicy(_Base):
                         r.stdout)
 
 
-@requires_landlock
-@requires_userns
 class TestFailClosedDowngrade(unittest.TestCase):
     def test_af_unix_blocked_when_supervisor_unavailable(self):
         if not _mount_ns_usable():
@@ -645,7 +638,6 @@ if __name__ == "__main__":
     unittest.main()
 
 
-@requires_landlock
 class TestSendPathConnectSmuggling(_Base):
     """TCP Fast Open performs the connect IN-KERNEL inside
     sendto/sendmsg — no connect(2) is issued, so neither the
@@ -703,7 +695,6 @@ class TestSendPathConnectSmuggling(_Base):
         self.assertIn("OK ok", r.stdout)
 
 
-@requires_landlock
 class TestOfdFlagRaceBounded(_Base):
     """O_NONBLOCK lives on the open file description shared with the
     child; a sibling thread spin-clearing it can park a supervisor
@@ -711,6 +702,7 @@ class TestOfdFlagRaceBounded(_Base):
     must answer the child's syscall (ETIMEDOUT) at a bounded deadline
     so the run is never held hostage."""
 
+    @pytest.mark.slow
     def test_flag_race_park_is_deadline_bounded(self):
         import core.sandbox._unix_scope as uscope
         with patch.object(uscope, "_PRE_CONNECT_DEADLINE_S", 4.0):

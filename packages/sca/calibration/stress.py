@@ -692,13 +692,28 @@ def confirm_elapsed_regressions(
             return with_elapsed
         return None
 
-    # Budget priority: FAILS first. The budget is shared and the
-    # sweep is input-ordered, so warn-level noise appearing earlier
-    # in the list could otherwise exhaust the re-measures and leave a
-    # genuine elapsed-only FAIL unconfirmed — blocking the sweep with
-    # exactly the single-sample noise this mechanism exists to
-    # absorb. Fails are re-measured in input order, then warns with
-    # whatever budget remains.
+    def _elapsed_fired(result: StressResult) -> bool:
+        """True when the elapsed dimension produced an issue line at
+        all — including rows whose SEVERITY already comes from count
+        drift. A count-warn row with a 3.6x elapsed line skipped
+        re-measurement under raised-only eligibility, so throttle
+        noise kept reaching the report glued to genuine count drift."""
+        if result.error is not None:
+            return False
+        entry = baseline_projects.get(result.project)
+        if entry is None:
+            return False
+        be = float(entry.get("elapsed_seconds_p50", 0.0) or 0.0)
+        if be < _ELAPSED_MIN_BASELINE_SECONDS:
+            return False
+        return result.elapsed_seconds / be >= elapsed_warn_x
+
+    # Budget priority: severity-raising FAILS, then severity-raising
+    # warns, then elapsed lines riding count-drifted rows. The budget
+    # is shared and the sweep is input-ordered, so lower tiers must
+    # never starve a genuine elapsed-only FAIL — blocking the sweep
+    # with exactly the single-sample noise this mechanism exists to
+    # absorb.
     raised_by: dict[str, str] = {}
     for result in results:
         raised = _elapsed_raised_to(result)
@@ -707,6 +722,8 @@ def confirm_elapsed_regressions(
     budget_order = (
         [r.project for r in results if raised_by.get(r.project) == "fail"]
         + [r.project for r in results if raised_by.get(r.project) == "warn"]
+        + [r.project for r in results
+           if r.project not in raised_by and _elapsed_fired(r)]
     )
     approved = set(budget_order[:max_remeasures])
 
@@ -723,11 +740,11 @@ def confirm_elapsed_regressions(
             continue
         remeasured += 1
         logger.info(
-            "sca.calibration.stress: elapsed-only %s for %s "
+            "sca.calibration.stress: elapsed %s for %s "
             "(%.1fs) — re-measuring to separate code regression "
             "from registry-throughput variance",
-            raised_by[result.project], result.project,
-            result.elapsed_seconds,
+            raised_by.get(result.project, "noise on a count-drifted row"),
+            result.project, result.elapsed_seconds,
         )
         second = _scan_one(
             sample, out_root, git_clone_timeout=git_clone_timeout,
@@ -747,13 +764,18 @@ def confirm_elapsed_regressions(
             result.project, result.elapsed_seconds,
             second.elapsed_seconds, best,
         )
+        # Elapsed-ONLY fold: counts always stay from the FIRST scan.
+        # Taking the re-scan's counts would let a transient
+        # count difference between the two scans launder (or invent)
+        # count drift under the guise of a timing re-measure — count
+        # verdicts and timing verdicts must stay independent.
         out.append(StressResult(
-            project=second.project,
-            ecosystem=second.ecosystem,
+            project=result.project,
+            ecosystem=result.ecosystem,
             elapsed_seconds=best,
-            deps_analysed=second.deps_analysed,
-            vuln_findings=second.vuln_findings,
-            eco_breakdown=second.eco_breakdown,
+            deps_analysed=result.deps_analysed,
+            vuln_findings=result.vuln_findings,
+            eco_breakdown=result.eco_breakdown,
         ))
     return out
 

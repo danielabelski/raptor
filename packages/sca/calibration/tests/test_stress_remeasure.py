@@ -103,23 +103,29 @@ def test_count_fails_are_never_remeasured(
     assert confirmed[0].vuln_findings == 2
 
 
-def test_mixed_count_and_elapsed_fail_not_remeasured(
+def test_mixed_count_and_elapsed_fail_keeps_count_verdict(
     tmp_path: Path, monkeypatch,
 ) -> None:
-    """When counts already fail, a fast second timing sample must not
-    launder the run — the count failure stands either way."""
+    """When counts already fail, the timing re-measure may clear the
+    elapsed NOISE but must never launder the count failure — counts
+    always stay from the first scan, whatever the re-scan reports."""
     baseline = _baseline(tmp_path, {"proj": _BASE_ENTRY})
-
-    def _boom(*a, **k):
-        raise AssertionError("must not re-scan")
-
-    monkeypatch.setattr(stress_mod, "_scan_one", _boom)
+    monkeypatch.setattr(
+        stress_mod, "_scan_one",
+        # Re-scan reports baseline-matching counts — taking them
+        # would erase the recorded drift.
+        lambda sample, out_root, *, git_clone_timeout:
+            _result(elapsed=5.0, vulns=10),
+    )
     confirmed = confirm_elapsed_regressions(
         [_result(elapsed=100.0, vulns=2)], [_sample()], baseline,
         out_root=tmp_path,
     )
+    assert confirmed[0].vuln_findings == 2          # first scan's counts
+    assert confirmed[0].elapsed_seconds == 5.0      # min-folded timing
     diffs = compare_to_baseline(confirmed, baseline)
     assert diffs[0].severity == "fail"
+    assert not any("elapsed" in i for i in diffs[0].issues)
 
 
 def test_errored_remeasure_keeps_original_sample(
@@ -472,3 +478,60 @@ def test_keyboard_interrupt_cancels_queued_backlog(
     # dispatch would be exactly the bug class this pins).
     assert started[0] == "p0"
     assert set(started) <= {"p0", "p1"}, started
+
+
+def test_elapsed_noise_on_count_warn_rows_is_remeasured(
+    tmp_path, monkeypatch,
+) -> None:
+    """A row whose severity already comes from count drift can still
+    carry a throttle-noise elapsed line — it must be re-measured too
+    (lowest budget priority), or the noise reaches the report glued
+    to the genuine count warn."""
+    baseline = _baseline(tmp_path, {"proj": _BASE_ENTRY})
+    monkeypatch.setattr(
+        stress_mod, "_scan_one",
+        lambda sample, out_root, *, git_clone_timeout:
+            _result(elapsed=20.0, vulns=13),
+    )
+    # vulns 10->13 = count warn; elapsed 65s vs 18s = 3.6x elapsed
+    # warn — severity NOT raised by elapsed, but the line fires.
+    confirmed = confirm_elapsed_regressions(
+        [_result(elapsed=65.0, vulns=13)], [_sample()], baseline,
+        out_root=tmp_path,
+    )
+    assert confirmed[0].elapsed_seconds == 20.0
+    diffs = compare_to_baseline(confirmed, baseline)
+    (d,) = [x for x in diffs if x.project == "proj"]
+    assert d.severity == "warn"                    # count warn stands
+    assert not any("elapsed" in i for i in d.issues)
+
+
+def test_elapsed_noise_tier_never_starves_raising_tiers(
+    tmp_path, monkeypatch,
+) -> None:
+    projects = {f"p{i}": dict(_BASE_ENTRY) for i in range(4)}
+    baseline = _baseline(tmp_path, projects)
+    remeasured: list[str] = []
+
+    def _fake_scan(sample, out_root, *, git_clone_timeout):
+        remeasured.append(sample.name)
+        return _result(name=sample.name, elapsed=20.0)
+
+    monkeypatch.setattr(stress_mod, "_scan_one", _fake_scan)
+    results = [
+        _result(name="p0", elapsed=65.0, vulns=13),  # count+elapsed warn
+        _result(name="p1", elapsed=65.0, vulns=13),
+        _result(name="p2", elapsed=65.0, vulns=13),
+        _result(name="p3", elapsed=200.0),           # elapsed-only FAIL
+    ]
+    confirm_elapsed_regressions(
+        results, [_sample(f"p{i}") for i in range(4)], baseline,
+        out_root=tmp_path, max_remeasures=3,
+    )
+    # Membership is the guarantee: the raised-tier fail wins a slot
+    # even with three noise-tier rows ahead of it in input order
+    # (execution then follows input order; the lowest-priority noise
+    # row is the one dropped).
+    assert "p3" in remeasured
+    assert len(remeasured) == 3
+    assert "p2" not in remeasured

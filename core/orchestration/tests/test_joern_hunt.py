@@ -223,3 +223,45 @@ class TestCallsiteProtocolIntegrity:
         classify_taint_batch(matches, srv)
         assert "joern_tainted" not in matches[0]
         assert srv.exists_queries == []
+
+
+class TestRestartRetrySeam:
+    """find_sink_callsites routes through the server's restart-window
+    retry when the server offers it; thinner doubles keep plain query."""
+
+    def test_retry_seam_used_when_available(self):
+        from core.orchestration.joern_hunt import find_sink_callsites
+        calls = {"retry": 0, "query": 0}
+
+        class _Server:
+            def retry_once_after_restart(self, call, *, max_wait_s=None):
+                calls["retry"] += 1
+                return call()
+
+            def query(self, q, **kw):
+                calls["query"] += 1
+                class R:
+                    errors: list = []
+                    stdout = ""
+                    raw_output = ""
+                return R()
+
+        find_sink_callsites("system", _Server())
+        assert calls["retry"] == 1
+        assert calls["query"] == 1
+
+    def test_plain_query_without_seam(self):
+        from core.orchestration.joern_hunt import find_sink_callsites
+        calls = {"query": 0}
+
+        class _Thin:
+            def query(self, q, **kw):
+                calls["query"] += 1
+                class R:
+                    errors: list = []
+                    stdout = ""
+                    raw_output = ""
+                return R()
+
+        find_sink_callsites("system", _Thin())
+        assert calls["query"] == 1

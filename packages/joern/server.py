@@ -1495,7 +1495,7 @@ class JoernServer:
             logger.warning("workspace.reset failed: %s",
                            resp.get("stderr", "")[:200])
 
-    def _retry_once_after_restart(
+    def retry_once_after_restart(
         self, call: Callable[[], JoernResult],
         *, max_wait_s: float | None = None,
     ) -> JoernResult:
@@ -1560,6 +1560,9 @@ class JoernServer:
             time.sleep(_RESTART_RETRY_POLL_S)
         return result
 
+    # Back-compat alias: the retry seam predates its public name.
+    _retry_once_after_restart = retry_once_after_restart
+
     def run_taint_query(
         self,
         source_method: str,
@@ -1599,7 +1602,7 @@ class JoernServer:
         query = _build_taint_query(safe_source, safe_sink, source_param,
                                    max_call_depth=max_call_depth)
 
-        result = self._retry_once_after_restart(
+        result = self.retry_once_after_restart(
             lambda: self.query(query, timeout=timeout, validate=True),
             max_wait_s=timeout,
         )
@@ -1640,7 +1643,7 @@ class JoernServer:
         query = _build_taint_exists_query(safe_source, safe_sink,
                                           max_call_depth=max_call_depth)
 
-        result = self._retry_once_after_restart(
+        result = self.retry_once_after_restart(
             lambda: self.query(query, timeout=timeout, validate=True),
             max_wait_s=timeout,
         )
@@ -1744,7 +1747,7 @@ class JoernServer:
         )
         query = "\n".join(lines)
 
-        result = self._retry_once_after_restart(
+        result = self.retry_once_after_restart(
             lambda: self.query(
                 query, timeout=timeout, validate=True, check_length=False,
             ),

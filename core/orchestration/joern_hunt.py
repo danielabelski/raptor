@@ -109,10 +109,22 @@ def find_sink_callsites(
     # escape is defence in depth for the Scala literal context.
     query = _CALLSITE_QUERY_TEMPLATE.replace(
         "__SINK__", _escape_scala_string(sink_call))
-    try:
-        result = server.query(
+    def _run_query() -> Any:
+        return server.query(
             query, timeout=timeout, validate=True, check_length=False,
         )
+
+    try:
+        # Restart-window retry when the server offers the public seam
+        # (a JoernServer; thinner test doubles without it keep the
+        # plain query): a query landing mid-restart otherwise silently
+        # degrades this path to its grep fallback, losing the
+        # indirect-call/vtable hits only Joern resolves.
+        retry = getattr(server, "retry_once_after_restart", None)
+        if callable(retry):
+            result = retry(_run_query, max_wait_s=timeout)
+        else:
+            result = _run_query()
     except Exception:
         logger.debug(
             "find_sink_callsites query failed for %s", sink_call,

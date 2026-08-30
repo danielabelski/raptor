@@ -38,6 +38,8 @@ try:
 except ImportError:
     _httpx = None
 
+from core.run.tmp_ownership import sweep_dead_owner_dirs, write_owner_marker
+
 from .models import JoernMethodSummary, JoernResult, TaintFlow
 from .prereqs import _joern_path
 from .runner import (
@@ -78,6 +80,37 @@ _SUN_PATH_MAX_SAFE = 100
 # Per-process cache for the netns-tier probe (one python spawn).
 _NETNS_PROBE_CACHE: bool | None = None
 _NETNS_PROBE_LOCK = threading.Lock()
+
+# Disposable per-boot workspace dirs (see JoernServer.start). Removed
+# on stop(); the ownership marker + boot-time sweep below reclaim the
+# ones a hard-killed owner leaves behind.
+_WORKSPACE_PREFIX = "raptor-joern-ws-"
+
+
+def _new_workspace() -> str:
+    """Mint a fresh per-boot workspace dir, stamped with an ownership
+    marker so a later boot's sweep can tell dead-owner orphans from
+    live servers."""
+    workdir = tempfile.mkdtemp(prefix=_WORKSPACE_PREFIX)
+    write_owner_marker(workdir)
+    return workdir
+
+
+def sweep_stale_workspaces(exclude: str | None = None) -> list[Path]:
+    """Reclaim workspace dirs orphaned by hard-killed servers.
+
+    A workspace can reach hundreds of MB (loaded CPGs, JVM scratch),
+    so waiting on the 24 h age-based tmp reaper is too slow — remove
+    same-prefix siblings whose recorded owner pid is dead as soon as
+    the next server boots. ``exclude`` shields the workspace being
+    created for this boot. Never raises (sweep contract in
+    core.run.tmp_ownership) — a sweep failure must never block a
+    server boot.
+    """
+    return sweep_dead_owner_dirs(
+        _WORKSPACE_PREFIX,
+        exclude=Path(exclude) if exclude is not None else None,
+    )
 
 # The Joern server only ever listens on 127.0.0.1.  Loopback traffic
 # must never route through an HTTP proxy — hosts with HTTP_PROXY set
@@ -452,7 +485,11 @@ class JoernServer:
         # server boot on the machine failed with "failed to start
         # within 120s". The workspace is incidental state (imports use
         # absolute CPG paths), so give each server a disposable one.
-        self._workdir = tempfile.mkdtemp(prefix="raptor-joern-ws-")
+        self._workdir = _new_workspace()
+        # Reclaim workspaces stranded by earlier hard-killed servers
+        # (stop() cleanup is exit-path-only). Best-effort: the sweep
+        # swallows and debug-logs its own failures.
+        sweep_stale_workspaces(exclude=self._workdir)
 
         heap_flags: list[str] = []
         if self._heap_mb is not None:
@@ -494,7 +531,7 @@ class JoernServer:
             self._auth_user = _AUTH_USERNAME
             self._auth_password = secrets.token_urlsafe(32)
             if self._workdir is None:
-                self._workdir = tempfile.mkdtemp(prefix="raptor-joern-ws-")
+                self._workdir = _new_workspace()
 
             joern_cmd = [binary] + heap_flags + tuning_flags + [
                 # RAPTOR strips ANSI from every response anyway

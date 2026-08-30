@@ -119,6 +119,42 @@ def is_content_filter_text(error_str: str) -> bool:
     return bool(BLOCKED_KEYWORDS_RE.search(error_str or ""))
 
 
+# Refusal-SPECIFIC vocabulary — deliberately narrower than
+# BLOCKED_KEYWORDS_RE: providers phrase model refusals with
+# "refusal"/"refused request", while transport blocks say
+# "blocked"/"denied" — and, critically, socket errors say "connection
+# refused": a bare "refus" match classified a transient endpoint
+# outage as a model refusal, which is non-retryable and excluded from
+# identical-retry re-queues. Phrase-anchored so only model-boundary
+# language matches.
+REFUSAL_TEXT_RE = re.compile(
+    r"\brefusal\b|refused request|model refused|stop_reason[=:]?\s*refusal",
+    re.IGNORECASE,
+)
+
+
+def is_content_filter_error(exc: BaseException) -> bool:
+    """Chain-walking form of :func:`is_content_filter_text`.
+
+    The client's all-models-failed wrapper re-raises ``from
+    last_error``; a wrapper whose own message does not quote its cause
+    hides the block from a plain ``str(exc)`` check. Every classifier
+    that labels blocked/refused failures must walk the chain — this is
+    the one shared implementation (bounded, cycle-safe).
+    """
+    from core.llm.client import _exception_chain
+    return any(is_content_filter_text(str(e)) for e in _exception_chain(exc))
+
+
+def is_refusal_error(exc: BaseException) -> bool:
+    """Chain-walking model-refusal check (see ``REFUSAL_TEXT_RE`` for
+    why this is narrower than the content-filter vocabulary)."""
+    from core.llm.client import _exception_chain
+    return any(
+        REFUSAL_TEXT_RE.search(str(e)) for e in _exception_chain(exc)
+    )
+
+
 def classify_error_text(error_str: str) -> str:
     """Classify an error string for structured reporting.
 

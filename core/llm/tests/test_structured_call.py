@@ -120,3 +120,53 @@ class TestUnwrap:
     def test_default_result_type(self):
         assert isinstance(unwrap_structured_response(None),
                           StructuredCallResult)
+
+
+class TestChainWalkingClassifiers:
+    """Shared home for the blocked/refused predicates: every consumer
+    must see a block hidden behind the all-models-failed wrapper's
+    __cause__, and refusal vocabulary must stay narrower than the
+    content-filter set (transport blocks must not classify refusal)."""
+
+    def _wrapped(self, cause_msg: str) -> RuntimeError:
+        cause = RuntimeError(cause_msg)
+        wrapper = RuntimeError("All cloud models failed (tried 1 model(s)).")
+        wrapper.__cause__ = cause
+        return wrapper
+
+    def test_content_filter_seen_through_cause_chain(self):
+        from core.llm.structured_call import is_content_filter_error
+        exc = self._wrapped("request blocked by content filter")
+        assert is_content_filter_error(exc)
+
+    def test_refusal_seen_through_cause_chain(self):
+        from core.llm.structured_call import is_refusal_error
+        exc = self._wrapped(
+            "Anthropic model refused request (stop_reason=refusal)")
+        assert is_refusal_error(exc)
+
+    def test_transport_block_is_not_a_refusal(self):
+        from core.llm.structured_call import (
+            is_content_filter_error,
+            is_refusal_error,
+        )
+        exc = self._wrapped("403: request blocked by security policy")
+        assert not is_refusal_error(exc)
+        assert is_content_filter_error(exc)
+
+    def test_plain_transport_error_is_neither(self):
+        from core.llm.structured_call import (
+            is_content_filter_error,
+            is_refusal_error,
+        )
+        exc = self._wrapped("connection reset by peer")
+        assert not is_refusal_error(exc)
+        assert not is_content_filter_error(exc)
+
+    def test_connection_refused_is_not_a_refusal(self):
+        from core.llm.structured_call import is_refusal_error
+        assert not is_refusal_error(
+            self._wrapped("[Errno 111] Connection refused"))
+        exc = RuntimeError("All cloud models failed (tried 1 model(s)).")
+        exc.__cause__ = ConnectionRefusedError(111, "Connection refused")
+        assert not is_refusal_error(exc)

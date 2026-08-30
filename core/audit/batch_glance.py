@@ -9,7 +9,6 @@ repetitions and (N-1) round trips.  For 600 GLANCE items at batch size
 from __future__ import annotations
 
 import json
-import re
 import logging
 import time
 from collections import deque
@@ -198,33 +197,14 @@ def _response_text(response: Any) -> str:
     return str(response)
 
 
-# Refusal-SPECIFIC vocabulary. Deliberately narrower than the
-# content-filter keyword set: providers phrase model refusals with
-# "refused"/"refusal" (providers.py raises "model refused request
-# (stop_reason=refusal, ...)"), while transport-layer blocks (proxy /
-# WAF 403 bodies echoed into SDK exceptions) say "blocked"/"denied" —
-# matching those here would send a retryable outage into bisection
-# (up to 2N-1 doomed calls) AND stamp it error_class="refusal", which
-# the orchestrator's end-of-run re-queue deliberately skips.
-_REFUSAL_TEXT_RE = re.compile(r"refus", re.IGNORECASE)
-
-
 def _is_refusal_error(exc: BaseException) -> bool:
-    """True when *exc* — or any exception on its cause/context chain —
-    is a MODEL refusal (not a transport/content block).
+    """MODEL refusal (never a transport/content block): a refusal must
+    not bucket retryable — an identical retry cannot change it — and a
+    transport block must not trigger paid bisection. Vocabulary and
+    chain walk live in the one shared home."""
+    from core.llm.structured_call import is_refusal_error
 
-    The provider raises the refusal as ``RuntimeError("Anthropic model
-    refused request (stop_reason=refusal, ...)")``; the client's
-    all-models-failed wrapper re-raises ``from last_error``, so the
-    refusal vocabulary reliably survives on ``__cause__`` even when
-    the wrapper's own message has been sanitised. The chain walk is
-    the shared, depth-bounded one every other classifier uses.
-    """
-    from core.llm.client import _exception_chain
-
-    return any(
-        _REFUSAL_TEXT_RE.search(str(e)) for e in _exception_chain(exc)
-    )
+    return is_refusal_error(exc)
 
 
 def _classify_batch_error(exc: Exception) -> str:

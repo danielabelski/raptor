@@ -10598,6 +10598,17 @@ def _classify_error(exc: Exception) -> str:
             return "timeout"
     except ImportError:
         pass
+    # Chain-walking content-filter check, deliberately AFTER the
+    # recoverable classes above: the walk follows non-suppressed
+    # __context__, and an error raised while handling a blocked
+    # failure must keep its own (re-queueable) class rather than
+    # inherit non-recoverable content_filter from the chain.
+    try:
+        from core.llm.structured_call import is_content_filter_error
+        if is_content_filter_error(exc):
+            return "content_filter"
+    except ImportError:
+        pass
     if any(
         k in msg
         for k in (

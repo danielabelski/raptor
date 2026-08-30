@@ -769,8 +769,8 @@ def _failure_disposition(error: Exception) -> str:
     from transport failures in the telemetry rollup."""
     if _is_quota_error(error):
         return "quota"
-    from core.llm.structured_call import is_content_filter_text
-    if is_content_filter_text(str(error)):
+    from core.llm.structured_call import is_content_filter_error
+    if is_content_filter_error(error):
         return "blocked"
     if _is_auth_error(error):
         return "auth"

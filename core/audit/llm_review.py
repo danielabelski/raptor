@@ -954,19 +954,14 @@ def _schema_for_mode(mode: ReviewMode) -> dict:
 
 
 def _is_content_filter_error(exc: Exception) -> bool:
-    """Delegates to the shared word-boundary classifier
+    """Delegates to the shared chain-walking classifier
     (core.llm.structured_call) — the substring-marker list this module
-    carried false-positived on phrases like "thread-safety violation";
-    the shared vocabulary is the union of both pipelines' markers.
-
-    Walks the cause/context chain (the shared, depth-bounded walk):
-    the client's all-models-failed wrapper re-raises ``from
-    last_error``, and a wrapper whose own message does not quote the
-    cause would otherwise hide the refusal from this classifier.
+    carried false-positived on phrases like "thread-safety violation",
+    and a plain ``str(exc)`` check missed blocks hidden behind the
+    all-models-failed wrapper's ``__cause__``.
     """
-    from core.llm.client import _exception_chain
-    from core.llm.structured_call import is_content_filter_text
-    return any(is_content_filter_text(str(e)) for e in _exception_chain(exc))
+    from core.llm.structured_call import is_content_filter_error
+    return is_content_filter_error(exc)
 
 
 _LLM_ONLY_EVIDENCE = frozenset({

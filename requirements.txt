@@ -122,8 +122,24 @@ pyelftools==0.33
 # Optional: For SMT-based constraint analysis (one-gadget feasibility, etc.)
 # z3-solver==4.15.4.0  # see requirements-dev.txt for bookworm/aarch64 cap
 
-# needed for binary decompilation
+# Optional: Binary disassembly, call-graph extraction, --binary-edges
+# (packages/binary_analysis, core/analysis/binary_oracle). Requires
+# a radare2 installation.
 # r2pipe==1.9.8
+
+# Optional: Ghidra bridge (packages/ghidra — in-process analysis via
+# pyghidra's sandboxed JVM worker). Requires a Ghidra installation.
+# pyghidra==3.1.0
+
+# Optional: Dynamic instrumentation (packages/frida — /frida command,
+# Frida validation bridge, coverage bridge). Requires frida-server on
+# the target. Version-locked to the frida-server it pairs with.
+# frida==16.7.19
+
+# Optional: SARIF full-schema validation and orchestrated-report
+# contract checking (core/sarif/parser.py). Without it, SARIF
+# validation degrades to structural checks only.
+# jsonschema==4.23.0
 
 # Optional: For web scanning package (uncomment to install)
 # beautifulsoup4==4.15.0

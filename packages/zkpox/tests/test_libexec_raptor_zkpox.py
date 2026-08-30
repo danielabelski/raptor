@@ -21,6 +21,23 @@ import pytest
 REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO))
 
+
+def _mount_ns_usable() -> bool:
+    if sys.platform != "linux":
+        return False
+    if not shutil.which("newuidmap") or not shutil.which("newgidmap"):
+        return False
+    sysctl = Path("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+    if sysctl.exists() and sysctl.read_text().strip() == "1":
+        return False
+    return True
+
+
+_needs_sandbox = pytest.mark.skipif(
+    not _mount_ns_usable(),
+    reason="reproduce needs mount-ns sandbox (uidmap + apparmor userns=0)",
+)
+
 SCRIPT = REPO / "libexec" / "raptor-zkpox"
 
 
@@ -191,6 +208,7 @@ _CRASHER = (
 )
 
 
+@_needs_sandbox
 @pytest.mark.skipif(
     shutil.which("cc") is None and shutil.which("gcc") is None,
     reason="no C compiler",
@@ -263,6 +281,7 @@ def test_bundle_then_reproduce_happy_path(tmp_path):
             assert "spawn_failure" in rec, rec
 
 
+@_needs_sandbox
 @pytest.mark.skipif(
     shutil.which("cc") is None and shutil.which("gcc") is None,
     reason="no C compiler",

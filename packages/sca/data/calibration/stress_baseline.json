@@ -1,6 +1,6 @@
 {
   "_source": {
-    "captured_at": "2026-08-30T00:10:07Z",
+    "captured_at": "2026-08-30T11:30:10Z",
     "captured_with_commit": "255182084",
     "license": "MIT (RAPTOR-generated). Captured per-sample diagnostics (deps_analysed, vuln_findings, eco_breakdown, elapsed_seconds_p50) for regression detection — no third-party content.",
     "name": "RAPTOR SCA stress-test baseline",
@@ -301,13 +301,14 @@
       "deps_analysed": 2908,
       "eco_breakdown": {
         "Alpine:v3.24": 10,
+        "Debian": 426,
         "NuGet": 4,
         "PyPI": 11,
         "npm": 156
       },
       "ecosystem": "NuGet",
       "elapsed_seconds_p50": 34.1,
-      "vuln_findings": 181
+      "vuln_findings": 607
     },
     "powershell-6.0": {
       "deps_analysed": 378,
@@ -320,13 +321,15 @@
       "vuln_findings": 1006
     },
     "powershell-6.2": {
-      "deps_analysed": 147,
+      "deps_analysed": 491,
       "eco_breakdown": {
-        "NuGet": 5
+        "Alpine:v3.8": 40,
+        "NuGet": 5,
+        "Ubuntu": 1917
       },
       "ecosystem": "NuGet",
       "elapsed_seconds_p50": 8.1,
-      "vuln_findings": 5
+      "vuln_findings": 1962
     },
     "prometheus-2.10": {
       "deps_analysed": 374,

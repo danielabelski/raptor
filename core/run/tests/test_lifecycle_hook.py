@@ -439,7 +439,11 @@ class TestMultiTurnGuard(unittest.TestCase):
     """Verify the multi-turn command list is complete."""
 
     def test_multi_turn_set_contents(self):
-        self.assertEqual(MULTI_TURN, {"validate", "understand"})
+        # ``audit`` is here because its run is finalized by the
+        # orchestrator itself (possibly in a background shell); the
+        # Stop hook once stamped an in-flight audit ``completed``
+        # after that shell died.
+        self.assertEqual(MULTI_TURN, {"validate", "understand", "audit"})
 
     def test_all_multi_turn_skipped_by_stop(self):
         """Every command in _MULTI_TURN_COMMANDS is skipped by Stop."""

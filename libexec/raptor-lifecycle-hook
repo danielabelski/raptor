@@ -52,7 +52,13 @@ _MAX_META_BYTES = 8 * 1024 * 1024
 # Everything else is a single Bash call where tool_pid brackets the run.
 # If Task-based parallel runs are introduced, TaskCreated/TaskCompleted
 # hooks can bracket those the same way Stop brackets single-call runs.
-_MULTI_TURN_COMMANDS = frozenset({"validate", "understand"})
+# ``audit`` belongs here for a second reason: its lifecycle start is a
+# separate quick call and the orchestrator then runs (often in a
+# background shell) OWNING the run's finalisation — after the shell is
+# stopped, the next Stop event saw status=running with a dead tool_pid
+# and stamped an in-flight run ``completed`` out from under the
+# orchestrator's own drain/interrupted transition.
+_MULTI_TURN_COMMANDS = frozenset({"validate", "understand", "audit"})
 
 
 def main():

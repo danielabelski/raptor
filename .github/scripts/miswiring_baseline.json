@@ -595,9 +595,6 @@
     "dead:dead_function:core/audit/frida_observe.py:collect_observed_functions": {
       "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
     },
-    "dead:dead_function:core/audit/heap_copy_checker.py:check_cross_function": {
-      "note": "binary-audit checker entry point landed ahead of its consumer wiring (roadmap phases land checker surface first); remove this entry when the orchestrator/sweep wiring lands or the symbol is excised"
-    },
     "dead:dead_function:core/audit/heap_copy_checker.py:format_findings": {
       "note": "binary-audit checker entry point landed ahead of its consumer wiring (roadmap phases land checker surface first); remove this entry when the orchestrator/sweep wiring lands or the symbol is excised"
     },
@@ -606,9 +603,6 @@
     },
     "dead:dead_function:core/audit/proto_length_checker.py:format_findings": {
       "note": "public checker API: renders findings for operator/CLI consumption; not called by orchestrator dispatch path"
-    },
-    "dead:dead_function:core/audit/struct_accessor_index.py:build_index_from_joern": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
     },
     "dead:dead_function:core/audit/struct_field_checker.py:format_findings": {
       "note": "public checker API: renders findings for operator/CLI consumption; not called by orchestrator dispatch path"

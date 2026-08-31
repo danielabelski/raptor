@@ -515,10 +515,11 @@ def test_build_with_commit_sha_skips_tag_listing(tmp_path: Path) -> None:
     assert result.ok, result.error
     assert result.checked_out_tag == sha
     assert result.build_config == "npm"
-    # Verify the checkout used the SHA verbatim.
+    # Verify the checkout used the SHA verbatim (as the final argv token,
+    # after the option-parsing terminator).
     checkout_calls = [a for a in seen_args if _plain_git(a)[:2] == ["git", "checkout"]]
     assert len(checkout_calls) == 1
-    assert _plain_git(checkout_calls[0])[2] == sha
+    assert _plain_git(checkout_calls[0])[-1] == sha
     # Verify NO tag operations.
     assert not any(_plain_git(a)[:3] == ["git", "tag", "--list"] for a in seen_args)
     assert not any("--tags" in a for a in seen_args)
@@ -1786,3 +1787,30 @@ def test_classify_failure_no_dockerfile_when_repo_dir_present(tmp_path: Path) ->
 
 if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__, "-v"])
+
+def test_checkout_refuses_dash_leading_ref_and_terminates_options(
+    tmp_path: Path,
+) -> None:
+    """Tags are listed from the untrusted clone and git refs may begin with
+    '-'; a dash-leading name must never reach git's option parser (it would
+    be read as an option, e.g. '--force-9.9.9'). Companion direction: a
+    normal tag still checks out, with the argv carrying the option
+    terminator before the ref."""
+    seen: list[list[str]] = []
+
+    def fake_run(args: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        seen.append(args)
+        return _fake_completed(0)
+
+    builder = SourceBuilder(SourceBuildConfig(work_dir=tmp_path))
+    with patch("core.container.proc.subprocess.run", side_effect=fake_run):
+        # Hostile ref shape: refused before any git invocation.
+        assert builder._checkout(tmp_path, "--force-9.9.9") is False
+        assert builder._checkout(tmp_path, "") is False
+        assert not seen
+        # Normal tag: runs, with option parsing terminated ahead of it.
+        assert builder._checkout(tmp_path, "v9.9.9") is True
+    (checkout_argv,) = seen
+    plain = _plain_git(checkout_argv)
+    assert plain[-1] == "v9.9.9"
+    assert plain[-2] == "--end-of-options"

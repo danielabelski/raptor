@@ -204,3 +204,36 @@ def test_private_dir_cleanup_defeats_permission_griefing(tmp_path: Path):
     finally:
         if victim.exists():  # restore perms so pytest tmp cleanup works
             (victim / "a").chmod(0o700)
+
+
+def _hang_forever() -> None:
+    """Child payload for the budget-kill direction test."""
+    import time as _time
+    _time.sleep(300)
+
+
+def test_child_crash_reported_as_crash_not_budget_kill():
+    """A child that dies hard (SIGABRT here; segfault in the wild)
+    closes the pipe long before the budget elapses — the report must
+    say crash, not blame a budget overrun the wall clock contradicts."""
+    from core.symbolic._isolate import run_isolated
+    r = run_isolated("posix", "abort", {}, timeout=60.0)
+    assert r.succeeded is False
+    assert r.metadata.get("crashed") is True
+    assert r.metadata.get("killed") is False
+    assert "crash, not a budget kill" in r.reason
+    assert r.wall_seconds < 60.0
+
+
+def test_budget_overrun_still_reported_as_kill(monkeypatch):
+    """Two-direction: a genuinely hung child keeps the hard-kill
+    report (killed=True, budget language)."""
+    import core.symbolic._isolate as iso
+    monkeypatch.setattr(iso, "GRACE_SECONDS", 0.5)
+    r = iso.run_isolated(
+        "core.symbolic.tests.test_isolate", "_hang_forever", {},
+        timeout=0.5,
+    )
+    assert r.succeeded is False
+    assert r.metadata.get("killed") is True
+    assert "budget" in r.reason

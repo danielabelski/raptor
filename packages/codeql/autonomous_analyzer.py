@@ -9,14 +9,17 @@ Fully autonomous analysis of CodeQL findings with:
 - Exploit validation and refinement
 """
 
+import os
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-# Add parent directory to path for imports
-# packages/codeql/autonomous_analyzer.py -> repo root
-sys.path.insert(0, str(Path(__file__).parents[2]))
+# `os.environ["RAPTOR_DIR"]` (no fallback) is the canonical project
+# root marker — see CLAUDE.md "Python path safety"; a KeyError surfaces
+# the configuration problem at startup instead of a positional walk
+# silently breaking under relocation.
+sys.path.insert(0, os.environ["RAPTOR_DIR"])
 
 from core.json import save_json
 from core.llm.methodology import load_methodology
@@ -1153,10 +1156,13 @@ class AutonomousCodeQLAnalyzer:
                 from core.analysis.reach_chokepoint import (
                     record_suppression,
                 )
-                # The codeql analyzer's out_dir lives on the broader
-                # CodeQLAgent run; fall back to repo_path when not
-                # available (analyzer-as-library call shapes).
-                _out = getattr(self, "out_dir", None) or repo_path
+                # Write into the run's output directory (the out_dir
+                # this method received), never the scanned repo:
+                # suppressions.jsonl in the target tree mutates an
+                # untrusted checkout (dirties git status, perturbs
+                # content-hash-keyed caches) and hides the audit trail
+                # from every consumer that reads the run dir.
+                _out = out_dir
                 _rule = getattr(finding, "rule_id", "") or ""
                 _file = getattr(finding, "file_path", "") or ""
                 _line = getattr(finding, "start_line", None)

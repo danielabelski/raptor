@@ -499,6 +499,12 @@ class JoernServer:
         # taint queries. Instance-level: semantics describe the loaded
         # CPG's project.
         self._flow_semantics: list[Any] = []
+        # Source tree loaded via ``import_code`` (None when the CPG
+        # came from ``import_cpg``). ``restart()`` re-imports from
+        # whichever of ``_cpg_path`` / ``_code_path`` is set — without
+        # it a stuck-query restart brought an importCode session back
+        # CPG-less while ensure_alive reported healthy.
+        self._code_path: Path | None = None
 
     def start(self) -> None:
         """Boot the Joern server and wait for readiness."""
@@ -934,6 +940,7 @@ class JoernServer:
         self._restarting.set()
         try:
             cpg_path = self._cpg_path
+            code_path = self._code_path
             old_pid = self._proc.pid if self._proc is not None else None
             old_port = self._port
             logger.info("restarting Joern server (stuck query recovery)")
@@ -971,6 +978,21 @@ class JoernServer:
                 return self.import_cpg(
                     cpg_path, timeout=self._last_import_timeout,
                 )
+            if code_path is not None:
+                # importCode session: same fabricated-healthy wedge —
+                # a restart that skips re-import comes back CPG-less
+                # while ensure_alive reports healthy.
+                if not code_path.is_dir():
+                    logger.error(
+                        "importCode source vanished during restart: %s "
+                        "— reporting restart failure (queries would "
+                        "have no CPG)", code_path,
+                    )
+                    return False
+                timeout = self._last_import_timeout
+                if timeout is not None:
+                    return self.import_code(code_path, timeout=timeout)
+                return self.import_code(code_path)
             return True
         finally:
             self._restarting.clear()
@@ -1019,13 +1041,40 @@ class JoernServer:
                          (resp.get("stderr") or str(resp))[:500])
             return False
 
-        # VERIFY the binding: the ReplBridge can answer the importCpg
-        # round-trip affirmatively while ``cpg`` never binds in the
-        # session (observed live after a stuck-query restart: a 0.1s
-        # "imported" line, then every taint query for the rest of the
-        # run failed to compile with "Not found: cpg" — the tier was
-        # dead with nothing but per-query warnings). A cheap metaData
-        # probe proves the binding exists before we report success.
+        if not self._verify_cpg_binding("importCpg"):
+            return False
+
+        # "imported into the server", not "loaded": this is the REPL
+        # importCpg round-trip for an already-built CPG file — a fast
+        # line here does NOT contradict an earlier cache-stale/rebuild
+        # message from a CPG *build* cache.
+        logger.info("CPG imported into Joern server in %.1fs", elapsed)
+        self._cpg_loaded = True
+        self._cpg_path = cpg_path
+        # The session now holds this file's graph, not any earlier
+        # importCode tree — restart() must re-import from cpg_path.
+        self._code_path = None
+        # Remembered ONLY on success, alongside _cpg_path: restart()
+        # re-imports the last SUCCESSFUL CPG, so it must reuse the
+        # timeout that import proved sufficient — a failed probe
+        # import with a short timeout must not poison it.
+        self._last_import_timeout = timeout
+
+        self._warmup_dataflow()
+
+        return True
+
+    def _verify_cpg_binding(self, op: str) -> bool:
+        """Prove the ``cpg`` binding exists after an import round-trip.
+
+        The ReplBridge can answer importCpg/importCode affirmatively
+        while ``cpg`` never binds in the session (observed live after
+        a stuck-query restart: a 0.1s "imported" line, then every
+        taint query for the rest of the run failed to compile with
+        "Not found: cpg" — the tier was dead with nothing but
+        per-query warnings). A cheap metaData probe proves the binding
+        before success is reported. Clears ``_cpg_loaded`` on failure.
+        """
         probe = self._post_sync("cpg.metaData.size.toString", timeout=30)
         probe_out = (
             "" if probe is None
@@ -1037,37 +1086,25 @@ class JoernServer:
             or "Not found: cpg" in probe_out
         ):
             logger.error(
-                "importCpg reported success but the `cpg` binding is "
+                "%s reported success but the `cpg` binding is "
                 "absent (probe: %s) — reporting import failure so the "
                 "caller retries or degrades loudly instead of running "
                 "every later query against an empty session",
+                op,
                 (self._last_post_error or probe_out or "no response")[:300],
             )
             self._cpg_loaded = False
             return False
-
-        # "imported into the server", not "loaded": this is the REPL
-        # importCpg round-trip for an already-built CPG file — a fast
-        # line here does NOT contradict an earlier cache-stale/rebuild
-        # message from a CPG *build* cache.
-        logger.info("CPG imported into Joern server in %.1fs", elapsed)
-        self._cpg_loaded = True
-        self._cpg_path = cpg_path
-        # Remembered ONLY on success, alongside _cpg_path: restart()
-        # re-imports the last SUCCESSFUL CPG, so it must reuse the
-        # timeout that import proved sufficient — a failed probe
-        # import with a short timeout must not poison it.
-        self._last_import_timeout = timeout
-
-        self._warmup_dataflow()
-
         return True
 
     def import_code(self, target_path: Path, *, timeout: int = 300) -> bool:
         """Build and load a CPG from source code.
 
         Slower than import_cpg (builds the CPG inside the JVM) but
-        doesn't require a separate joern-parse step.
+        doesn't require a separate joern-parse step. Mirrors
+        ``import_cpg``'s hardening: strict success check, binding
+        probe, and import-source bookkeeping so ``restart()`` can
+        re-import.
         """
         target_path = Path(target_path).resolve()
         if not target_path.is_dir():
@@ -1087,13 +1124,23 @@ class JoernServer:
             return False
 
         elapsed = time.monotonic() - t0
-        if not resp.get("success", True):
+        # Strict: a missing "success" key is a malformed response, not
+        # a success — pre-fix it defaulted to True, so a keyless
+        # response set _cpg_loaded and every later query failed
+        # "Not found: cpg" with only per-query warnings.
+        if resp.get("success") is not True:
             logger.error("importCode failed: %s",
-                         resp.get("stderr", "")[:500])
+                         (resp.get("stderr") or str(resp))[:500])
+            return False
+
+        if not self._verify_cpg_binding("importCode"):
             return False
 
         logger.info("code imported in %.1fs", elapsed)
         self._cpg_loaded = True
+        self._code_path = target_path
+        self._cpg_path = None
+        self._last_import_timeout = timeout
         return True
 
     def query(
@@ -1917,6 +1964,40 @@ class JoernServer:
             heap_mb=tunables.heap_mb,
             query_timeout_s=tunables.query_timeout_s,
         )
+
+    @classmethod
+    def connect_existing(
+        cls,
+        *,
+        port: int,
+        auth_user: str,
+        auth_password: str,
+        heap_mb: int | None = None,
+        query_timeout_s: int = _QUERY_TIMEOUT_S,
+        socket_path: str | None = None,
+    ) -> JoernServer:
+        """Build a client handle for an already-running server.
+
+        Used by the lifecycle module to reconnect to a reused server.
+        Goes through ``__init__`` so EVERY instance field — including
+        any added later — gets its default: the previous ``__new__``-
+        based field copy in ``lifecycle._connect_existing`` omitted
+        ``_flow_semantics`` and ``_last_import_timeout``, so tiered
+        sweeps / batch taint queries on a reused handle crashed with
+        AttributeError (the same bug class already documented for
+        ``_restarting``). ``_proc`` stays None: a reuse handle does not
+        own the server process, so ``stop()``/``__del__`` are no-ops.
+        """
+        srv = cls(heap_mb=heap_mb, query_timeout_s=query_timeout_s)
+        srv._port = port
+        srv._base_url = f"http://127.0.0.1:{port}"
+        srv._auth_user = auth_user
+        srv._auth_password = auth_password
+        srv._uds_path = socket_path
+        # Reuse handles never own the socket directory — the process
+        # that booted the server (or its supervisor) cleans it up.
+        srv._uds_dir = None
+        return srv
 
     @property
     def port(self) -> int | None:

@@ -120,6 +120,9 @@ def _default_sandbox_runner():
 _STALL_CALIBRATION_FILES = 10
 _STALL_MULTIPLIER = 3
 _STALL_FLOOR_S = 30
+# Watchdog poll cadence. Small enough that a kill lands within ~1s of
+# the threshold being crossed, large enough to cost nothing.
+_STALL_POLL_INTERVAL_S = 1.0
 
 
 def _drain_stream(stream, chunks: list[str]) -> None:
@@ -138,8 +141,17 @@ class _StallMonitor:
     """Monitor joern-parse stderr for per-file progress and kill on stall.
 
     Measures wall clock of the first N files, then sets a stall threshold
-    of max(p90 * 3, 30s). If any subsequent file exceeds that threshold
-    with no progress, the subprocess is killed.
+    of max(p90 * 3, 30s). Once calibrated, a watchdog thread
+    (:meth:`watch`) kills the subprocess when NO progress line has
+    arrived for a full threshold window.
+
+    The kill decision lives on a timer, not in the stderr reader loop:
+    a per-line check only ever runs when the next line ARRIVES — i.e.
+    after the allegedly stalled file already finished (killing a
+    healthy build retroactively), and never during a genuine hang,
+    where no line arrives to trigger it. A pre-calibration hang (fewer
+    than N progress lines, then silence) has no threshold yet and is
+    covered by the caller's overall ``proc.wait(timeout)``.
     """
 
     def __init__(
@@ -155,40 +167,60 @@ class _StallMonitor:
         self._total_files = 0
         self._killed = False
         self._stderr_lines: list[str] = []
+        # Set when the reader hits EOF / the build exits — lets the
+        # watchdog stop promptly without polling the process table.
+        self._done = threading.Event()
 
     def run(self) -> None:
         """Read stderr line by line, track file processing times."""
-        for raw_line in self._proc.stderr:
-            line = raw_line.strip()
-            if not line:
-                continue
-            self._stderr_lines.append(line)
+        try:
+            for raw_line in self._proc.stderr:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                self._stderr_lines.append(line)
 
-            if self._is_file_progress(line):
-                now = time.monotonic()
-                elapsed = now - self._last_progress
-                self._total_files += 1
+                if self._is_file_progress(line):
+                    now = time.monotonic()
+                    elapsed = now - self._last_progress
+                    self._total_files += 1
 
-                if self._total_files <= _STALL_CALIBRATION_FILES:
-                    self._file_times.append(elapsed)
-                    if self._total_files == _STALL_CALIBRATION_FILES:
-                        self._calibrate()
-                elif self._threshold and elapsed > self._threshold:
-                    logger.warning(
-                        "Joern CPG build stalled after %d/%s files "
-                        "(%.1fs > %.1fs threshold)",
-                        self._total_files, "?",
-                        elapsed, self._threshold,
-                    )
+                    if self._total_files <= _STALL_CALIBRATION_FILES:
+                        self._file_times.append(elapsed)
+                        if self._total_files == _STALL_CALIBRATION_FILES:
+                            self._calibrate()
+
+                    # Float assignment is atomic under the GIL; the
+                    # watchdog reads it without a lock.
+                    self._last_progress = now
+                    if self._on_progress:
+                        self._on_progress(
+                            f"Joern CPG: {self._total_files} files processed"
+                        )
+        finally:
+            self._done.set()
+
+    def watch(self) -> None:
+        """Kill the build when progress stops for a threshold window.
+
+        Runs in its own thread alongside :meth:`run`. Exits when the
+        reader reaches EOF (build finished or was killed).
+        """
+        while not self._done.wait(_STALL_POLL_INTERVAL_S):
+            threshold = self._threshold
+            if threshold is None:
+                continue  # still calibrating
+            elapsed = time.monotonic() - self._last_progress
+            if elapsed > threshold:
+                logger.warning(
+                    "Joern CPG build stalled after %d files "
+                    "(no progress for %.1fs > %.1fs threshold)",
+                    self._total_files, elapsed, threshold,
+                )
+                self._killed = True
+                with contextlib.suppress(OSError):
                     self._proc.kill()
-                    self._killed = True
-                    return
-
-                self._last_progress = now
-                if self._on_progress:
-                    self._on_progress(
-                        f"Joern CPG: {self._total_files} files processed"
-                    )
+                return
 
     def _calibrate(self) -> None:
         if len(self._file_times) < 2:
@@ -460,6 +492,22 @@ def discover_frontend_args(target: Path) -> FrontendArgs:
     return fa
 
 
+def _failed_build_cpg(cpg_path: Path, target: Path) -> JoernCPG:
+    """Failure-path result: never leave a partial cpg.bin behind.
+
+    A timeout or stall kill can interrupt joern-parse mid-write.
+    flatgraph writes its JSON schema manifest as the FINAL bytes, so a
+    truncated file has no parseable tail manifest — and the load-time
+    structural probes cannot vouch for such a file. Deleting the
+    partial file here (plus ``build_failed`` on the handle) keeps a
+    killed build from being manifested as a fresh cache entry and
+    served as a permanent cache hit on every later run.
+    """
+    with contextlib.suppress(OSError):
+        cpg_path.unlink(missing_ok=True)
+    return JoernCPG(path=cpg_path, target=target, build_failed=True)
+
+
 def build_cpg(
     target: Path,
     *,
@@ -600,16 +648,16 @@ def build_cpg(
             )
         except subprocess.TimeoutExpired:
             logger.warning("joern-parse timed out after %ds", timeout)
-            return JoernCPG(path=cpg_path, target=target)
+            return _failed_build_cpg(cpg_path, target)
         except OSError as e:
             logger.error("joern-parse failed: %s", e)
-            return JoernCPG(path=cpg_path, target=target)
+            return _failed_build_cpg(cpg_path, target)
     except subprocess.TimeoutExpired:
         logger.warning("joern-parse timed out after %ds", timeout)
-        return JoernCPG(path=cpg_path, target=target)
+        return _failed_build_cpg(cpg_path, target)
     except OSError as e:
         logger.error("joern-parse failed: %s", e)
-        return JoernCPG(path=cpg_path, target=target)
+        return _failed_build_cpg(cpg_path, target)
 
     elapsed = int((time.monotonic() - start) * 1000)
 
@@ -670,13 +718,19 @@ def _build_cpg_with_stall_monitor(
         )
     except OSError as e:
         logger.error("joern-parse failed to start: %s", e)
-        return JoernCPG(path=cpg_path, target=target)
+        return _failed_build_cpg(cpg_path, target)
 
     monitor = _StallMonitor(proc, on_progress=on_progress)
     monitor_thread = threading.Thread(
         target=monitor.run, daemon=True, name="joern-stall-monitor",
     )
     monitor_thread.start()
+    # Timer-based kill decision — see _StallMonitor.watch: the reader
+    # loop cannot detect a stall (no line arrives during one).
+    watchdog_thread = threading.Thread(
+        target=monitor.watch, daemon=True, name="joern-stall-watchdog",
+    )
+    watchdog_thread.start()
 
     # Drain stdout in its own thread. The monitor owns stderr; leaving
     # stdout unread until after exit let a chatty joern-parse fill the
@@ -701,9 +755,10 @@ def _build_cpg_with_stall_monitor(
         proc.kill()
         proc.wait()
         logger.warning("joern-parse timed out after %ds", timeout)
-        return JoernCPG(path=cpg_path, target=target)
+        return _failed_build_cpg(cpg_path, target)
 
     monitor_thread.join(timeout=5)
+    watchdog_thread.join(timeout=5)
     stdout_thread.join(timeout=5)
 
     stdout = "".join(stdout_chunks)
@@ -712,7 +767,7 @@ def _build_cpg_with_stall_monitor(
 
     if monitor.was_killed:
         logger.warning("joern-parse was killed by stall monitor")
-        return JoernCPG(path=cpg_path, target=target)
+        return _failed_build_cpg(cpg_path, target)
 
     if proc.returncode != 0:
         stderr_text = monitor.stderr_output
@@ -762,11 +817,6 @@ def run_query(
             errors=[f"CPG not found: {cpg.path}"],
         )
 
-    if validate:
-        err = _validate_query(query)
-        if err:
-            return JoernResult(query=query, errors=[err])
-
     joern = _joern_path() or "joern"
 
     query_path = Path(query)
@@ -783,6 +833,20 @@ def run_query(
         script_body = query
     for marker, replacement in (substitutions or {}).items():
         script_body = script_body.replace(marker, replacement)
+
+    if validate:
+        # Validate what will EXECUTE: the resolved script body with
+        # substitutions applied. Pre-fix the check ran on the raw
+        # ``query`` argument — for a .sc file that is the filesystem
+        # PATH — and substitutions were spliced in afterwards, so
+        # neither the body nor any substituted value ever met the
+        # blocked-pattern check the ``validate=True`` contract
+        # promises. The length cap applies to inline queries only:
+        # .sc templates are in-repo, code-trust files whose bodies
+        # legitimately exceed the inline cap.
+        err = _validate_query(script_body, check_length=not is_script_file)
+        if err:
+            return JoernResult(query=query, errors=[err])
 
     # joern's CLI flag surface drifts across releases: `--script-content`
     # does not exist in 4.x, and `--import` there means "compile .sc onto
@@ -1218,9 +1282,17 @@ _CPG_MANIFEST_TAIL_BYTES = 8 * 1024 * 1024
 def cpg_method_count(cpg_path: Path) -> int | None:
     """METHOD node count from the flatgraph tail manifest.
 
-    Returns None when the file or its manifest cannot be read — the
-    caller must treat None as "unknown", never as "empty": only a
-    positively-parsed zero may reject a CPG.
+    Returns None when the file or its manifest cannot be read. Caller
+    contract splits by cost of a wrong call:
+
+    * Destructive consumers (:func:`_reject_empty_cpg`, which DELETES
+      the file) must treat None as "unknown" — only a positively
+      parsed zero may destroy a build.
+    * Cache gates (:func:`build_cpg_cached` admission,
+      :func:`load_cached_cpg` service) require a positively parsed
+      count: a killed writer truncates the tail manifest, so None
+      there means a graph nobody can vouch for, and the worst case of
+      refusing it is a rebuild.
     """
     try:
         size = cpg_path.stat().st_size
@@ -1389,14 +1461,22 @@ def load_cached_cpg(
         )
         return None
 
-    # Refuse structurally-empty cached CPGs (including ones written
-    # before the empty check existed — the probe reads the file, not
-    # the manifest field, so legacy caches are covered).
-    if cpg_method_count(cpg_path) == 0:
+    # Refuse structurally-broken cached CPGs (including ones written
+    # before these checks existed — the probe reads the file, not the
+    # manifest field, so legacy caches are covered). Zero METHOD nodes
+    # is an empty graph; an unreadable tail manifest (None) means the
+    # file was truncated after the cache manifest was written — the
+    # write-time gate in build_cpg_cached guarantees every admitted
+    # cpg.bin had a parseable count, so None here is corruption, not
+    # "unknown".
+    count = cpg_method_count(cpg_path)
+    if count == 0 or count is None:
         logger.info(
-            "CPG cache at %s contains zero METHOD nodes — refusing the "
-            "cached graph; this cache will be rebuilt",
+            "CPG cache at %s is %s — refusing the cached graph; this "
+            "cache will be rebuilt",
             cpg_dir,
+            "empty (zero METHOD nodes)" if count == 0
+            else "unreadable (no flatgraph manifest)",
         )
         return None
 
@@ -1467,15 +1547,32 @@ def build_cpg_cached(
         exclude_dirs=exclude_dirs,
     )
 
-    if cpg.exists():
-        _write_cpg_manifest(
-            cpg_dir, target, content_hash,
-            languages=cpg.languages,
-            build_time_ms=cpg.build_time_ms,
-            frontend_args_fingerprint=frontend_args.fingerprint(),
-            method_count=cpg_method_count(cpg.path),
-            exclude_dirs=exclude_dirs,
-        )
+    # Cache admission gates. A manifest is a promise that cpg.bin is a
+    # complete graph for content_hash, so it is written only when
+    # (a) the build path signalled success (a timeout / stall-kill can
+    # leave a partial file that would otherwise become a permanent
+    # cache hit), and (b) the flatgraph tail manifest parses to a
+    # method count — a fresh successful build always has one, so an
+    # unreadable tail here means truncation (or a format this probe
+    # cannot vouch for; that degrades to rebuild-per-run, never to
+    # serving an unverifiable graph).
+    if cpg.exists() and not cpg.build_failed:
+        method_count = cpg_method_count(cpg.path)
+        if method_count is None:
+            logger.warning(
+                "CPG at %s has no parseable flatgraph manifest — "
+                "refusing to cache it (this run still uses the build; "
+                "the next run rebuilds)", cpg.path,
+            )
+        else:
+            _write_cpg_manifest(
+                cpg_dir, target, content_hash,
+                languages=cpg.languages,
+                build_time_ms=cpg.build_time_ms,
+                frontend_args_fingerprint=frontend_args.fingerprint(),
+                method_count=method_count,
+                exclude_dirs=exclude_dirs,
+            )
 
     return cpg
 

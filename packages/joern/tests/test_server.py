@@ -224,6 +224,11 @@ class TestJoernServerImportCpg:
 
 
 class TestJoernServerImportCode:
+    """import_code mirrors import_cpg's hardening: strict success
+    check, cpg-binding probe, and import-source bookkeeping so a
+    stuck-query restart() can re-import instead of coming back
+    CPG-less while ensure_alive reports healthy."""
+
     def test_target_not_directory(self, tmp_path):
         srv = JoernServer()
         srv._base_url = "http://127.0.0.1:9999"
@@ -231,6 +236,73 @@ class TestJoernServerImportCode:
         f.write_text("int main(){}", encoding="utf-8")
         ok = srv.import_code(f)
         assert ok is False
+
+    def test_missing_success_key_is_failure(self, tmp_path):
+        # Pre-fix `resp.get("success", True)` counted a malformed
+        # response as success and set _cpg_loaded — every later query
+        # then failed "Not found: cpg" with only per-query warnings.
+        srv = JoernServer()
+        srv._base_url = "http://127.0.0.1:9999"
+        with patch.object(JoernServer, "_post_sync",
+                          return_value={"stdout": "??"}):
+            ok = srv.import_code(tmp_path)
+        assert ok is False
+        assert srv._cpg_loaded is False
+
+    def test_success_requires_verified_cpg_binding(self, tmp_path):
+        srv = JoernServer()
+        srv._base_url = "http://127.0.0.1:9999"
+        responses = [
+            {"success": True, "stdout": "workspace..."},   # importCode
+            {"success": True,
+             "stdout": "-- [E006] Not Found Error: Not found: cpg"},
+        ]
+        with patch.object(JoernServer, "_post_sync",
+                          side_effect=responses):
+            ok = srv.import_code(tmp_path)
+        assert ok is False
+        assert srv._cpg_loaded is False
+
+    def test_verified_import_succeeds_and_records_source(self, tmp_path):
+        srv = JoernServer()
+        srv._base_url = "http://127.0.0.1:9999"
+        responses = [
+            {"success": True, "stdout": "workspace..."},   # importCode
+            {"success": True, "stdout": 'val res0: String = "42"'},
+        ]
+        with patch.object(JoernServer, "_post_sync",
+                          side_effect=responses):
+            ok = srv.import_code(tmp_path, timeout=123)
+        assert ok is True
+        assert srv._cpg_loaded is True
+        # restart() re-imports from whichever source is recorded.
+        assert srv._code_path == tmp_path.resolve()
+        assert srv._cpg_path is None
+        assert srv._last_import_timeout == 123
+
+    def test_restart_reimports_code_source(self, tmp_path):
+        srv = JoernServer()
+        srv._code_path = tmp_path
+        srv._last_import_timeout = 77
+        calls = []
+        with patch.object(JoernServer, "stop"), \
+                patch.object(JoernServer, "start"), \
+                patch.object(
+                    JoernServer, "import_code",
+                    side_effect=lambda p, timeout: calls.append(
+                        (p, timeout)) or True,
+                ):
+            assert srv.restart() is True
+        assert calls == [(tmp_path, 77)]
+
+    def test_restart_fails_when_code_source_vanished(self, tmp_path):
+        # Same fabricated-healthy wedge as the vanished-CPG case: the
+        # restart must report failure, not come back CPG-less.
+        srv = JoernServer()
+        srv._code_path = tmp_path / "gone"
+        with patch.object(JoernServer, "stop"), \
+                patch.object(JoernServer, "start"):
+            assert srv.restart() is False
 
 
 class TestJoernServerCloseWorkspace:

@@ -105,3 +105,73 @@ class TestWriteFindings:
         with open(path) as f:
             data = json.load(f)
         assert len(data) == 1
+
+
+class TestPersistFindings:
+    """_persist_findings is the (idempotent, atomic) full rewrite the
+    orchestrator repeats after the last status-mutating pass: late-
+    minted findings must appear, retracted ones must disappear, and a
+    zero-finding run must not create an empty file."""
+
+    @staticmethod
+    def _result(*statuses):
+        from core.audit.orchestrator import OrchestratorResult, ReviewOutcome
+
+        result = OrchestratorResult()
+        for i, status in enumerate(statuses):
+            result.outcomes.append(ReviewOutcome(
+                file=f"src/f{i}.c", function=f"fn{i}", status=status,
+                body="b", hypothesis=f"h{i}",
+            ))
+        return result
+
+    @staticmethod
+    def _config(tmp_path):
+        from core.audit.orchestrator import OrchestratorConfig
+
+        return OrchestratorConfig(target_path=tmp_path, out_dir=tmp_path)
+
+    def test_late_minted_finding_written_after_re_persist(self, tmp_path):
+        from core.audit.orchestrator import _persist_findings
+
+        result = self._result("clean")
+        config = self._config(tmp_path)
+        _persist_findings(result, config)  # mid-pipeline: no findings yet
+        assert not (tmp_path / "findings.json").exists()
+
+        # A post-loop pass promotes the outcome to finding.
+        result.outcomes[0].status = "finding"
+        _persist_findings(result, config)
+        data = json.loads((tmp_path / "findings.json").read_text())
+        assert len(data) == 1
+        assert data[0]["function"] == "fn0"
+
+    def test_retracted_finding_removed_on_re_persist(self, tmp_path):
+        from core.audit.orchestrator import _persist_findings
+
+        result = self._result("finding", "finding")
+        config = self._config(tmp_path)
+        _persist_findings(result, config)
+        assert len(json.loads((tmp_path / "findings.json").read_text())) == 2
+
+        # A post-loop pass retracts both (e.g. absent demotion).
+        for o in result.outcomes:
+            o.status = "dormant"
+        _persist_findings(result, config)
+        assert json.loads((tmp_path / "findings.json").read_text()) == []
+
+    def test_zero_findings_never_creates_file(self, tmp_path):
+        from core.audit.orchestrator import _persist_findings
+
+        _persist_findings(self._result("clean", "error"), self._config(tmp_path))
+        assert not (tmp_path / "findings.json").exists()
+
+    def test_idempotent_rewrite(self, tmp_path):
+        from core.audit.orchestrator import _persist_findings
+
+        result = self._result("finding")
+        config = self._config(tmp_path)
+        _persist_findings(result, config)
+        first = (tmp_path / "findings.json").read_text()
+        _persist_findings(result, config)
+        assert (tmp_path / "findings.json").read_text() == first

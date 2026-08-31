@@ -2755,3 +2755,176 @@ int add(int a, int b) {
         assert "_smt_pre_evidence" in kept[0]
         assert kept[1]["name"] == "add"
         assert result.findings == 0
+
+
+class TestDisagreementReReviewTallies:
+    """Status-changing disagreement re-reviews replace the outcome
+    IN PLACE (no double-append), and every re-review call books its
+    spend — verdict changed or not."""
+
+    @staticmethod
+    def _outcome(file, fn, status, cost=0.0):
+        from core.audit.orchestrator import ReviewOutcome
+        return ReviewOutcome(
+            file=file, function=fn, status=status,
+            body="test", cost_usd=cost,
+        )
+
+    def _run(self, monkeypatch, tmp_path, new_status):
+        import time
+        from types import SimpleNamespace
+
+        import core.audit.orchestrator as _orch
+        from core.audit.orchestrator import (
+            OrchestratorConfig,
+            OrchestratorResult,
+            _re_review_disagreements,
+        )
+
+        result = OrchestratorResult(
+            outcomes=[self._outcome("a.c", "foo", "clean")], clean=1,
+        )
+        checklist = {
+            "files": [{
+                "file": "a.c",
+                "items": [{"name": "foo", "line_start": 1, "line_end": 50}],
+            }],
+        }
+        config = OrchestratorConfig(
+            target_path=tmp_path, out_dir=tmp_path,
+            sweep_validate_findings=False,
+        )
+        monkeypatch.setattr(
+            _orch, "_build_context",
+            lambda cfg, gap, *a, **kw: {
+                "file": gap["file"], "function": gap["name"],
+            },
+        )
+        disagreements = [SimpleNamespace(
+            file="a.c", function="foo", resolution="mechanical wins",
+            mechanical_claim=SimpleNamespace(reachable=True, has_flow=True),
+        )]
+        _re_review_disagreements(
+            disagreements, result, config,
+            lambda ctx, cfg: self._outcome(
+                ctx["file"], ctx["function"], new_status, cost=0.25,
+            ),
+            checklist, None, None, time.time(), None,
+            max_workers=1,
+        )
+        return result
+
+    def test_status_change_does_not_double_append(
+        self, monkeypatch, tmp_path,
+    ):
+        result = self._run(monkeypatch, tmp_path, "suspicious")
+        assert len(result.outcomes) == 1, (
+            "in-place replacement must not append a second copy"
+        )
+        assert result.outcomes[0].status == "suspicious"
+        assert result.suspicious == 1
+        assert result.clean == 0
+
+    def test_changed_verdict_cost_booked(self, monkeypatch, tmp_path):
+        result = self._run(monkeypatch, tmp_path, "suspicious")
+        phase = result.cost_tracker.phases.get("re_review")
+        assert phase is not None
+        assert phase.cost_usd == 0.25
+
+    def test_unchanged_verdict_cost_booked(self, monkeypatch, tmp_path):
+        # The call cost money even though the verdict stood.
+        result = self._run(monkeypatch, tmp_path, "clean")
+        assert len(result.outcomes) == 1
+        phase = result.cost_tracker.phases.get("re_review")
+        assert phase is not None
+        assert phase.cost_usd == 0.25
+
+
+class TestIterativeReReviewKeepsPriorOnFailure:
+    """A failed propagation re-review call must keep the prior valid
+    verdict — never replace it with an error outcome."""
+
+    def _run(self, monkeypatch, tmp_path, review_fn):
+        import time
+
+        import core.audit.orchestrator as _orch
+        from core.audit.orchestrator import (
+            OrchestratorConfig,
+            OrchestratorResult,
+            ReviewOutcome,
+            _iterative_re_review,
+        )
+
+        finding = ReviewOutcome(
+            file="callee.c", function="worker", status="finding",
+            body="bug", hypothesis="overflow",
+        )
+        caller_clean = ReviewOutcome(
+            file="caller.c", function="dispatch", status="clean",
+            body="fine",
+        )
+        result = OrchestratorResult(
+            outcomes=[finding, caller_clean], findings=1, clean=1,
+        )
+        checklist = {
+            "files": [{
+                "path": "caller.c",
+                "items": [{
+                    "name": "dispatch", "line_start": 1, "line_end": 50,
+                }],
+            }],
+        }
+        config = OrchestratorConfig(
+            target_path=tmp_path, out_dir=tmp_path,
+            propagate_constraints=True,
+            sweep_validate_findings=False,
+        )
+        monkeypatch.setattr(
+            _orch, "_build_context",
+            lambda cfg, gap, *a, **kw: {
+                "file": gap["file"], "function": gap["name"],
+            },
+        )
+        monkeypatch.setattr(
+            _orch, "_find_re_review_targets",
+            lambda findings, cfg, cl, cm, reviewed: [{
+                "gap": {
+                    "file": "caller.c", "name": "dispatch",
+                    "line_start": 1, "line_end": 50,
+                },
+                "callee_findings": [findings[0]] if findings else [],
+            }],
+        )
+        return _iterative_re_review(
+            result, config, review_fn, checklist, None, None,
+            set(), [], None, None, time.time(), None,
+        )
+
+    def test_failure_keeps_prior_clean(self, monkeypatch, tmp_path):
+        def boom(ctx, cfg):
+            raise RuntimeError("transport reset")
+
+        result = self._run(monkeypatch, tmp_path, boom)
+        caller = [o for o in result.outcomes if o.function == "dispatch"]
+        assert caller and caller[0].status == "clean", (
+            "failed re-review must not mint an error outcome over a "
+            "valid clean verdict"
+        )
+        assert result.errors == 0
+
+    def test_success_still_replaces(self, monkeypatch, tmp_path):
+        from core.audit.orchestrator import ReviewOutcome
+
+        calls = []
+
+        def ok(ctx, cfg):
+            calls.append(ctx)
+            return ReviewOutcome(
+                file=ctx["file"], function=ctx["function"],
+                status="suspicious", body="callee taints arg",
+            )
+
+        result = self._run(monkeypatch, tmp_path, ok)
+        assert calls, "re-review must have been dispatched"
+        caller = [o for o in result.outcomes if o.function == "dispatch"]
+        assert caller and caller[0].status == "suspicious"

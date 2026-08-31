@@ -1856,3 +1856,92 @@ class TestRunSmtSweepVacuityPolicy:
             smt_args={"ptr": "p"},
         )
         assert result.outcome == "confirmed"
+
+
+class TestSemgrepPatternChainEntry:
+    """Chain entries from mechanical_check_to_semgrep carry
+    {"pattern": ...} with no rule file — the consumer must wrap the
+    pattern into a temp rule (and clean it up), not KeyError."""
+
+    def test_pattern_rule_file_shape(self, tmp_path):
+        from core.audit.orchestrator import _pattern_rule_file
+
+        pattern = mechanical_check_to_semgrep("unchecked return value")
+        path = _pattern_rule_file(pattern, "src/a.c")
+        try:
+            assert path is not None
+            import os
+            assert os.path.basename(path).startswith("audit_sweep_")
+            text = Path(path).read_text()
+            assert "pattern: |" in text
+            assert "$X = $FUNC(...)" in text
+            assert "languages: [c]" in text
+        finally:
+            if path:
+                Path(path).unlink(missing_ok=True)
+
+    def test_pattern_entry_dispatches_and_cleans_up(
+        self, tmp_path, monkeypatch,
+    ):
+        from core.audit.orchestrator import (
+            OrchestratorConfig,
+            _run_tool_chain,
+        )
+
+        seen = {}
+
+        def fake_sweep(**kw):
+            seen["rule_config"] = kw["rule_config"]
+            seen["existed_at_dispatch"] = Path(kw["rule_config"]).is_file()
+            return SweepResult(
+                tool="semgrep", file_path=kw["file_path"],
+                function_name=kw["function_name"], outcome="refuted",
+            )
+
+        monkeypatch.setattr(
+            "core.audit.orchestrator.run_semgrep_sweep", fake_sweep,
+        )
+        config = OrchestratorConfig(target_path=tmp_path, out_dir=None)
+        pattern = mechanical_check_to_semgrep("missing null check on ptr")
+        confirmed = _run_tool_chain(
+            [{"type": "semgrep", "config": {"pattern": pattern}}],
+            config=config,
+            file_path="a.c",
+            function_name="f",
+            source="int f(void) { return 0; }",
+            hypothesis="missing null check",
+        )
+        assert confirmed == []
+        assert seen.get("existed_at_dispatch") is True, (
+            "the wrapped rule file must exist when the sweep runs"
+        )
+        assert not Path(seen["rule_config"]).exists(), (
+            "the temp audit_sweep_ rule must be unlinked after dispatch"
+        )
+
+    def test_configless_entry_counts_as_channel_error(
+        self, tmp_path, monkeypatch,
+    ):
+        from core.audit.orchestrator import (
+            OrchestratorConfig,
+            _run_tool_chain,
+        )
+
+        def boom(**kw):
+            raise AssertionError("sweep must not run without a rule")
+
+        monkeypatch.setattr(
+            "core.audit.orchestrator.run_semgrep_sweep", boom,
+        )
+        errored: set = set()
+        confirmed = _run_tool_chain(
+            [{"type": "semgrep", "config": {}}],
+            config=OrchestratorConfig(target_path=tmp_path, out_dir=None),
+            file_path="a.c",
+            function_name="f",
+            source="",
+            hypothesis="h",
+            errored_types=errored,
+        )
+        assert confirmed == []
+        assert "semgrep" in errored

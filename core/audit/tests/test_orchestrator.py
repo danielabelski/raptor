@@ -5968,3 +5968,98 @@ class TestJoernReachabilityDetectionRole:
         from core.audit.orchestrator import _is_detection_only
         assert _is_detection_only("joern:flow") is False
         assert _is_detection_only("joern:guard-dominance") is False
+
+
+class TestGapSloc:
+    """The sarif-clean gate's SLOC fallback must tolerate present-but-
+    None span fields (inventory rows without a span) — the subtraction
+    crashed the run pre-review."""
+
+    def test_none_line_end_is_zero_span(self):
+        from core.audit.orchestrator import _gap_sloc
+
+        gap = {"file": "a.c", "name": "f", "line_start": 10, "line_end": None}
+        assert _gap_sloc(gap) == 0
+
+    def test_none_line_start_is_zero_floor(self):
+        from core.audit.orchestrator import _gap_sloc
+
+        gap = {"file": "a.c", "name": "f", "line_start": None, "line_end": 12}
+        assert _gap_sloc(gap) == 12
+
+    def test_span_fallback_when_no_sloc(self):
+        from core.audit.orchestrator import _gap_sloc
+
+        gap = {"line_start": 10, "line_end": 25}
+        assert _gap_sloc(gap) == 15
+
+    def test_inventory_sloc_wins(self):
+        from core.audit.orchestrator import _gap_sloc
+
+        gap = {"sloc": 7, "line_start": 10, "line_end": 25}
+        assert _gap_sloc(gap) == 7
+
+
+class TestFileLinesCacheClear:
+    """Clearing the lines cache must reset the byte counter with it —
+    a stale counter permanently shrinks the byte bound for every later
+    in-process run."""
+
+    def test_clear_resets_byte_counter(self, tmp_path):
+        import core.audit.orchestrator as _orch
+        from core.audit.orchestrator import (
+            _clear_file_lines_cache,
+            _read_raw_source,
+        )
+
+        (tmp_path / "a.c").write_text("int f(void) { return 0; }\n" * 10)
+        _clear_file_lines_cache()
+        src = _read_raw_source(tmp_path, "a.c", 1, 5)
+        assert src
+        assert _orch._file_lines_cache_bytes > 0
+        assert _orch._file_lines_cache
+
+        _clear_file_lines_cache()
+        assert _orch._file_lines_cache_bytes == 0
+        assert not _orch._file_lines_cache
+
+
+class TestPostPassWiring:
+    """Source-level wiring checks for fixes inside _run_audit_body
+    (the heavy scaffolding is exercised in integration tests,
+    mirroring TestPrefilterSkipKnobWiring)."""
+
+    @staticmethod
+    def _body_src():
+        src = (Path(__file__).resolve().parents[1]
+               / "orchestrator.py").read_text()
+        idx = src.find("def _run_audit_body")
+        assert idx != -1
+        end = src.find("\ndef ", idx)
+        return src[idx:end if end != -1 else len(src)]
+
+    def test_findings_re_persisted_after_status_mutating_passes(self):
+        # findings.json must be rewritten AFTER phase 2 / pre-export
+        # hooks and BEFORE the journal correction pass reads final
+        # statuses — else late-minted findings are missing and
+        # retracted ones ship.
+        window = self._body_src()
+        phase2 = window.find("_run_phase2(result, config)")
+        hooks = window.find("config.pre_export_hooks")
+        final_persist = window.rfind("_persist_findings(result, config)")
+        rejournal = window.find("_rejournal_final_statuses(result, config)")
+        assert -1 not in (phase2, hooks, final_persist, rejournal)
+        assert phase2 < hooks < final_persist < rejournal
+
+    def test_live_sink_harvest_precedes_budget_break(self):
+        # A completed future's outcome is paid work: it must be
+        # harvested BEFORE the budget-check break, like the batched
+        # review loop's tally-before-stop.
+        window = self._body_src()
+        block = window.find("live-sink re-queue")
+        assert block != -1
+        sub = window[block:block + 8000]
+        harvest = sub.find("ls_raw.append(fut.result())")
+        cancel = sub.find("f.cancel()")
+        assert harvest != -1 and cancel != -1
+        assert harvest < cancel

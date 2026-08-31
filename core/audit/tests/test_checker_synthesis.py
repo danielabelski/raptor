@@ -693,3 +693,78 @@ class TestRuleQuarantine:
             checklist,
         )
         assert gaps and gaps[0]["synthesis_rule_id"] == "rule-q"
+
+
+class TestTriageRuleHitsErrorGuard:
+    """Error-status outcomes say nothing about a rule — they must
+    record neither TP nor FP (a transport brownout previously retired
+    healthy rules as all-false-positive)."""
+
+    def _shared(self):
+        from core.audit.shared_state import SharedState
+        return SharedState()
+
+    @staticmethod
+    def _library():
+        class _Entry:
+            rule_id = "lib-rule"
+
+        class _Lib:
+            def __init__(self):
+                self.matches = []
+
+            def all_entries(self):
+                return [_Entry()]
+
+            def record_match(self, rule_id, is_tp):
+                self.matches.append((rule_id, is_tp))
+
+        return _Lib()
+
+    @staticmethod
+    def _pf(rule_id="lib-rule"):
+        import types
+        hit = types.SimpleNamespace(rule_id=rule_id)
+        return types.SimpleNamespace(hits=[hit])
+
+    @staticmethod
+    def _outcome(status):
+        from core.audit.orchestrator import ReviewOutcome
+        return ReviewOutcome(
+            file="a.c", function="f", status=status, body="b",
+        )
+
+    def test_error_outcome_records_nothing(self):
+        from core.audit.orchestrator import _triage_rule_hits
+
+        shared = self._shared()
+        lib = self._library()
+        _triage_rule_hits(
+            shared, self._outcome("error"),
+            {"synthesis_rule_id": "synth-1"}, self._pf(), lib,
+        )
+        assert lib.matches == []
+        assert shared.rule_triage == {}
+
+    def test_clean_outcome_records_fp(self):
+        from core.audit.orchestrator import _triage_rule_hits
+
+        shared = self._shared()
+        lib = self._library()
+        _triage_rule_hits(
+            shared, self._outcome("clean"),
+            {"synthesis_rule_id": "synth-1"}, self._pf(), lib,
+        )
+        assert lib.matches == [("lib-rule", False)]
+        # [tp_count, total]: one all-FP triage recorded.
+        assert shared.rule_triage.get("synth-1") == [0, 1]
+
+    def test_finding_outcome_records_tp(self):
+        from core.audit.orchestrator import _triage_rule_hits
+
+        shared = self._shared()
+        lib = self._library()
+        _triage_rule_hits(
+            shared, self._outcome("finding"), {}, self._pf(), lib,
+        )
+        assert lib.matches == [("lib-rule", True)]

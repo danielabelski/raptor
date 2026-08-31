@@ -143,6 +143,18 @@ _FAMILY_TO_PROVIDER: dict[Family, str] = {
     "cohere": "cohere",
 }
 
+# Heads that :func:`bare_model_id` strips as a ``<provider>/`` prefix.
+# Union of the ROUTING provider strings and the family-detection
+# provider stems: ``family_of`` accepts ``google/gemini-…``,
+# ``meta-llama/Llama-…`` and ``mistralai/Mistral-…`` as
+# provider-qualified ids, so the bare-name peel must strip the same
+# heads — otherwise operator ``--model`` values in those spellings
+# never match their models.json entries.
+_BARE_STRIP_HEADS: frozenset[str] = (
+    frozenset(_FAMILY_TO_PROVIDER.values())
+    | frozenset(stem for stem, _ in _PROVIDER_STEMS)
+)
+
 
 def provider_for_family(family: Family) -> str:
     """Map a model family to its provider string (for ModelConfig)."""
@@ -356,7 +368,7 @@ def bare_model_id(model_id: str) -> str:
         return bare_model_id(needle)
     if "/" in needle:
         head, rest = needle.split("/", 1)
-        if head.lower() in {v for v in _FAMILY_TO_PROVIDER.values()}:
+        if head.lower() in _BARE_STRIP_HEADS:
             needle = rest
     return needle
 

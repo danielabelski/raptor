@@ -36,6 +36,17 @@ def test_bare_model_id_leaves_unknown_prefixes_alone():
     assert bare_model_id("foo/bar-1") == "foo/bar-1"
 
 
+def test_bare_model_id_peels_every_family_of_provider_stem():
+    # Heads ``family_of`` resolves as provider-qualified must also be
+    # peeled here — otherwise an operator ``--model google/gemini-…``
+    # never matches its models.json entry even though family detection
+    # accepts the spelling.
+    assert bare_model_id("google/gemini-2.5-pro") == "gemini-2.5-pro"
+    assert bare_model_id("meta-llama/Llama-3-8B") == "Llama-3-8B"
+    assert bare_model_id("mistralai/Mistral-7B") == "Mistral-7B"
+    assert bare_model_id("together/meta-llama/Llama-3-8B") == "Llama-3-8B"
+
+
 # --- family_of ---
 
 def test_anthropic_models_resolve_to_anthropic():

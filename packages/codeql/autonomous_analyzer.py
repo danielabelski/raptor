@@ -340,13 +340,46 @@ class AutonomousCodeQLAnalyzer:
                     self._reachability_inventory = False
                     return None
 
+        loc = self._locate_finding_function(finding, repo_path)
+        if loc is None:
+            return None
+        rel_path, func_name, line_start = loc
         try:
             from core.analysis.reach_audit import classify_reachability
+        except ImportError:
+            return None
+        module = self._path_to_module(rel_path)
+        if not module:
+            return None
+
+        # Delegate to the shared, entry-aware classifier — the same
+        # precedence the /agentic enrichment prepass uses: module_aborts ->
+        # lexical_dead -> entry-reachability (reachable / no_path_from_entry)
+        # -> framework / registration -> 1-hop called / not_called. Using
+        # the entry-aware classifier means an exported / public entry with
+        # no in-project caller no longer reads not_called. The CALLER
+        # decides whether a verdict hard-suppresses, via the witness
+        # chokepoint (``check_suppress`` in analyze_finding_autonomous —
+        # sound + corpus-earned witnesses only) — so --allow-unreachable
+        # and manual_override handling live there, not here.
+        return classify_reachability(
+            self._reachability_inventory, rel_path, func_name,
+            line_start, module,
+        )
+
+    def _locate_finding_function(
+        self, finding: CodeQLFinding, repo_path: Path,
+    ) -> tuple[str, str, int] | None:
+        """Resolve the finding's sink line to its enclosing inventory
+        function: ``(rel_path, func_name, line_start)``, or ``None``
+        when the inventory is unavailable or the sink isn't inside a
+        known function."""
+        if not isinstance(self._reachability_inventory, dict):
+            return None
+        try:
             from core.inventory.lookup import lookup_function
         except ImportError:
             return None
-
-        # Find the function containing the sink line.
         func_info = lookup_function(
             self._reachability_inventory,
             finding.file_path,
@@ -361,23 +394,7 @@ class AutonomousCodeQLAnalyzer:
         rel_path = self._relative_path(finding.file_path, repo_path)
         if rel_path is None:
             return None
-        module = self._path_to_module(rel_path)
-        if not module:
-            return None
-
-        # Delegate to the shared, entry-aware classifier — the same
-        # precedence the /agentic enrichment prepass uses: module_aborts ->
-        # lexical_dead -> entry-reachability (reachable / no_path_from_entry)
-        # -> framework / registration -> 1-hop called / not_called. Using
-        # the entry-aware classifier means an exported / public entry with
-        # no in-project caller no longer reads not_called. The CALLER
-        # decides whether a verdict hard-suppresses, via the witness
-        # chokepoint may_suppress() (sound + corpus-earned only) — so
-        # --allow-unreachable handling lives there, not here.
-        return classify_reachability(
-            self._reachability_inventory, rel_path, func_name,
-            int(func_info.get("line_start") or 0), module,
-        )
+        return rel_path, func_name, int(func_info.get("line_start") or 0)
 
     def _relative_path(
         self, file_path: str, repo_path: Path,
@@ -1094,21 +1111,34 @@ class AutonomousCodeQLAnalyzer:
         # verdicts (not_called, no_path_from_entry) are surface-only: they
         # still get full analysis (the enrichment prepass soft-demotes
         # them), because 1-hop / entry-completeness assumptions can miss
-        # reflection, cross-file, or address-of edges. --allow-unreachable
-        # empties the earned set so nothing is hard-suppressed in the
-        # in-isolation review mode.
+        # reflection, cross-file, or address-of edges. The decision is
+        # routed through ``check_suppress`` — the canonical chokepoint
+        # the /agentic sibling uses — so the finding-level
+        # ``manual_override`` operator opt-out (a SARIF top-level or
+        # ``properties`` key) and --allow-unreachable are honored here
+        # exactly as they are there; the previous inline
+        # ``may_suppress`` copy silently ignored manual_override.
+        suppress = False
         if reachability_verdict:
-            from core.analysis.reach_witness import (
-                STRUCTURALLY_SUPPRESSIBLE_KINDS,
-                verdict_from_classification,
-            )
-            earned = (frozenset() if self._allow_unreachable
-                      else STRUCTURALLY_SUPPRESSIBLE_KINDS)
-            suppress = verdict_from_classification(
-                reachability_verdict,
-            ).may_suppress(earned)
-        else:
-            suppress = False
+            loc = self._locate_finding_function(finding, repo_path)
+            if loc is not None:
+                rel_path, func_name, line_start = loc
+                from core.analysis.reach_chokepoint import check_suppress
+                # loc is non-None only when the inventory is a dict
+                # (see _locate_finding_function).
+                suppress = check_suppress(
+                    checklist=self._reachability_inventory,
+                    file_path=rel_path,
+                    function_name=func_name,
+                    line=line_start,
+                    repo_root=repo_path,
+                    allow_unreachable=self._allow_unreachable,
+                    manual_override=(
+                        sarif_result.get("manual_override")
+                        or (sarif_result.get("properties") or {}).get(
+                            "manual_override")
+                    ),
+                ) is not None
         if suppress:
             self.logger.info(
                 "⏭️  Sink unreachable (%s — sound witness) — skipping "

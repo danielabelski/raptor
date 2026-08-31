@@ -72,37 +72,47 @@ def _unescape_echo_body(body: str) -> str | None:
     return text if isinstance(text, str) else None
 
 
-def _marker_records_in_text(text: str, marker: str) -> list[Any]:
+def _marker_records_in_text(
+    text: str, marker: str,
+) -> tuple[list[Any], str | None]:
     """Strict-parse every marker record in already-unescaped text.
 
-    Segments that fail to parse are skipped: by the time text reaches
-    here the line is established echo, and unrecoverable echo is noise
-    (a RE-print of records), never an error.
+    Returns ``(records, error)``.  A marker-bearing segment that fails
+    to parse (width-truncated echo interior) is a dropped record: on
+    the server transport the echo is the ONLY carrier, so skipping it
+    silently turned dropped records into healthy zeros.
     """
     records: list[Any] = []
+    error: str | None = None
     for segment in text.splitlines():
         idx = segment.find(marker)
         if idx < 0:
             continue
         try:
             records.append(json.loads(segment[idx + len(marker):].strip()))
-        except ValueError:
-            continue
-    return records
+        except ValueError as exc:
+            error = (
+                f"unrecoverable {marker} echo record "
+                f"{segment[idx:idx + 200]!r}: {exc}"
+            )
+    return records, error
 
 
 def _recover_echo_records(
     plain_line: str,
     marker_idx: int,
     marker: str,
-) -> list[Any] | None:
+) -> tuple[list[Any], str | None] | None:
     """Recover records from a single-line Java-escaped value echo.
 
     Returns ``None`` when the line is not echo-shaped (no
-    ``val resN: String = "`` before the marker); otherwise the records
-    recovered after one unescape round — possibly empty.  An echo that
-    stays unrecoverable is expected noise, never an error: it is a
-    RE-print of records, not the printing of new ones.
+    ``val resN: String = "`` before the marker); otherwise
+    ``(records, error)`` after one unescape round.  An echo body that
+    carries the marker but stays undecodable (width-truncated echo,
+    dangling backslash) is an ERROR: on the server transport the
+    value echo is the ONLY carrier of the records — reading the
+    failure as noise turned dropped records into healthy zeros, and
+    consumers demoted findings on that phantom evidence.
     """
     m = _ECHO_PREFIX_RE.search(plain_line[:marker_idx])
     if m is None:
@@ -110,7 +120,9 @@ def _recover_echo_records(
     interior = plain_line[m.end():].rstrip().rstrip('"')
     text = _unescape_echo_body(interior)
     if text is None:
-        return []
+        return [], (
+            f"unrecoverable {marker} echo body {interior[:200]!r}"
+        )
     return _marker_records_in_text(text, marker)
 
 
@@ -145,37 +157,55 @@ def _scan_string_literal_bodies(line: str) -> list[str]:
 def _recover_list_echo_records(
     plain_line: str,
     marker: str,
-) -> list[Any] | None:
+) -> tuple[list[Any], str | None] | None:
     """Recover records from a List-binder value echo line.
 
     Returns ``None`` when the line is not binder-echo shaped
-    (:data:`_LIST_ECHO_LINE_RE`); otherwise the records recovered from
-    every marker-bearing string literal on the line — possibly empty.
-    Recovery requires each literal body to survive one unescape round
-    AND yield strictly-parsing marker JSON; a genuinely printed record
-    carries raw quote delimiters and no binder framing, so it can never
-    read as this shape.
+    (:data:`_LIST_ECHO_LINE_RE`); otherwise ``(records, error)`` from
+    every marker-bearing string literal on the line.  Recovery
+    requires each literal body to survive one unescape round AND
+    yield strictly-parsing marker JSON; a genuinely printed record
+    carries raw quote delimiters and no binder framing, so it can
+    never read as this shape.  A marker-bearing element body that
+    stays undecodable (width-truncated echo element) is an ERROR —
+    on the server transport the binder echo can be the only carrier,
+    so a silently dropped element read as a healthy zero (see
+    :func:`_recover_echo_records`).
     """
     if _LIST_ECHO_LINE_RE.match(plain_line) is None:
         return None
     records: list[Any] = []
+    error: str | None = None
     for body in _scan_string_literal_bodies(plain_line):
         if marker not in body:
             continue
         text = _unescape_echo_body(body)
         if text is None:
+            error = (
+                f"unrecoverable {marker} echo element {body[:200]!r}"
+            )
             continue
-        records.extend(_marker_records_in_text(text, marker))
-    return records
+        recs, rec_error = _marker_records_in_text(text, marker)
+        records.extend(recs)
+        error = error or rec_error
+    return records, error
 
 
 def parse_marker_line(line: str, marker: str) -> tuple[list[Any], str | None]:
     """Parse one stdout line for *marker* records.
 
     Returns ``(records, error)``.  ``records`` is empty when the line
-    carries no marker or is unrecoverable echo noise; ``error``
-    describes a genuinely printed record that failed to decode — a
-    dropped record the caller must surface.  Echo lines never error.
+    carries no marker; ``error`` describes a marker record that was
+    dropped — a genuinely printed record that failed to decode, OR an
+    echo body/element that stayed unrecoverable (width truncation).
+    Echo errors matter because the server transport carries records
+    ONLY in the value echo — an unrecoverable echo is a dropped
+    record there, not a re-print, and reading it as noise let
+    healthy-looking zeros drive wrongful demotions.  On the
+    subprocess transport a println copy of the same record usually
+    survives elsewhere in the transcript; consumers that hold records
+    should prefer them over the error (``_joern_find_callers`` only
+    degrades when NO records decoded).
     """
     plain = strip_ansi(line)
     idx = plain.find(marker)
@@ -191,7 +221,7 @@ def parse_marker_line(line: str, marker: str) -> tuple[list[Any], str | None]:
         if recovered is None:
             recovered = _recover_list_echo_records(plain, marker)
         if recovered is not None:
-            return recovered, None
+            return recovered
         return [], f"unparseable {marker} payload {payload[:200]!r}: {exc}"
 
 
@@ -220,3 +250,34 @@ def parse_marker_records(
             seen.add(key)
             records.append(rec)
     return records, errors
+
+
+def extract_scalar_marker(raw_output: str, marker: str) -> str | None:
+    """Last ``MARKER:<scalar>`` payload in *raw_output*, transport-
+    tolerant.  For queries whose answer is a short non-JSON scalar
+    (e.g. the guard summary ``guarded/total``) rather than one JSON
+    record per line.
+
+    Handles the same echo framings as :func:`parse_marker_line`: a
+    bare println line (subprocess transport), a single-line value
+    echo (``val resN: String = "MARKER:3/5"`` — trailing quote is
+    framing), the first line of a triple-quoted multi-line echo, and
+    ANSI wrapping.  Scalar payloads are escape-free by construction
+    (the emitting queries interpolate only digits and ``/``), so the
+    payload is cut at the first backslash — in a Java-escaped echo
+    that is the start of an escape sequence, never scalar content.
+
+    Returns ``None`` when no marker line is present — the caller
+    must read that as "consultation degraded", never as a value.
+    """
+    found: str | None = None
+    for line in (raw_output or "").splitlines():
+        plain = strip_ansi(line)
+        idx = plain.find(marker)
+        if idx < 0:
+            continue
+        payload = plain[idx + len(marker):]
+        payload = payload.split("\\", 1)[0].strip().rstrip('"').strip()
+        if payload:
+            found = payload
+    return found

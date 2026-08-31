@@ -15,7 +15,10 @@ import re
 from pathlib import Path
 from typing import Any
 
-from core.analysis._joern_lines import parse_marker_records
+from core.analysis._joern_lines import (
+    extract_scalar_marker,
+    parse_marker_records,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -83,16 +86,28 @@ _CONDUIT_PHRASES: tuple[str, ...] = (
     r"\binvokes\b.*\bwithout\b",
 )
 
+# Dual-emit doctrine (same as unguarded_sinks.sc): the summary is
+# println'd for the subprocess transport AND returned as the final
+# expression so the server transport (/query-sync drops println,
+# echo-frames the final expression) still carries it. The marker
+# payload keeps unguarded_sinks.sc's ``unguarded/total`` semantics so
+# the two JOERN_GUARD_SUMMARY emitters can't be misread against each
+# other. The bare ``s"$guarded/$total"`` final expression this
+# replaces was int-parsed from raw stdout — the server echo framing
+# (``val res0: String = "..."``) made every parse fail, pinning the
+# gate at GUARD_UNAVAILABLE for whole joern-enabled runs.
 _GUARD_QUERY_TEMPLATE = r'''import io.shiftleft.semanticcpg.language._
 
 val fn = cpg.method.name("__FUNCTION__")
 val sinkNames = List(__SINK_NAMES__)
-val sinkCalls = fn.call.name(sinkNames.mkString("|"))
+val sinkCalls = fn.call.name(sinkNames.mkString("|")).l
 val total = sinkCalls.size
-val structurallyGuarded = sinkCalls.where(_.dominatedBy.isControlStructure).size
-val controlGuarded = sinkCalls.where(_.controlledBy.isControlStructure).size
+val structurallyGuarded = sinkCalls.count(_.dominatedBy.isControlStructure.l.nonEmpty)
+val controlGuarded = sinkCalls.count(_.controlledBy.isControlStructure.l.nonEmpty)
 val guarded = Math.max(structurallyGuarded, controlGuarded)
-s"$guarded/$total"
+val summary = s"JOERN_GUARD_SUMMARY:${total - guarded}/$total"
+println(summary)
+summary
 '''
 
 # parents: [0]=analysis, [1]=core, [2]=repo root
@@ -249,7 +264,23 @@ def _joern_find_callers(
     query = query_path.read_text().replace("__FUNCTION__", function_name)
     try:
         result = joern_server.query(query, timeout=15, validate=False)
-        if result.errors:
+        # server.query runs a JOERN_FLOW scan over EVERY query's
+        # stdout and folds that scan's parse noise into
+        # ``result.errors`` ("failed to parse flow: ..."): echoed
+        # script source, res-binder echoes without a val line, or
+        # repo text that happens to contain the JOERN_FLOW marker.
+        # Those phantom errors say nothing about THIS query — keying
+        # degradation on them turned healthy zero-caller answers into
+        # permanent None (gate silently dark). Only errors OUTSIDE
+        # that shape (query failed / server exited / timeout) degrade;
+        # decode failures for OUR marker come from
+        # ``parse_marker_records`` below. Residual: a genuine failure
+        # whose message embeds the literal flow-scan prefix would be
+        # ignored — no current error producer has that shape.
+        if any(
+            "failed to parse flow:" not in str(e)
+            for e in (result.errors or [])
+        ):
             return None
         records, decode_errors = parse_marker_records(
             result.raw_output or "", "JOERN_CALLER:",
@@ -368,18 +399,33 @@ def check_sink_guarded(
 
     try:
         result = joern_server.query(query, timeout=30, validate=False)
-        if result.errors:
-            logger.debug("guard query error for %s: %s", function_name, result.errors)
+        # The marker is the authoritative carrier on BOTH transports
+        # (dual-emit). Parse it FIRST: ``result.errors`` is not a
+        # reliable degradation signal here — server.query runs a
+        # JOERN_FLOW scan over every query's stdout and folds that
+        # scan's parse noise into ``errors`` (see the matching filter
+        # in ``_joern_find_callers``), so a healthy guard answer can
+        # arrive alongside phantom errors. A transcript with NO
+        # parseable marker (compile error, server died mid-query,
+        # garbled reply) is the actual degraded case.
+        summary = extract_scalar_marker(
+            result.raw_output or "", "JOERN_GUARD_SUMMARY:",
+        )
+        if summary is None:
+            if result.errors:
+                logger.debug(
+                    "guard query error for %s: %s",
+                    function_name, result.errors,
+                )
             return GUARD_UNAVAILABLE
-        output = (result.raw_output or "").strip()
-        if "/" not in output:
+        m = re.fullmatch(r"(\d+)/(\d+)", summary)
+        if m is None:
             return GUARD_UNAVAILABLE
-        guarded_s, total_s = output.rsplit("/", 1)
-        guarded = int(guarded_s)
-        total = int(total_s)
+        unguarded = int(m.group(1))
+        total = int(m.group(2))
         if total == 0:
             return None
-        return "guarded" if guarded == total else "unguarded"
+        return "guarded" if unguarded == 0 else "unguarded"
     except Exception:
         logger.debug("guard query exception for %s", function_name, exc_info=True)
         return GUARD_UNAVAILABLE
@@ -566,9 +612,15 @@ _NEGATION_WORDS = frozenset({
     "unfortunately", "incorrectly", "improperly",
 })
 
+# The verb must sit in the SAME sentence/line as "if a caller" —
+# ``[^.\n]{0,120}`` blocks the sentence-crossing matches the previous
+# greedy ``.*`` + DOTALL allowed (an "if a caller" aside in one
+# paragraph paired with an unrelated "passes" pages later demoted
+# real findings as self-contradiction).
 _HYPOTHETICAL_CALLER_VIOLATION = re.compile(
-    r"\bif\s+a\s+caller\b.*\b(?:violates?|provides?|passes?|supplies?)\b",
-    re.IGNORECASE | re.DOTALL,
+    r"\bif\s+a\s+caller\b[^.\n]{0,120}?"
+    r"\b(?:violates?|provides?|passes?|supplies?)\b",
+    re.IGNORECASE,
 )
 
 

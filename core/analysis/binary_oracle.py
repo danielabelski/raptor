@@ -947,28 +947,40 @@ def classify_binary_evidence(
     # In both cases we index by the qualified name so C++ measurement
     # against gcov -m / nm -C output hits — Inc 3c on snappy
     # showed every ``snappy::Bits::Log2Floor`` style call misclassifying
-    # as absent without namespace qualification.
+    # as absent without namespace qualification — AND by the bare
+    # trailing component, mirroring the ``by_qualified`` / ``by_bare``
+    # dual indexing above: source inventories frequently carry
+    # namespaced C++/Rust functions under their BARE name, and a
+    # fully-inlined function has no nm symbol and no concrete low_pc,
+    # so a bare-name inventory lookup that misses here falls all the
+    # way through to ``absent`` — a suppression-grade wrong verdict on
+    # live inlined code. The bare index can only rescue a name from
+    # ``absent`` to ``inlined`` (never mints an ``absent``), so a bare-
+    # name collision errs toward analysing, not suppressing.
     inlined_names: set[str] = set()
-    for off in inline_origins:
-        die = subs.get(off)
-        if die and die.qualified_name:
+
+    def _note_inlined(die: _SubprogramDIE) -> None:
+        if die.qualified_name:
             inlined_names.add(die.qualified_name)
-        if die and die.linkage_name:
+        if die.name and die.name != die.qualified_name:
+            inlined_names.add(die.name)
+        if die.linkage_name:
             demangled = demangled_map.get(die.linkage_name)
             if demangled:
                 canonical = _qualified_from_demangled(demangled)
                 if canonical:
                     inlined_names.add(canonical)
+                    bare = canonical.rsplit("::", 1)[-1]
+                    if bare and bare != canonical:
+                        inlined_names.add(bare)
+
+    for off in inline_origins:
+        die = subs.get(off)
+        if die:
+            _note_inlined(die)
     for die in subs.values():
         if die.has_inline_marker:
-            if die.qualified_name:
-                inlined_names.add(die.qualified_name)
-            if die.linkage_name:
-                demangled = demangled_map.get(die.linkage_name)
-                if demangled:
-                    canonical = _qualified_from_demangled(demangled)
-                    if canonical:
-                        inlined_names.add(canonical)
+            _note_inlined(die)
 
     # Fold detection: two distinct source names mapping to the same address.
     by_addr: dict[int, set[str]] = {}
@@ -1386,6 +1398,36 @@ def enrich_inventory_with_binary_oracle(
     return counts
 
 
+def absent_earns_suppression(per_binary) -> bool:
+    """Single authority for "may this ``absent`` combined verdict
+    license suppression?" — shared by :func:`extract_verdicts`, the
+    reachability chokepoint accessor
+    (``core.analysis.reachability.binary_oracle_absent``) and the
+    ``raptor-audit`` G7 record gate, which previously each hand-copied
+    the rule and drifted (extract_verdicts required only ANY full-tier
+    binary, leaking symbol-only ``absent`` evidence into suppression
+    on hybrid full+stripped runs).
+
+    ``per_binary`` is the item's ``metadata.binary_oracle.binaries``
+    list. True iff:
+
+      * at least one per-binary record exists (a legacy inventory
+        with no tier evidence earns no trust), AND
+      * EVERY contributing binary is full-tier (a symbol-only binary
+        can't distinguish ``inlined`` from ``absent``), AND
+      * no contributing binary is marked ``suppression_grade: false``
+        (env-built with a GUESSED build command — its absence says
+        nothing suppression-grade about the operator's tree; a
+        missing key = legacy record = full grade).
+    """
+    entries = [b for b in (per_binary or []) if isinstance(b, dict)]
+    if not entries:
+        return False
+    if any(b.get("tier") != "full" for b in entries):
+        return False
+    return not any(b.get("suppression_grade") is False for b in entries)
+
+
 def extract_verdicts(inventory: dict) -> dict[str, str]:
     """Extract a flat {function_name: verdict} dict from an enriched inventory.
 
@@ -1393,38 +1435,65 @@ def extract_verdicts(inventory: dict) -> dict[str, str]:
     this extracts the combined classification for each function into
     the shape ``OrchestratorConfig.binary_verdicts`` expects.
 
-    ``absent`` verdicts are only emitted when at least one contributing
-    binary has ``tier == "full"`` (full-DWARF evidence) AND no
-    contributing binary is marked ``suppression_grade: false`` (an
-    env-built binary whose build command was guessed — its absence
-    says nothing suppression-grade about the operator's tree).
-    Symbol-only tier absent verdicts are likewise excluded.
+    ``absent`` verdicts are only emitted when the per-binary evidence
+    passes :func:`absent_earns_suppression` (every contributing binary
+    full-tier, none guessed-build).
+
+    The consumer applies these verdicts by BARE name to functions of
+    ANY language (the audit G7 dead-code gate keys on the gap's
+    function name alone), so two producer-side guards keep bare-name
+    keying sound:
+
+      * a name whose classifications differ across same-name native
+        items (overloads, per-file statics) collapses to the STRONGEST
+        classification (alive-in-any — mirrors the multi-binary
+        combine), so a live namesake can never be suppressed by a dead
+        one sharing its name;
+      * a name also defined by a NON-native function item (Python / JS
+        / Java namesake of a C function) is dropped entirely — the
+        oracle has no evidence about the non-native function, and the
+        consumer can't tell which one it's looking at.
     """
-    verdicts: dict[str, str] = {}
+    per_name: dict[str, str] = {}
+    non_native_names: set[str] = set()
+    # Names where at least one namesake item's ``absent`` evidence is
+    # NOT suppression grade (symbol-only / guessed-build) — the bare
+    # key can't say which item a consumer means, so ``absent`` must
+    # not be emitted for the name at all.
+    absent_blocked: set[str] = set()
     for f in inventory.get("files") or []:
+        lang = (f.get("language") or "").lower()
+        native = lang in _NATIVE_LANGUAGES
         for item in f.get("items") or []:
+            name = item.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            if not native:
+                if item.get("kind", "function") == "function":
+                    non_native_names.add(name)
+                continue
             bo = (item.get("metadata") or {}).get("binary_oracle")
-            if bo and isinstance(bo, dict):
-                classification = bo["classification"]
-                if classification == "absent":
-                    per_binary = bo.get("binaries", [])
-                    has_full = any(
-                        b.get("tier") == "full" for b in per_binary
-                    )
-                    any_no_grade = any(
-                        b.get("suppression_grade") is False
-                        for b in per_binary
-                    )
-                    if not has_full or any_no_grade:
-                        continue
-                name = item.get("name")
-                if isinstance(name, str) and name:
-                    verdicts[name] = classification
-    return verdicts
+            if not (bo and isinstance(bo, dict)):
+                continue
+            classification = bo["classification"]
+            if (classification == "absent"
+                    and not absent_earns_suppression(bo.get("binaries"))):
+                absent_blocked.add(name)
+                continue
+            prev = per_name.get(name)
+            if prev is None or (_CLASS_PRIORITY.get(classification, 0)
+                                > _CLASS_PRIORITY.get(prev, 0)):
+                per_name[name] = classification
+    return {
+        n: v for n, v in per_name.items()
+        if n not in non_native_names
+        and not (v == "absent" and n in absent_blocked)
+    }
 
 
 __all__ = [
     "BinaryOracleWitness",
+    "absent_earns_suppression",
     "classify_binary_evidence",
     "enrich_inventory_with_binary_oracle",
     "extract_verdicts",

@@ -509,7 +509,6 @@ def cmd_record(args: argparse.Namespace) -> int:
 
         if not is_entry and has_callers is not None and not has_callers:
             binary_absent = False
-            binary_tier = None
             for fe in checklist.get("files", []):
                 if fe.get("path") != args.file:
                     continue
@@ -518,16 +517,21 @@ def cmd_record(args: argparse.Namespace) -> int:
                         continue
                     bo = (item.get("metadata") or {}).get("binary_oracle")
                     if bo:
-                        binary_absent = bo.get("classification") == "absent"
-                        binary_tier = "full"
-                        for b in bo.get("binaries", []):
-                            if b.get("tier") == "symbol_only":
-                                binary_tier = "symbol_only"
-                                break
+                        # Shared predicate — the hand-copied tier loop
+                        # here had already drifted from the chokepoint
+                        # rule (it ignored suppression_grade).
+                        from core.analysis.binary_oracle import (
+                            absent_earns_suppression,
+                        )
+                        binary_absent = (
+                            bo.get("classification") == "absent"
+                            and absent_earns_suppression(
+                                bo.get("binaries"))
+                        )
                     break
                 break
 
-            if binary_absent and binary_tier == "full":
+            if binary_absent:
                 print(
                     f"error [G7 REACHABILITY]: {func_key} has zero static "
                     f"callers AND binary oracle says absent (full DWARF). "
@@ -1535,8 +1539,14 @@ def cmd_run(args: argparse.Namespace) -> int:
             enrich_inventory_with_binary_oracle,
             extract_verdicts,
         )
+        from core.config import RaptorConfig
+        # ``_bo_apply`` above populated BINARY_ORACLE_NO_SUPPRESS;
+        # without forwarding it (mirrors core/inventory/builder.py),
+        # guessed env-build binaries earned suppression on the /audit
+        # surface, voiding the documented downgrade.
         bo_counts = enrich_inventory_with_binary_oracle(
             checklist_data, binary_paths,
+            no_suppression_paths=RaptorConfig.BINARY_ORACLE_NO_SUPPRESS,
         )
         binary_verdicts = extract_verdicts(checklist_data)
         if binary_verdicts:

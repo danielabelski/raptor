@@ -191,7 +191,7 @@ class TestComputeDemotionVerdict:
             ],
             "sinks": [{"function": "memcpy"}],
         }
-        server = _FakeJoernServer(raw_output="2/2")
+        server = _FakeJoernServer(raw_output="JOERN_GUARD_SUMMARY:0/2")
         verdict = compute_demotion_verdict(
             "parse", "copies input with memcpy(", cm, joern_server=server,
         )
@@ -278,6 +278,34 @@ class TestHasSafetySelfContradiction:
     def test_specific_caller_not_hypothetical(self):
         body = "The caller handle_connection provides untrusted data directly"
         assert has_safety_self_contradiction(body) is False
+
+    def test_cross_paragraph_caller_mention_is_not_hypothetical(self):
+        # The old greedy ``.*`` + DOTALL paired an "if a caller" aside
+        # in one paragraph with an unrelated verb pages later,
+        # demoting real findings as self-contradiction. The verb must
+        # be in the same sentence/line.
+        body = (
+            "Even if a caller is well-behaved, this is irrelevant here.\n\n"
+            "The parser copies the attacker-controlled length field "
+            "into a stack buffer. The network layer passes raw bytes "
+            "through without validation, so the overflow is directly "
+            "triggerable."
+        )
+        assert has_safety_self_contradiction(body) is False
+
+    def test_same_sentence_far_verb_is_not_matched(self):
+        # Same line but beyond the 120-char proximity bound: treated
+        # as unrelated clauses, not a hypothetical-caller finding.
+        filler = "and the surrounding logic is complex " * 5
+        body = f"if a caller exists {filler} then something passes by"
+        assert has_safety_self_contradiction(body) is False
+
+    def test_same_sentence_violation_still_matched(self):
+        body = (
+            "This only matters if a caller violates the documented "
+            "size contract."
+        )
+        assert has_safety_self_contradiction(body) is True
 
     def test_correctly_handles_is_not_safety_assertion(self):
         body = "The function correctly handles content-type but path is not normalized before fopen"
@@ -405,6 +433,41 @@ class TestEntryUnreachableJoernOverride:
         server = _FakeJoernServer(raw_output="", errors=["timeout"])
         assert is_entry_unreachable("orphan", self._cm, joern_server=server) is False
 
+    def test_phantom_flow_errors_do_not_blind_the_gate(self):
+        # server.query folds JOERN_FLOW-scan parse noise into
+        # result.errors on EVERY query (echoed script source, repo
+        # text carrying the marker). Those phantom errors say nothing
+        # about the caller query — a healthy zero-caller answer must
+        # still let the demotion proceed.
+        server = _FakeJoernServer(
+            raw_output="",
+            errors=["failed to parse flow: unparseable JOERN_FLOW: "
+                    "payload '...': Expecting value"],
+        )
+        assert is_entry_unreachable("orphan", self._cm, joern_server=server) is True
+
+    def test_phantom_flow_errors_do_not_drop_found_callers(self):
+        stdout = (
+            'JOERN_CALLER:{"caller":"dispatch","file":"src/d.c",'
+            '"line":42,"code":"orphan(buf)"}'
+        )
+        server = _FakeJoernServer(
+            raw_output=stdout,
+            errors=["failed to parse flow: unparseable JOERN_FLOW: "
+                    "payload '...': Expecting value"],
+        )
+        assert is_entry_unreachable("orphan", self._cm, joern_server=server) is False
+
+    def test_real_error_alongside_phantoms_still_blocks(self):
+        server = _FakeJoernServer(
+            raw_output="",
+            errors=[
+                "failed to parse flow: unparseable JOERN_FLOW: payload",
+                "query failed: server restarting",
+            ],
+        )
+        assert is_entry_unreachable("orphan", self._cm, joern_server=server) is False
+
     def test_joern_dead_server_blocks_demotion(self):
         server = _FakeJoernServer(alive=False)
         assert is_entry_unreachable("orphan", self._cm, joern_server=server) is False
@@ -426,6 +489,18 @@ class TestEntryUnreachableJoernOverride:
         # is a degraded consultation, not evidence of zero callers.
         server = _FakeJoernServer(
             raw_output='JOERN_CALLER:{"caller":"disp", TRUNCATED\n',
+        )
+        assert is_entry_unreachable("orphan", self._cm, joern_server=server) is False
+
+    def test_joern_truncated_echo_blocks_demotion(self):
+        # Server transport: the value echo is the ONLY record carrier;
+        # a width-truncated echo is a dropped record — treating it as
+        # noise turned the reply into a healthy-looking zero and the
+        # finding was wrongfully demoted.
+        server = _FakeJoernServer(
+            raw_output=(
+                'val res0: String = "JOERN_CALLER:{\\"caller\\":\\"disp'
+            ),
         )
         assert is_entry_unreachable("orphan", self._cm, joern_server=server) is False
 
@@ -681,18 +756,75 @@ class TestCheckSinkGuardedTriState:
         assert rg.check_sink_guarded("fn", _Boom()) == rg.GUARD_UNAVAILABLE
 
     def test_no_tested_sinks_is_none(self):
-        server = _FakeJoernServer(raw_output="0/0")
+        server = _FakeJoernServer(raw_output="JOERN_GUARD_SUMMARY:0/0")
         assert rg.check_sink_guarded("fn", server) is None
 
     def test_invalid_name_is_none(self):
-        server = _FakeJoernServer(raw_output="1/1")
+        server = _FakeJoernServer(raw_output="JOERN_GUARD_SUMMARY:0/1")
         assert rg.check_sink_guarded("not valid!", server) is None
 
     def test_guarded_and_unguarded_still_verdict(self):
         assert rg.check_sink_guarded(
-            "fn", _FakeJoernServer(raw_output="2/2")) == "guarded"
+            "fn", _FakeJoernServer(raw_output="JOERN_GUARD_SUMMARY:0/2"),
+        ) == "guarded"
         assert rg.check_sink_guarded(
-            "fn", _FakeJoernServer(raw_output="1/2")) == "unguarded"
+            "fn", _FakeJoernServer(raw_output="JOERN_GUARD_SUMMARY:1/2"),
+        ) == "unguarded"
+
+    def test_bare_scalar_without_marker_is_unavailable(self):
+        # The legacy protocol (final-expression ``guarded/total`` with
+        # no marker) is gone: a transcript carrying only a bare scalar
+        # can't be attributed to the guard query, so it degrades.
+        server = _FakeJoernServer(raw_output="3/5")
+        assert rg.check_sink_guarded("fn", server) == rg.GUARD_UNAVAILABLE
+
+    def test_server_echo_framed_summary_parses(self):
+        # Server transport: /query-sync drops println and echo-frames
+        # the final expression — the shape that used to pin the gate
+        # at GUARD_UNAVAILABLE for whole joern-enabled runs.
+        server = _FakeJoernServer(
+            raw_output='val res0: String = "JOERN_GUARD_SUMMARY:0/3"',
+        )
+        assert rg.check_sink_guarded("fn", server) == "guarded"
+
+    def test_ansi_wrapped_summary_parses(self):
+        server = _FakeJoernServer(
+            raw_output="\x1b[32mJOERN_GUARD_SUMMARY:1/3\x1b[0m",
+        )
+        assert rg.check_sink_guarded("fn", server) == "unguarded"
+
+    def test_dual_emit_println_and_echo_agree(self):
+        # Subprocess transcript carrying BOTH the println copy and the
+        # value echo of the same summary.
+        server = _FakeJoernServer(
+            raw_output=(
+                "JOERN_GUARD_SUMMARY:2/5\n"
+                'val res1: String = "JOERN_GUARD_SUMMARY:2/5"\n'
+            ),
+        )
+        assert rg.check_sink_guarded("fn", server) == "unguarded"
+
+    def test_phantom_flow_errors_do_not_blind_the_guard(self):
+        # A parseable summary is authoritative even when server.query
+        # folded JOERN_FLOW-scan noise into result.errors.
+        server = _FakeJoernServer(
+            raw_output="JOERN_GUARD_SUMMARY:0/2",
+            errors=["failed to parse flow: unparseable JOERN_FLOW: x"],
+        )
+        assert rg.check_sink_guarded("fn", server) == "guarded"
+
+    def test_garbage_after_marker_is_unavailable(self):
+        server = _FakeJoernServer(
+            raw_output="JOERN_GUARD_SUMMARY:banana",
+        )
+        assert rg.check_sink_guarded("fn", server) == rg.GUARD_UNAVAILABLE
+
+    def test_guard_query_template_dual_emits_marker(self):
+        # The template must println the summary AND return it as the
+        # final expression so both transports carry it.
+        assert 'println(summary)' in rg._GUARD_QUERY_TEMPLATE
+        assert rg._GUARD_QUERY_TEMPLATE.rstrip().endswith("summary")
+        assert "JOERN_GUARD_SUMMARY:" in rg._GUARD_QUERY_TEMPLATE
 
     def test_unavailable_never_demotes(self):
         """compute_demotion_verdict must not demote on a degraded

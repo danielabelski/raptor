@@ -87,6 +87,7 @@ from core.inventory.call_graph import (
     INDIRECTION_DUNDER_IMPORT,
     INDIRECTION_DYNAMIC_IMPORT,
     INDIRECTION_EVAL,
+    INDIRECTION_FN_POINTER,
     INDIRECTION_GETATTR,
     INDIRECTION_GETATTR_OPAQUE,
     INDIRECTION_IMPORTLIB,
@@ -150,6 +151,7 @@ _MASKING_FLAGS: set[str] = {
     INDIRECTION_DYNAMIC_IMPORT,
     INDIRECTION_EVAL,
     INDIRECTION_REFLECT,
+    INDIRECTION_FN_POINTER,
 }
 
 # Subset of ``_MASKING_FLAGS`` whose dispatcher has no recorded tail
@@ -170,6 +172,17 @@ _OPAQUE_MASKING_FLAGS: set[str] = {
     INDIRECTION_DYNAMIC_IMPORT,
     INDIRECTION_EVAL,
     INDIRECTION_REFLECT,
+    # C/C++ ``(*fp)(...)`` / known-fn-pointer-var calls: the extractor
+    # records the POINTER VARIABLE's name in the chain, never the
+    # dispatched target's, so the runtime target is genuinely unknown
+    # — a fn-pointer-dispatched static was reading a confident
+    # no_path_from_entry. OPAQUE by the set's own definition (no
+    # recorded tail name for the target). Residual: the 1-hop
+    # ``function_called`` branch still gates non-wildcard masking on
+    # a tail-name mention, which a pure ``fp = my_static; ... fp()``
+    # file never has — closing that needs address-taken extraction
+    # in the call-graph layer.
+    INDIRECTION_FN_POINTER,
 }
 
 
@@ -469,9 +482,20 @@ def function_called(
         # this drops _resolves_to invocations from 74M to ~hundreds —
         # the main istio-1.4 scan-perf fix (cProfile flagged
         # _resolves_to + its inner generator at >190s of 410s total).
+        #
+        # A bound module may also be a dotted ANCESTOR of
+        # target_module: ``import numpy as np`` binds ``np`` →
+        # ``numpy``, and ``np.linalg.solve(...)`` resolves through
+        # ``_resolves_to`` (head ``np`` → ``numpy``, middle
+        # ``linalg``) to target_module ``numpy.linalg``. Without the
+        # ancestor test the fast-path skipped exactly the files the
+        # slow path would have matched, reading aliased package calls
+        # as NOT_CALLED.
         target_in_imports = False
         for bound in imports.values():
-            if (bound in (target_module, target_dot_func) or bound.startswith(target_module_dot)):
+            if (bound in (target_module, target_dot_func)
+                    or bound.startswith(target_module_dot)
+                    or target_module.startswith(bound + ".")):
                 target_in_imports = True
                 break
 
@@ -560,7 +584,15 @@ def function_called(
         # JS / TS behaves the same with named-import binding).
         if not file_has_evidence:
             file_module = _file_path_to_module(path)
-            if file_module == target_module:
+            # Stripped-form alias: a caller holding the legacy
+            # collapsed convention queries ``pkg.helper`` for a
+            # function defined in ``pkg/__init__.py`` — semantically
+            # the same module, so match both spellings.
+            if file_module is not None and file_module.endswith(".__init__"):
+                stripped_module = file_module[: -len(".__init__")]
+            else:
+                stripped_module = None
+            if target_module in (file_module, stripped_module):
                 for call in calls:
                     chain = call.get("chain") or []
                     if len(chain) != 1 or chain[0] != target_func:
@@ -605,8 +637,30 @@ def function_called(
             if file_mentions_tail:
                 uncertain_reasons.extend((path, flag) for flag in sorted(non_wildcard_flags))
 
+        # Wildcard masking has two plausibility signals. The import-
+        # root heuristic (_wildcard_could_provide) needs SOME other
+        # recorded import from the target's root package — but the
+        # extractor drops the wildcard's own source module entirely,
+        # so a file whose ONLY import is ``from mymod import *``
+        # carries no such witness. Its tell is instead a BARE call to
+        # the target's name that neither a recorded import nor a
+        # local definition in this file binds: exactly what a
+        # wildcard binding of ``target_func`` looks like. Without it
+        # the file contributed nothing and the query read NOT_CALLED
+        # with empty uncertain_reasons.
         if INDIRECTION_WILDCARD_IMPORT in flags and (
             _wildcard_could_provide(imports, target_module, target_func)
+            or (
+                target_func not in imports
+                and not any(
+                    isinstance(it, dict) and it.get("name") == target_func
+                    for it in file_record.get("items") or []
+                )
+                and any(
+                    (c.get("chain") or []) == [target_func]
+                    for c in calls
+                )
+            )
         ):
             uncertain_reasons.append((path, INDIRECTION_WILDCARD_IMPORT))
 
@@ -1936,6 +1990,15 @@ def _file_path_to_module(rel_path: str) -> str | None:
     module, not a function-qualified candidate list. The two helpers
     serve different fast-paths and intentionally diverge in scope.
 
+    ``pkg/__init__.py`` maps to ``pkg.__init__`` — matching
+    ``core.paths.path_to_module``, which every ``function_called``
+    caller (the enrichment prepass, reach_audit, the CodeQL
+    prefilter) uses to build the queried qualified name. The old
+    collapsed ``pkg`` form never matched those queries, so every
+    ``__init__.py`` function read not_called through the same-file
+    bare-name fast-path; the fast-path keeps a stripped-form alias
+    for callers still holding the collapsed convention.
+
     Returns ``None`` for paths with no extension (extensionless
     scripts, Makefile-shaped artefacts) — those don't participate
     in module-style namespacing.
@@ -1947,10 +2010,6 @@ def _file_path_to_module(rel_path: str) -> str | None:
     if not p.suffix:
         return None
     parts = list(p.with_suffix("").parts)
-    if not parts:
-        return None
-    if parts[-1] == "__init__":
-        parts.pop()
     if not parts:
         return None
     return ".".join(parts)
@@ -2363,8 +2422,17 @@ def _select_item_by_line(
          CLOSEST one <= the query line (extractors sometimes under-
          report ``line_end``; the containing function is still the one
          that starts nearest above the finding).
-      3. Otherwise (query line precedes every candidate) keep the
-         first candidate — the legacy deterministic tie-break.
+      3. Otherwise (query line precedes every candidate) the line
+         cannot disambiguate — return ALL candidates, exactly like
+         ``line == 0``. This constraint is load-bearing for the
+         suppression-grade consumers (``binary_oracle_absent``,
+         ``is_lexically_dead``): they require EVERY returned candidate
+         to be dead, so a first-candidate tie-break here would let a
+         dead namesake hard-suppress a live function whenever the
+         finding line sits above the first definition. The promote-only
+         consumers (``binary_call_edge_present``, the frida witnesses)
+         use any-of semantics, so widening to all candidates can only
+         promote reachability — the fail-safe direction.
 
     No-op when ``line`` is 0/unset or there's at most one candidate.
     """
@@ -2390,7 +2458,10 @@ def _select_item_by_line(
             preceding,
             key=lambda it: int(it.get("line_start") or 0),
         )]
-    return candidates[:1]
+    # Query line precedes every candidate: no disambiguation possible —
+    # behave like line == 0 (all candidates) so the dead-witness
+    # accessors keep their ALL-namesakes-dead requirement (rule 3).
+    return candidates
 
 
 def binary_call_edge_present(
@@ -2582,26 +2653,13 @@ def binary_oracle_absent(
             return False
         # Soundness gate (E1 stripped-binary fallback + adversarial
         # review P0-C-4): the corpus-earned suppression property is
-        # conditional on full-DWARF evidence. Refuse to fire when
-        # (a) no per-binary records exist (legacy inventory or
-        # writer bug — no tier evidence ⇒ no trust) OR (b) ANY
-        # contributing binary was symbol-only (could be inlined,
-        # not absent — we just can't see it without DWARF).
-        per_binary = bo.get("binaries") or []
-        if not per_binary:
-            return False
-        if any(isinstance(b, dict) and b.get("tier") != "full"
-               for b in per_binary):
-            return False
-        # (c) ANY contributing binary lacks suppression grade — an
-        # env-built binary whose build command was GUESSED (detector
-        # synthesis): a guessed container configuration can compile
-        # out features the real build includes, so its absence is not
-        # suppression evidence (S5.4 operator-ratified rule; absent
-        # key = legacy inventory = full grade).
-        if any(isinstance(b, dict)
-               and b.get("suppression_grade") is False
-               for b in per_binary):
+        # conditional on full-DWARF evidence AND on the build not
+        # being detector-guessed — the shared predicate
+        # ``absent_earns_suppression`` is the single authority (its
+        # ANY-full-tier drifted copy in ``extract_verdicts`` leaked
+        # symbol-only ``absent`` evidence into suppression).
+        from core.analysis.binary_oracle import absent_earns_suppression
+        if not absent_earns_suppression(bo.get("binaries")):
             return False
         any_confirmed = True
     return any_confirmed
@@ -2623,35 +2681,33 @@ def is_lexically_dead(
     each other read as mutually CALLED in the static graph, but the
     whole scope is dead. Detected at inventory-build time and stored
     as ``lexical_dead=True`` on the matching item; this accessor is a
-    path/name-keyed lookup (no index build).
+    path/name-keyed lookup via the shared inverse index.
 
-    Match is exact on ``(name, line)`` when ``line > 0`` — defensive
-    against shadowed names / overloads. With ``line == 0`` it matches
-    by name within the file (first hit wins). Returns ``False`` when
-    the file or function isn't found (false-negative-safe: never
-    claims dead when uncertain).
+    Line disambiguation uses :func:`_select_item_by_line` SPAN
+    containment (the same heuristic as ``binary_oracle_absent``) —
+    production callers (semgrep / codeql / the agent chokepoint) pass
+    the line OF THE FINDING, which is typically inside the function,
+    so the old exact ``line_start`` equality never matched and the
+    witness silently never fired through those callers. When the line
+    cannot disambiguate (``line == 0``, or it precedes every
+    candidate), EVERY same-name candidate must be dead — first-hit-
+    wins would let a dead namesake hard-suppress a live function
+    (mirrors the P0-C-3 rule). Returns ``False`` when the file or
+    function isn't found (false-negative-safe: never claims dead when
+    uncertain).
     """
     if not file_path or not name:
         return False
     normalised = file_path.replace("\\", "/")
-    for file_record in inventory.get("files", []):
-        if not isinstance(file_record, dict):
-            continue
-        rec_path = file_record.get("path")
-        if not isinstance(rec_path, str):
-            continue
-        if rec_path.replace("\\", "/") != normalised:
-            continue
-        for item in file_record.get("items", []):
-            if not isinstance(item, dict):
-                continue
-            if item.get("name") != name:
-                continue
-            if line and item.get("line_start") != line:
-                continue
-            return bool(item.get("lexical_dead"))
+    idx = _get_bo_item_index(inventory)
+    by_name = idx.get(normalised)
+    if not by_name:
         return False
-    return False
+    candidates = by_name.get(name)
+    if not candidates:
+        return False
+    candidates = _select_item_by_line(candidates, line)
+    return all(bool(it.get("lexical_dead")) for it in candidates)
 
 
 # ---------------------------------------------------------------------------
@@ -4142,20 +4198,13 @@ def _find_file_record(
     inventory: dict[str, Any],
     path: str,
 ) -> dict[str, Any] | None:
-    """Linear scan of the inventory's files for a path match.
-
-    Files lists are typically hundreds of entries; linear scan is
-    fast in practice (single-digit microseconds per query).
-    Consumers needing sub-millisecond latency across many queries
-    can pre-build a path→record map.
+    """Path-keyed file-record lookup via the shared
+    :func:`_files_by_path` index — O(1) per query after a one-time
+    per-inventory build. ``enclosing_function`` is called once per
+    finding/function on 30k-file inventories; the previous linear
+    scan here was one of the two O(N_files)-per-call hot spots.
     """
-    norm = path.replace("\\", "/")
-    for file_record in inventory.get("files", []):
-        if not isinstance(file_record, dict):
-            continue
-        if (file_record.get("path", "")).replace("\\", "/") == norm:
-            return file_record
-    return None
+    return _files_by_path(inventory).get(path.replace("\\", "/"))
 
 
 __all__ = [

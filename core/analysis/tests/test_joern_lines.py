@@ -60,12 +60,16 @@ class TestParseMarkerLine:
         assert records == [{"caller": "a"}, {"caller": "b"}]
         assert err is None
 
-    def test_unrecoverable_echo_is_silent(self):
-        # An echo that stays undecodable is a RE-print, never an error.
+    def test_unrecoverable_echo_reports_error(self):
+        # On the server transport the value echo is the ONLY record
+        # carrier — an undecodable (width-truncated) echo is a dropped
+        # record and must surface as degraded, not read as a healthy
+        # zero.
         line = f'val res0: String = "{_M}{{\\"caller\\":\\"a\\", trunc...'
         records, err = parse_marker_line(line, _M)
         assert records == []
-        assert err is None
+        assert err is not None
+        assert "unrecoverable" in err
 
     def test_genuine_failure_reports_error(self):
         records, err = parse_marker_line(f"{_M}{{broken", _M)
@@ -131,14 +135,18 @@ class TestListBinderEcho:
         ):
             assert parse_marker_line(framing, _M) == ([], None)
 
-    def test_truncated_element_is_silent_echo_noise(self):
-        # A width-truncated echo element stays a RE-print of a record
-        # the println copy (or resN echo) already carries — noise,
-        # never an error.
+    def test_truncated_element_reports_error(self):
+        # A width-truncated binder-echo element is a dropped record on
+        # the server transport (the binder echo can be the only
+        # carrier) — it must surface as degraded, not as a healthy
+        # zero. A subprocess transcript that also carries the println
+        # copy still yields the record from that line; consumers that
+        # hold records prefer them over the error.
         line = f'  "{_M}[{{\\"line\\":3,\\"co'
         records, err = parse_marker_line(line, _M)
         assert records == []
-        assert err is None
+        assert err is not None
+        assert "unrecoverable" in err
 
     def test_genuine_broken_record_still_errors(self):
         # No binder framing, raw quote delimiters: a printed record
@@ -223,3 +231,48 @@ class TestParseMarkerRecords:
 class TestStripAnsi:
     def test_removes_colour_codes(self):
         assert strip_ansi("\x1b[31mred\x1b[0m") == "red"
+
+
+class TestExtractScalarMarker:
+    """Transport-tolerant scalar extraction (guard summary shape)."""
+
+    def test_bare_println_line(self):
+        from core.analysis._joern_lines import extract_scalar_marker
+        raw = "some jvm noise\nJOERN_GUARD_SUMMARY:3/5\n"
+        assert extract_scalar_marker(raw, "JOERN_GUARD_SUMMARY:") == "3/5"
+
+    def test_single_line_value_echo(self):
+        from core.analysis._joern_lines import extract_scalar_marker
+        raw = 'val res0: String = "JOERN_GUARD_SUMMARY:3/5"'
+        assert extract_scalar_marker(raw, "JOERN_GUARD_SUMMARY:") == "3/5"
+
+    def test_triple_quoted_echo_first_line(self):
+        from core.analysis._joern_lines import extract_scalar_marker
+        raw = 'val res1: String = """JOERN_GUARD_SUMMARY:0/2'
+        assert extract_scalar_marker(raw, "JOERN_GUARD_SUMMARY:") == "0/2"
+
+    def test_ansi_wrapped(self):
+        from core.analysis._joern_lines import extract_scalar_marker
+        raw = "\x1b[32mJOERN_GUARD_SUMMARY:1/4\x1b[0m"
+        assert extract_scalar_marker(raw, "JOERN_GUARD_SUMMARY:") == "1/4"
+
+    def test_dual_emit_dedupes_to_last(self):
+        from core.analysis._joern_lines import extract_scalar_marker
+        raw = (
+            "JOERN_GUARD_SUMMARY:2/5\n"
+            'val res0: String = "JOERN_GUARD_SUMMARY:2/5"\n'
+        )
+        assert extract_scalar_marker(raw, "JOERN_GUARD_SUMMARY:") == "2/5"
+
+    def test_escaped_echo_cut_at_escape_sequence(self):
+        # A single-line Java-escaped echo carrying more content after
+        # the scalar: the payload stops at the first backslash.
+        from core.analysis._joern_lines import extract_scalar_marker
+        raw = 'val res0: String = "JOERN_GUARD_SUMMARY:3/5\\nOTHER:x"'
+        assert extract_scalar_marker(raw, "JOERN_GUARD_SUMMARY:") == "3/5"
+
+    def test_no_marker_is_none(self):
+        from core.analysis._joern_lines import extract_scalar_marker
+        assert extract_scalar_marker("random output", "JOERN_GUARD_SUMMARY:") is None
+        assert extract_scalar_marker("", "JOERN_GUARD_SUMMARY:") is None
+        assert extract_scalar_marker(None, "JOERN_GUARD_SUMMARY:") is None

@@ -215,7 +215,12 @@ class TestCallsiteProtocolIntegrity:
         assert any("undecodable" in r.message for r in caplog.records)
         assert any("failed to decode" in r.message for r in caplog.records)
 
-    def test_repl_value_echo_stays_silent(self, caplog):
+    def test_unrecoverable_repl_value_echo_warns(self, caplog):
+        # An echo that carries the marker but stays undecodable is a
+        # DROPPED call site on the server transport (the value echo is
+        # the only record carrier there) — parse_marker_line now
+        # surfaces it as a decode error, and this consumer's existing
+        # dropped-record warnings fire instead of a silent zero.
         import logging
 
         raw = (
@@ -227,7 +232,7 @@ class TestCallsiteProtocolIntegrity:
             matches = find_sink_callsites(
                 "memcpy", FakeServer(raw_output=raw))
         assert matches == []
-        assert not caplog.records
+        assert any("undecodable" in r.message for r in caplog.records)
 
     def test_quote_bearing_genuine_failure_still_warns(self, caplog):
         # jsonEsc deliberately injects \" into printed records, so

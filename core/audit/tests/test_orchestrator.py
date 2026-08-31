@@ -5801,7 +5801,7 @@ class TestGuardVetoFailClosed:
         server.is_alive.return_value = True
         result = MagicMock()
         result.errors = []
-        result.raw_output = "2/2"
+        result.raw_output = "JOERN_GUARD_SUMMARY:0/2"
         server.query.return_value = result
         assert orch._check_sink_guarded_cached("fn_a", server) == "guarded"
         assert orch._sink_guard_cache["fn_a"] == "guarded"
@@ -5815,7 +5815,7 @@ class TestGuardVetoFailClosed:
         server.is_alive.return_value = True
         result = MagicMock()
         result.errors = []
-        result.raw_output = "1/2"
+        result.raw_output = "JOERN_GUARD_SUMMARY:1/2"
         server.query.return_value = result
         assert orch._check_sink_guarded_cached("fn_b", server) == "unguarded"
         assert orch._sink_guard_cache["fn_b"] == "unguarded"
@@ -5833,7 +5833,7 @@ class TestGuardVetoFailClosed:
         server.is_alive.return_value = True
         result = MagicMock()
         result.errors = []
-        result.raw_output = "2/2"
+        result.raw_output = "JOERN_GUARD_SUMMARY:0/2"
         server.query.return_value = result
         assert orch._guard_blocks_promotion("fn_c", server) == "guarded"
         orch._sink_guard_cache.clear()
@@ -5868,7 +5868,7 @@ class TestGuardVetoFailClosed:
         server.is_alive.return_value = True
         result = MagicMock()
         result.errors = []
-        result.raw_output = "0/0"
+        result.raw_output = "JOERN_GUARD_SUMMARY:0/0"
         server.query.return_value = result
         assert orch._guard_blocks_promotion("fn_f", server) is None
         orch._sink_guard_cache.clear()

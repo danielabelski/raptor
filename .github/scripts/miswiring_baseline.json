@@ -664,9 +664,6 @@
     "dead:dead_method:packages/autonomous/goal_planner.py:GoalPlanner.update_goal_progress": {
       "note": "kept: feature seed \u2014 autonomous fuzzing loop (operator decision 2026-08-16, reaffirmed 2026-08-17); unwired since introduction"
     },
-    "dead:dead_method:packages/autonomous/planner.py:FuzzingPlanner.should_continue_fuzzing": {
-      "note": "kept: feature seed \u2014 autonomous fuzzing loop (operator decision 2026-08-16, reaffirmed 2026-08-17); unwired since introduction"
-    },
     "dead:dead_method:packages/autonomous/planner.py:FuzzingState.is_finding_crashes": {
       "note": "kept: feature seed \u2014 autonomous fuzzing loop (operator decision 2026-08-16, reaffirmed 2026-08-17); unwired since introduction"
     },

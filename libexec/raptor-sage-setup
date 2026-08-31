@@ -261,7 +261,12 @@ check_docker() {
             # since sg -c takes a single string.
             local quoted_args=""
             local a
-            for a in "${_ORIG_ARGS[@]}"; do
+            # ${arr[@]+...} guard: on bash < 4.4 (macOS's bundled 3.2,
+            # which this script otherwise supports) expanding an EMPTY
+            # array under set -u is a fatal unbound-variable error —
+            # hit exactly on a bare zero-arg install reaching this
+            # re-exec. The + form expands to nothing when empty.
+            for a in ${_ORIG_ARGS[@]+"${_ORIG_ARGS[@]}"}; do
                 quoted_args="$quoted_args \"$a\""
             done
             exec sg docker -c "\"$0\"$quoted_args"
@@ -707,11 +712,18 @@ discover_mcp_tools() {
     fi
     # Parse all JSON objects from the response stream, select the one
     # with id==2 (tools/list), and extract tool names.
+    #
+    # `|| true`: grep exits 1 when zero names survive the filter (and
+    # jq exits nonzero on malformed lines) — under pipefail that made
+    # this function return nonzero, and errexit then aborted the
+    # caller's `tools=$(discover_mcp_tools)` before its warn-and-
+    # continue branch for empty output could run. An empty tool list
+    # is a handled outcome, not an error: succeed with empty output.
     printf '%s\n' "$response" \
         | jq -r 'select(.id == 2) | .result.tools[]?.name // empty' 2>/dev/null \
         | sed 's/^/mcp__sage__/' \
         | grep '^mcp__sage__sage_[a-z_]*$' \
-        | sort
+        | sort || true
 }
 
 grant_mcp_permissions() {
@@ -748,14 +760,24 @@ grant_mcp_permissions() {
 
 revoke_mcp_permissions() {
     # Remove all mcp__sage__ entries from settings.local.json permissions.
+    # jq failures (hand-edited/corrupted JSON) warn and return 0: this
+    # runs mid-uninstall under errexit, and an abort here would skip
+    # the boot-payload tombstone step that teardown must always reach.
     [ -f "$SETTINGS_LOCAL" ] || return 0
     local before
-    before=$(jq '[.permissions.allow[]? | select(startswith("mcp__sage__"))] | length' "$SETTINGS_LOCAL")
+    if ! before=$(jq '[.permissions.allow[]? | select(startswith("mcp__sage__"))] | length' "$SETTINGS_LOCAL" 2>/dev/null); then
+        echo "Warning: could not parse $SETTINGS_LOCAL — permissions not revoked." >&2
+        return 0
+    fi
     [ "$before" = "0" ] && return 0
     local tmp
     tmp=$(mktemp "$(dirname "$SETTINGS_LOCAL")/.tmp.settings.XXXXXX"); _RAPTOR_TMP_FILES+=("$tmp")
-    jq '.permissions.allow = [.permissions.allow[]? | select(startswith("mcp__sage__") | not)]' \
-        "$SETTINGS_LOCAL" > "$tmp"
+    if ! jq '.permissions.allow = [.permissions.allow[]? | select(startswith("mcp__sage__") | not)]' \
+        "$SETTINGS_LOCAL" > "$tmp"; then
+        echo "Warning: failed to update $SETTINGS_LOCAL — permissions not revoked." >&2
+        rm -f "$tmp"
+        return 0
+    fi
     mv "$tmp" "$SETTINGS_LOCAL"
     echo "Revoked $before SAGE MCP tool permissions from $SETTINGS_LOCAL."
 }
@@ -1284,7 +1306,15 @@ remove_mcp_entry() {
     local tmp
     tmp=$(mktemp "$(dirname "$MCP")/.tmp.mcp.XXXXXX"); _RAPTOR_TMP_FILES+=("$tmp")
     trap 'rm -f "$tmp"' RETURN
-    jq 'del(.mcpServers.sage)' "$MCP" > "$tmp"
+    # jq failure (hand-edited/corrupted JSON) warns and returns 0:
+    # this runs mid-uninstall under errexit, and an abort here would
+    # skip the boot-payload tombstone step teardown must always reach.
+    if ! jq 'del(.mcpServers.sage)' "$MCP" > "$tmp"; then
+        echo "Warning: could not parse $MCP — SAGE entry not removed." >&2
+        rm -f "$tmp"
+        trap - RETURN
+        return 0
+    fi
     mv "$tmp" "$MCP"
     trap - RETURN
     # If the file now contains only an empty mcpServers object (and nothing
@@ -1304,9 +1334,12 @@ remove_mcp_entry() {
     # Type-guard explicitly: only count keys when the root IS an
     # object; otherwise return 0 (so the cleanup branch doesn't
     # fire on non-object roots).
+    # `|| true` + empty default: a jq failure here must not abort the
+    # uninstall (errexit) — empty counts simply fail the "0"/"1"
+    # equality tests below and the file is left in place.
     local server_count top_count
-    server_count="$(jq -r '.mcpServers // {} | length' "$MCP")"
-    top_count="$(jq -r 'if type == "object" then keys|length else 0 end' "$MCP")"
+    server_count="$(jq -r '.mcpServers // {} | length' "$MCP" 2>/dev/null || true)"
+    top_count="$(jq -r 'if type == "object" then keys|length else 0 end' "$MCP" 2>/dev/null || true)"
     if [ "$server_count" = "0" ] && [ "$top_count" = "1" ]; then
         rm -f "$MCP"
         echo "Removed $MCP (no MCP servers remaining)."
@@ -1437,10 +1470,18 @@ disable_sage_env() {
     # object would become `{}` — bash then sees the marker and
     # deletes the file directly without ever writing the empty `{}`
     # state to disk.
-    jq 'if has("env") then (.env |= del(.SAGE_ENABLED)
+    # jq failure (hand-edited/corrupted JSON) warns and returns 0:
+    # this runs mid-uninstall under errexit, and an abort here would
+    # skip the boot-payload tombstone step teardown must always reach.
+    if ! jq 'if has("env") then (.env |= del(.SAGE_ENABLED)
            | if .env == {} then del(.env) else . end)
          else . end
-       | if . == {} then null else . end' "$SETTINGS_LOCAL" > "$tmp"
+       | if . == {} then null else . end' "$SETTINGS_LOCAL" > "$tmp"; then
+        echo "Warning: could not parse $SETTINGS_LOCAL — SAGE_ENABLED not removed." >&2
+        rm -f "$tmp"
+        trap - RETURN
+        return 0
+    fi
     if [ "$(cat "$tmp")" = "null" ]; then
         rm -f "$SETTINGS_LOCAL" "$tmp"
         trap - RETURN

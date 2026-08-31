@@ -322,7 +322,12 @@ def cmd_status(client, args):
     try:
         memories, total = _fetch_all_memories(client)
     except Exception as e:
-        print(f"SAGE unreachable: {_safe(str(e))}")
+        # stderr, like every sibling command's failure line — a script
+        # consuming status stdout must never ingest the error as data.
+        # Neutral wording: _fetch_all_memories also raises for
+        # protocol violations from a server that IS reachable, so
+        # "unreachable" would mislabel exactly the loud-abort cases.
+        print(f"Status failed: {_safe(str(e))}", file=sys.stderr)
         return 1
 
     domains = Counter()
@@ -360,9 +365,6 @@ def cmd_recall(client, args):
               file=sys.stderr)
         return 1
 
-    kwargs: Dict[str, Any] = {}
-    if args.domain:
-        kwargs["domain_tag"] = args.domain
     top_k = args.top if args.top is not None else 5
 
     try:
@@ -447,7 +449,10 @@ def cmd_list(client, args):
     full_ids = getattr(args, "full", False)
     rows = []
     for m in memories:
-        mid = getattr(m, "memory_id", "")
+        # memory_id can be None on rows the fetch walk tolerates
+        # (see _resolve_memory_id) — slicing None would TypeError and
+        # hide every other row from the listing.
+        mid = str(getattr(m, "memory_id", "") or "")
         if not full_ids:
             mid = mid[:12]
         domain = _strip_domain_prefix(getattr(m, "domain_tag", ""))
@@ -652,13 +657,20 @@ def cmd_task(client, args):
         # default committed tasks into a domain this identity often
         # cannot read back: the CLI printed success while the row was
         # unreachable from every read surface (backlog/list/get 403).
-        resp = client.propose(
+        propose_kwargs: Dict[str, Any] = dict(
             content=content,
             memory_type=task_type,
             domain_tag=args.domain,
             confidence=0.8,
             embedding=embedding,
         )
+        # --status on creation names the task's initial state — it
+        # must reach the server, not silently fall back to the
+        # server-default status. Passed only when given so injected
+        # clients without the parameter keep working for plain creates.
+        if args.task_status:
+            propose_kwargs["task_status"] = args.task_status
+        resp = client.propose(**propose_kwargs)
     except Exception as e:
         print(f"Task creation failed: {_safe(str(e))}", file=sys.stderr)
         return 1

@@ -533,16 +533,13 @@ class _State:
         self.first_tool_id = None
         self.first_tool_seen = False
         # Ids of client requests still awaiting their first response
-        # (every method, not just the tracked ones). While any tracked
-        # check is outstanding (pending_* below), a response matching
-        # NO pending request is server-initiated junk and is dropped
-        # rather than forwarded — the other half of the eviction
-        # defence (a junk frame can neither consume the tracked id nor
-        # ride through as "unmatched" traffic during boot).
+        # (every method, not just the tracked ones). A response
+        # matching NO pending request is server-initiated junk and is
+        # dropped UNCONDITIONALLY (see _filter_response) — the other
+        # half of the eviction defence (a junk frame can neither
+        # consume the tracked id nor ride through as "unmatched"
+        # traffic).
         self.pending_ids = set()
-        self.pending_init = False
-        self.pending_inception = set()
-        self.pending_first_tool = False
 
 
 def _watch_request(line: bytes, state: _State) -> None:
@@ -566,16 +563,13 @@ def _watch_request(line: bytes, state: _State) -> None:
         state.pending_ids.add(rid)
         if method == "initialize":
             state.init_id = rid
-            state.pending_init = True
         elif method == "tools/call":
             params = msg.get("params")
             name = params.get("name") if isinstance(params, dict) else None
             if name == "sage_inception":
                 state.inception_ids.add(rid)
-                state.pending_inception.add(rid)
             elif not state.first_tool_seen:
                 state.first_tool_id = rid
-                state.pending_first_tool = True
             state.first_tool_seen = True
 
 
@@ -673,7 +667,31 @@ def _filter_response(line: bytes, state: _State, surfaces) -> bytes:
         )
         sys.stderr.flush()
         return b""
-    if "id" not in msg or "method" in msg:
+    if "id" not in msg:
+        # Id-less frame: a notification. No client correlates it as a
+        # response, so the id-tracked checks have nothing to verify.
+        if lossy:
+            return json.dumps(msg).encode("utf-8") + b"\n"
+        return line
+    if "method" in msg:
+        if "result" in msg or "error" in msg:
+            # Hybrid frame: id + method + result/error. JSON-RPC
+            # defines no such shape, and a client that correlates on
+            # id/result presence before (or without) checking for a
+            # method key would deliver it as the tracked response —
+            # the one id-bearing shape that would otherwise bypass
+            # every tracked-id check. Client-side handling is
+            # undefined (the same reasoning that drops batch arrays
+            # and exotic id shapes), so drop rather than forward.
+            sys.stderr.write(
+                f"{_PROG}: dropped a server frame carrying both a "
+                "method and a result/error (fail-closed; ambiguous "
+                "request/response hybrid)\n"
+            )
+            sys.stderr.flush()
+            return b""
+        # A genuine server-initiated request or method-bearing
+        # notification: not a response, nothing to verify.
         if lossy:
             return json.dumps(msg).encode("utf-8") + b"\n"
         return line
@@ -700,12 +718,6 @@ def _filter_response(line: bytes, state: _State, surfaces) -> bytes:
         is_first_tool = (
             state.first_tool_id is not None and rid == state.first_tool_id
         )
-        if is_init:
-            state.pending_init = False
-        if is_inception:
-            state.pending_inception.discard(rid)
-        if is_first_tool:
-            state.pending_first_tool = False
     rewritten = False
     if is_init:
         rewritten = _check_initialize(msg, surfaces)

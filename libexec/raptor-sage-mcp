@@ -54,7 +54,11 @@ RAPTOR_DIR="$(cd "$(dirname "$SCRIPT")/.." && pwd)"
 # causes an infinite exec loop.
 if ! docker info >/dev/null 2>&1; then
     if command -v sg >/dev/null 2>&1 && sg docker -c "docker info" >/dev/null 2>&1; then
-        exec sg docker -c "\"$0\""
+        # sg -c takes a single shell string: printf %q quotes every
+        # element exec-safely (an install path carrying a quote or $
+        # breaks naive "\"$0\"" interpolation) and forwards any args
+        # verbatim so the re-exec matches the original invocation.
+        exec sg docker -c "$(printf '%q ' "$0" "$@")"
     fi
     echo "raptor-sage-mcp: Docker daemon is not running or not accessible." >&2
     exit 3

@@ -516,6 +516,47 @@ class TestClassifyNativeOutput:
         r = ex._classify_native_output(spec, _native_proc(stdout="{}"), None, "c")
         assert r.verdict == "refuted"
 
+    def test_sanitizerless_fallback_clean_exit_is_inconclusive(self):
+        # The Rust executor's fallback build drops -Z sanitizer=address
+        # (stable rustc).  A clean exit there proves nothing — the
+        # predicted memory-safety crash may simply not manifest without
+        # ASan — so silent sanitizer loss must not keep refutation
+        # authority.
+        spec = _native_spec(expected_crash=True)
+        r = ex._classify_native_output(
+            spec, _native_proc(stdout="{}"), None, "rust",
+            sanitizers_active=False,
+        )
+        assert r.verdict == "inconclusive"
+        assert "no sanitizers" in r.match_detail
+
+    def test_sanitizerless_fallback_real_crash_still_confirms(self):
+        # Control: a real crash signal stands on its own — losing ASan
+        # only removes refutation authority, never confirmation.
+        spec = _native_spec(expected_crash=True)
+        info = {"signal": "SIGSEGV"}
+        r = ex._classify_native_output(
+            spec, _native_proc(returncode=-11), info, "rust",
+            sanitizers_active=False,
+        )
+        assert r.verdict == "confirmed"
+
+    def test_sanitizerless_fallback_json_return_is_inconclusive(self):
+        # The shared JSON classifier's crash-expectation refutation is
+        # gated the same way.
+        spec = _native_spec(expected_sanitizer="heap-buffer-overflow")
+        stdout = '{"status": "returned", "value": "0"}'
+        r = ex._classify_native_output(
+            spec, _native_proc(stdout=stdout), None, "rust",
+            sanitizers_active=False,
+        )
+        assert r.verdict == "inconclusive"
+        # Control: the instrumented build keeps the refutation.
+        r2 = ex._classify_native_output(
+            spec, _native_proc(stdout=stdout), None, "rust",
+        )
+        assert r2.verdict == "refuted"
+
 
 # -- validate_spec -----------------------------------------------------------
 
@@ -4301,22 +4342,63 @@ class TestForgedWitnessFailsClosed:
             )
             assert validate_spec(spec) is not None, line
 
-    def test_legit_rust_constructor_calls_pass(self):
-        # Setup lines execute BEFORE the pre-call sentinel, so plain
-        # constructor/method calls are admissible there (real witnesses
-        # need them); the ordering+token channel keeps the verdict
-        # unforgeable. Regression: the first grammar cut rejected
-        # `bytes::Bytes::from_static(&[0x40u8])` and blocked a
-        # legitimate confirmation lane.
+    def test_rust_constructor_calls_rejected(self):
+        # Rust setup lines get the C declaration-only doctrine: NO
+        # general calls.  The pre-sentinel soundness argument that once
+        # admitted constructor calls was unsound — the run sandbox
+        # grants the witness read on its own work dir, where harness.rs
+        # and the binary image carry the sentinel token, so any
+        # call-capable setup line can read the token, replay the
+        # sentinel plus a forged sanitizer report, and panic into a
+        # forged "confirmed".  Constructor calls now fail validation
+        # (witness dropped — error, never a forged confirmation).
+        for line in (
+            "let payload = bytes::Bytes::from_static(&[0x40u8]);",
+            "let opt = Option::Some(5);",
+            'let b = bytes::Bytes::copy_from_slice(b"abc");',
+        ):
+            spec = DarkWitnessSpec(
+                finding_key="k", file="lib.rs", function="next",
+                language="rust", expected_crash=True,
+                lang_config={
+                    "arg_expressions": ["&payload"],
+                    "setup_lines": [line],
+                },
+            )
+            assert validate_spec(spec) is not None, line
+
+    def test_rust_sentinel_replay_setup_rejected(self):
+        # The reproduced forged-confirmed chain: read the harness
+        # source (the work dir is readable — it must be, to exec the
+        # binary), replay its sentinel line to stderr, then panic.
+        # Every call-bearing spelling of that chain must fail
+        # validation.
+        for line in (
+            'let s = std::fs::read_to_string("harness.rs");',
+            "let e = std::io::stderr();",
+            'let exe = std::fs::read("/proc/self/exe");',
+        ):
+            spec = DarkWitnessSpec(
+                finding_key="k", file="l.rs", function="f",
+                language="rust",
+                lang_config={"arg_expressions": [], "setup_lines": [line]},
+            )
+            assert validate_spec(spec) is not None, line
+
+    def test_rust_call_free_setup_still_passes(self):
+        # Control: the call-free grammar (literals, refs, arrays,
+        # vec!, zero-arg methods on literals) stays usable.
         spec = DarkWitnessSpec(
             finding_key="k", file="lib.rs", function="next",
             language="rust", expected_crash=True,
             lang_config={
                 "arg_expressions": ["&payload"],
                 "setup_lines": [
-                    "let payload = bytes::Bytes::from_static(&[0x40u8]);",
-                    "let opt = Option::Some(5);",
-                    'let b = bytes::Bytes::copy_from_slice(b"abc");',
+                    "let payload = &[0x40u8];",
+                    "let n: usize = 16;",
+                    "let v = vec![0u8; 32];",
+                    'let s = "x".to_string();',
+                    'let t = b"abc".to_vec();',
                 ],
             },
         )

@@ -345,6 +345,24 @@ def summary_from_review_result(
     )
 
 
+def _param_index_of(summary: FunctionSummary, param_name: str) -> int:
+    """Best-effort parameter index of ``param_name`` in ``summary``'s
+    own function, recovered from records that carry both the name and
+    a concrete index (mechanical taint rules, preconditions).
+
+    ``FunctionSummary`` doesn't store the parameter list itself, so
+    this is the only in-summary source of name→index evidence.
+    Returns -1 when nothing pins the index down.
+    """
+    for r in summary.taint_rules:
+        if r.source_param == param_name and r.source_index >= 0:
+            return r.source_index
+    for p in summary.preconditions:
+        if p.param == param_name and p.param_index >= 0:
+            return p.param_index
+    return -1
+
+
 def propagate_taint_upward(
     callee_summary: FunctionSummary,
     caller_summary: FunctionSummary,
@@ -368,13 +386,25 @@ def propagate_taint_upward(
     inherited = []
 
     for rule in callee_summary.taint_rules:
-        caller_param = arg_map.get(rule.source_index)
+        source_index = rule.source_index
+        if source_index < 0:
+            # An inherited rule carries no index of its own — recover
+            # it from the callee summary's other records by name.
+            # Without this, a once-inherited rule could never match
+            # ``arg_map`` (keyed on callee param indices), capping
+            # propagation at a single hop.
+            source_index = _param_index_of(
+                callee_summary, rule.source_param,
+            )
+        caller_param = arg_map.get(source_index)
         if not caller_param:
             continue
 
         new_rule = TaintRule(
             source_param=caller_param,
-            source_index=-1,
+            # Pin the caller-side index when the caller's own records
+            # know it, so the NEXT hop's arg_map lookup can match.
+            source_index=_param_index_of(caller_summary, caller_param),
             sink_call=rule.sink_call,
             sink_arg_index=rule.sink_arg_index,
             hop_count=rule.hop_count + 1,

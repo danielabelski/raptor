@@ -1299,18 +1299,18 @@ def test_fully_inlined_namespaced_function_classifies_inlined_under_bare_name(
     old inlined-name index held only qualified spellings, so the bare
     lookup fell through to a suppression-grade ``absent`` on live
     inlined code."""
-    import core.analysis.binary_oracle as bo
+    import core.analysis.binary_oracle as bo_mod
 
-    die = bo._SubprogramDIE(name="Log2Floor", namespace_path="snappy::Bits")
+    die = bo_mod._SubprogramDIE(name="Log2Floor", namespace_path="snappy::Bits")
     subs = {0x10: die}
-    monkeypatch.setattr(bo.shutil, "which", lambda t: f"/usr/bin/{t}")
-    monkeypatch.setattr(bo, "read_build_id", lambda p: "cafebabe")
-    monkeypatch.setattr(bo, "_nm_symbols_status", lambda p: ({}, True))
-    monkeypatch.setattr(bo, "_parse_dwarf", lambda p: (subs, [0x10]))
+    monkeypatch.setattr(bo_mod.shutil, "which", lambda t: f"/usr/bin/{t}")
+    monkeypatch.setattr(bo_mod, "read_build_id", lambda p: "cafebabe")
+    monkeypatch.setattr(bo_mod, "_nm_symbols_status", lambda p: ({}, True))
+    monkeypatch.setattr(bo_mod, "_parse_dwarf", lambda p: (subs, [0x10]))
 
     fake_bin = tmp_path / "fixture-binary"
     fake_bin.write_bytes(b"\x7fELF-stub")
-    verdicts = bo.classify_binary_evidence(
+    verdicts = bo_mod.classify_binary_evidence(
         ["Log2Floor", "snappy::Bits::Log2Floor", "gone_helper"],
         fake_bin,
     )
@@ -1323,18 +1323,18 @@ def test_fully_inlined_namespaced_function_classifies_inlined_under_bare_name(
 def test_inline_marker_subprogram_also_indexes_bare_name(monkeypatch, tmp_path):
     """Same bare-name rescue for the DW_AT_inline=inlined marker path
     (always-inline function with no concrete instance)."""
-    import core.analysis.binary_oracle as bo
+    import core.analysis.binary_oracle as bo_mod
 
-    die = bo._SubprogramDIE(
+    die = bo_mod._SubprogramDIE(
         name="tr_static_init", namespace_path="zng",
         has_inline_marker=True,
     )
-    monkeypatch.setattr(bo.shutil, "which", lambda t: f"/usr/bin/{t}")
-    monkeypatch.setattr(bo, "read_build_id", lambda p: "")
-    monkeypatch.setattr(bo, "_nm_symbols_status", lambda p: ({}, True))
-    monkeypatch.setattr(bo, "_parse_dwarf", lambda p: ({0x20: die}, []))
+    monkeypatch.setattr(bo_mod.shutil, "which", lambda t: f"/usr/bin/{t}")
+    monkeypatch.setattr(bo_mod, "read_build_id", lambda p: "")
+    monkeypatch.setattr(bo_mod, "_nm_symbols_status", lambda p: ({}, True))
+    monkeypatch.setattr(bo_mod, "_parse_dwarf", lambda p: ({0x20: die}, []))
 
     fake_bin = tmp_path / "fixture-binary"
     fake_bin.write_bytes(b"\x7fELF-stub")
-    verdicts = bo.classify_binary_evidence(["tr_static_init"], fake_bin)
+    verdicts = bo_mod.classify_binary_evidence(["tr_static_init"], fake_bin)
     assert verdicts["tr_static_init"].classification == "inlined"

@@ -435,11 +435,16 @@ class TestAdversarialFixes:
 
 
 class TestBinaryOracleIntegration:
+    # binary_verdicts is keyed by BARE function name — the producer
+    # (core.analysis.binary_oracle.extract_verdicts) emits
+    # {function: verdict}, and every other consumer reads it bare. A
+    # file:function key here could never hit the map, so the resolver
+    # was dead on every real run.
     def test_absent_function_refuted(self):
         c = _constraint()
         config = PropagationConfig(
             max_depth=5,
-            binary_verdicts={"src/packet.c:parse_header": "absent"},
+            binary_verdicts={"parse_header": "absent"},
         )
         result = propagate_one_hop(
             c,
@@ -451,11 +456,28 @@ class TestBinaryOracleIntegration:
         assert result.resolution == "refuted"
         assert result.resolver_used == "binary_oracle"
 
+    def test_file_function_key_never_matches(self):
+        # Producer-shape pin: a map keyed the OLD (file:function) way
+        # must not resolve — if this starts passing with such a key,
+        # the lookup drifted from the producer again.
+        c = _constraint()
+        config = PropagationConfig(
+            max_depth=5,
+            binary_verdicts={"src/packet.c:parse_header": "absent"},
+        )
+        result = propagate_one_hop(
+            c,
+            checklist=_checklist(),
+            entry_points=set(),
+            config=config,
+        )
+        assert result.resolver_used != "binary_oracle"
+
     def test_present_function_not_short_circuited(self):
         c = _constraint()
         config = PropagationConfig(
             max_depth=5,
-            binary_verdicts={"src/packet.c:parse_header": "symbol_present"},
+            binary_verdicts={"parse_header": "symbol_present"},
         )
         result = propagate_one_hop(
             c,

@@ -865,8 +865,12 @@ def propagate_one_hop(
     heuristic scoring for LLM review scheduling.
     """
     if config.binary_verdicts:
-        key = f"{constraint.file}:{constraint.function}"
-        verdict = config.binary_verdicts.get(key)
+        # Bare function name: the producer (binary_oracle
+        # extract_verdicts) keys the map ``{function: verdict}``, and
+        # every other consumer (orchestrator dead-code gate, absent-
+        # promotion demoter) reads it bare — a ``file:function`` key
+        # here could never hit, so the binary-oracle resolver was dead.
+        verdict = config.binary_verdicts.get(constraint.function)
         if verdict == "absent":
             return PropagationResult(
                 constraint=constraint,

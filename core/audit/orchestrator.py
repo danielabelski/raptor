@@ -798,12 +798,12 @@ class ReviewOutcome:
 
         et_lower = self.evidence_tool.strip().lower()
         tools = et_lower.split("+")
-        if any(t.strip() in self._CONFIRMED_EVIDENCE for t in tools):
-            return VerificationTier.CONFIRMED.value
-        if any(t.strip().endswith(":witness") for t in tools):
-            return VerificationTier.CONFIRMED.value
 
-        from .evidence_grade import _PROVENANCE_WRAPPERS, is_tool_evidence
+        from .evidence_grade import (
+            _PROVENANCE_WRAPPERS,
+            _is_single_tool_evidence,
+            is_tool_evidence,
+        )
         if not is_tool_evidence(self.evidence_tool):
             # Detection-role receipts corroborate but may not convict:
             # a stamp the evidence-grade firewall rejects must not
@@ -812,6 +812,20 @@ class ReviewOutcome:
             # findings disproven; the dominant stamps were
             # detection-role smt:check-* variants.)
             return VerificationTier.LLM_ONLY.value
+
+        # Confirmed-tier stamps count only on parts that are
+        # THEMSELVES tool receipts: the firewall must run BEFORE the
+        # ``:witness`` suffix check, or ``llm-claimed:smt:…:witness``
+        # (a pure model claim after sanitization) exports
+        # verification_tier=confirmed — hostile-repo steerable. A real
+        # ``smt:…:witness`` receipt still grades confirmed below.
+        tool_parts = [
+            t.strip() for t in tools if _is_single_tool_evidence(t.strip())
+        ]
+        if any(t in self._CONFIRMED_EVIDENCE for t in tool_parts):
+            return VerificationTier.CONFIRMED.value
+        if any(t.endswith(":witness") for t in tool_parts):
+            return VerificationTier.CONFIRMED.value
 
         first_tool = et_lower.split("+")[0].strip()
         for _wrapper in _PROVENANCE_WRAPPERS:
@@ -2250,6 +2264,21 @@ def review_one_function(
             # Prefilter skips disabled for this run: fall through to a
             # real review instead of recording a mechanical clean. The
             # prefilter's hits (below) still feed review context.
+            pf_result.skip_llm = False
+        if pf_result.skip_llm and _validate_confirmed_gap(
+            evidence_index, gap_key,
+        ):
+            # Never-skip-validate-confirmed floor — the same rung the
+            # triage classifier enforces. A /validate run CONFIRMED a
+            # defect here; the prefilter's mechanical "cannot contain
+            # vulnerabilities" verdict is exactly what a confirmed
+            # detection-evasion defect looks like from the outside, so
+            # this lane must never journal a mechanical clean over it.
+            logger.info(
+                "prefilter skip overridden for %s — /validate-confirmed"
+                " defect forces a full review",
+                gap_key,
+            )
             pf_result.skip_llm = False
         if pf_result.skip_llm:
             if ctx.get("sink_unreachable"):
@@ -3840,11 +3869,19 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
     from .capabilities import probe_capabilities
     from .degradation import assess_degradation, format_degradation_report
 
-    caps = probe_capabilities(
-        binary_path=Path(config.binary_verdicts["_binary_path"])
-        if config.binary_verdicts and "_binary_path" in config.binary_verdicts
-        else None,
-    )
+    # Resolve the analysed binary from the enriched inventory's
+    # binary_oracle summary — the declared-binaries block
+    # ``_current_binary_build_ids`` and the triage consumers read.
+    # The old read here consulted a ``binary_verdicts["_binary_path"]``
+    # key no producer writes (``extract_verdicts`` emits only
+    # ``{function: verdict}``), so the capability probe's
+    # binary_available / dwarf_available flags were permanently False.
+    _caps_binary: Path | None = None
+    for _bin_path in _current_binary_build_ids(config, checklist).values():
+        if _bin_path and Path(_bin_path).is_file():
+            _caps_binary = Path(_bin_path)
+            break
+    caps = probe_capabilities(binary_path=_caps_binary)
     tool_capabilities = {
         "joern": joern_server is not None,
         "binary": binary_bridge_early is not None,
@@ -14334,6 +14371,25 @@ def _check_language_cwe_mismatch(
     return None
 
 
+def _validate_confirmed_gap(
+    evidence_index: dict[str, EvidenceRecord] | None,
+    gap_key: str,
+) -> bool:
+    """Whether a prior /validate run CONFIRMED a defect in this function.
+
+    Reads the validate-bridge verdict history attached to the evidence
+    record (the same source ``validate_history_keys`` derives the
+    triage classifier's ``validate_confirmed_keys`` from). Consumed by
+    the review-time prefilter skip lane: a /validate-CONFIRMED function
+    must never be resolved by a mechanical skip.
+    """
+    if not evidence_index:
+        return False
+    rec = evidence_index.get(gap_key)
+    entry = getattr(rec, "validate_history", None) if rec else None
+    return bool(isinstance(entry, dict) and entry.get("confirmed"))
+
+
 def _run_prefilter_for_gap(
     config: OrchestratorConfig,
     gap: dict[str, Any],
@@ -14722,11 +14778,23 @@ def _hypothesis_to_tool_chain(
         seen_types.add("semgrep")
     elif not semgrep_rule and "semgrep" not in seen_types:
         try:
-            from .sweep import mechanical_check_to_semgrep
+            from .sweep import mechanical_check_to_semgrep_keyed
 
-            mc_pattern = mechanical_check_to_semgrep(hypothesis)
-            if mc_pattern:
-                chain.append({"type": "semgrep", "config": {"pattern": mc_pattern}})
+            keyed_mc = mechanical_check_to_semgrep_keyed(hypothesis)
+            if keyed_mc:
+                mc_pattern, mc_keyword = keyed_mc
+                # keyword travels with the pattern: mechanical-check
+                # patterns are presence-level shapes, so the sweep must
+                # run them with the identifier-consistency and
+                # negative-control caps armed (a keyword-less entry
+                # disables both and a bare presence match stamped
+                # promotion-grade evidence on clean code).
+                chain.append({
+                    "type": "semgrep",
+                    "config": {
+                        "pattern": mc_pattern, "keyword": mc_keyword,
+                    },
+                })
                 seen_types.add("semgrep")
         except ImportError:
             pass
@@ -16553,7 +16621,12 @@ def _run_tool_chain(
                         function_name=function_name,
                         cocci_rule=tool_cfg["rule"],
                         line_start=line_start or None,
-                        line_end=None,
+                        # Real function bound from the checklist (same
+                        # source the semgrep leg uses); the sweep falls
+                        # back to a +50 window when unresolvable.
+                        line_end=_checklist_line_end(
+                            config, file_path, function_name,
+                        ) or None,
                         domain_vocab=domain_vocab,
                     )
                 if cocci_result.outcome == "confirmed":
@@ -17593,6 +17666,13 @@ def _proactive_validate(
                     file_path=outcome.file,
                     function_name=outcome.function,
                     cocci_rule=cocci_rule,
+                    # Confine matches to the reviewed function: a hit
+                    # in an unrelated function elsewhere in the file
+                    # must not confirm THIS outcome's hypothesis.
+                    line_start=outcome.line or None,
+                    line_end=_checklist_line_end(
+                        config, outcome.file, outcome.function,
+                    ) or None,
                 )
                 if cocci_result.outcome == "confirmed":
                     confirmed_tools.append(f"coccinelle:{Path(cocci_rule).stem}")

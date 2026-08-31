@@ -95,6 +95,43 @@ _MAX_HYDRATED_TOTAL_BYTES = 64 * 1024 * 1024
 _MAX_CONTEXT_MAP_BYTES = CONTEXT_MAP_CONSUMER_MAX_BYTES
 
 
+def _binary_absent_suppression_grade(bo: Any) -> bool:
+    """Suppression-grade ``absent`` verdict for the gap-priority read.
+
+    Replicates the soundness gate of
+    ``core.analysis.reachability.binary_oracle_absent`` (that function
+    is the authority for the discipline; not imported here — the gap
+    fold reads the item's metadata directly and must not pull the
+    core/analysis reachability layer into checklist folding). The
+    corpus-earned suppression property is conditional on full-DWARF
+    evidence from binaries whose configuration the operator chose:
+
+    * no per-binary records (legacy inventory / writer bug) → no trust;
+    * ANY contributing binary at a non-``full`` tier (symbol-only /
+      stripped) → could be inlined, not absent — refuse;
+    * ANY contributing binary with ``suppression_grade: false`` (an
+      env-built binary whose build command was GUESSED) → its absence
+      says nothing suppression-grade about the operator's tree.
+
+    A bare ``classification == "absent"`` read here deprioritised live
+    functions on evidence the chokepoint itself refuses to act on.
+    """
+    if not isinstance(bo, dict) or bo.get("classification") != "absent":
+        return False
+    per_binary = bo.get("binaries") or []
+    if not per_binary:
+        return False
+    if any(
+        isinstance(b, dict) and b.get("tier") != "full"
+        for b in per_binary
+    ):
+        return False
+    return not any(
+        isinstance(b, dict) and b.get("suppression_grade") is False
+        for b in per_binary
+    )
+
+
 def compute_gaps(
     checklist: dict[str, Any],
     coverage_records: list[dict[str, Any]],
@@ -508,10 +545,7 @@ def compute_gaps(
             visibility = metadata.get("visibility", "")
 
             bo = metadata.get("binary_oracle")
-            binary_absent = (
-                bo is not None
-                and bo.get("classification") == "absent"
-            )
+            binary_absent = _binary_absent_suppression_grade(bo)
 
             fuzz_info = _fuzz_info_for(fuzz_coverage, file_path, name)
 

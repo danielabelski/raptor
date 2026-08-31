@@ -6063,3 +6063,37 @@ class TestPostPassWiring:
         cancel = sub.find("f.cancel()")
         assert harvest != -1 and cancel != -1
         assert harvest < cancel
+
+
+class TestValidateConfirmedPrefilterFloor:
+    """Review-time twin of the triage floor: the prefilter skip lane
+    must never journal a mechanical clean over a /validate-CONFIRMED
+    function (the helper reads the validate-bridge history off the
+    evidence record — the same source validate_confirmed_keys uses)."""
+
+    def test_confirmed_history_blocks_skip(self):
+        from types import SimpleNamespace
+
+        from core.audit.orchestrator import _validate_confirmed_gap
+
+        rec = SimpleNamespace(validate_history={
+            "confirmed": [{"fresh": True, "line": 12}],
+            "ruled_out": [],
+        })
+        assert _validate_confirmed_gap({"a.c:fn": rec}, "a.c:fn")
+
+    def test_no_history_allows_skip(self):
+        from types import SimpleNamespace
+
+        from core.audit.orchestrator import _validate_confirmed_gap
+
+        assert not _validate_confirmed_gap(None, "a.c:fn")
+        assert not _validate_confirmed_gap({}, "a.c:fn")
+        assert not _validate_confirmed_gap(
+            {"a.c:fn": SimpleNamespace(validate_history=None)}, "a.c:fn",
+        )
+        # Ruled-out-only history is not a confirmation.
+        rec = SimpleNamespace(validate_history={
+            "confirmed": [], "ruled_out": [{"fresh": True}],
+        })
+        assert not _validate_confirmed_gap({"a.c:fn": rec}, "a.c:fn")

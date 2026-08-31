@@ -284,6 +284,11 @@ class TestComputeGaps:
                             "metadata": {
                                 "binary_oracle": {
                                     "classification": "absent",
+                                    # Suppression-grade evidence: the
+                                    # priority read applies the same
+                                    # tier/suppression_grade discipline
+                                    # as the reachability chokepoint.
+                                    "binaries": [{"tier": "full"}],
                                 },
                             },
                         },
@@ -296,6 +301,42 @@ class TestComputeGaps:
         dead = next(g for g in gaps if g["name"] == "dead_fn")
         assert dead["priority"] == PRIORITY_DEAD_CODE
         assert live["priority"] < dead["priority"]
+
+    def test_binary_absent_without_suppression_grade_not_deprioritized(self):
+        # Mirror of core.analysis.reachability.binary_oracle_absent's
+        # soundness gate (the authority for the discipline): an
+        # ``absent`` classification with no per-binary records, with a
+        # symbol-only contributor, or with a guessed-build contributor
+        # (suppression_grade false) is not suppression-grade evidence
+        # and must NOT deprioritise the function.
+        for bo in (
+            {"classification": "absent"},
+            {"classification": "absent",
+             "binaries": [{"tier": "symbol_only"}]},
+            {"classification": "absent",
+             "binaries": [{"tier": "full", "suppression_grade": False}]},
+            {"classification": "absent",
+             "binaries": [{"tier": "full"},
+                          {"tier": "symbol_only"}]},
+        ):
+            checklist = {
+                "files": [
+                    {
+                        "path": "src/handler.c",
+                        "items": [
+                            {
+                                "name": "maybe_dead",
+                                "line_start": 10,
+                                "line_end": 50,
+                                "metadata": {"binary_oracle": bo},
+                            },
+                        ],
+                    },
+                ],
+            }
+            gaps = compute_gaps(checklist, [])
+            fn = next(g for g in gaps if g["name"] == "maybe_dead")
+            assert fn["priority"] != PRIORITY_DEAD_CODE, bo
 
     def test_binary_absent_sorted_last(self):
         checklist = {
@@ -310,6 +351,11 @@ class TestComputeGaps:
                             "metadata": {
                                 "binary_oracle": {
                                     "classification": "absent",
+                                    # Suppression-grade evidence: the
+                                    # priority read applies the same
+                                    # tier/suppression_grade discipline
+                                    # as the reachability chokepoint.
+                                    "binaries": [{"tier": "full"}],
                                 },
                             },
                         },
@@ -342,6 +388,11 @@ class TestComputeGaps:
                             "metadata": {
                                 "binary_oracle": {
                                     "classification": "absent",
+                                    # Suppression-grade evidence: the
+                                    # priority read applies the same
+                                    # tier/suppression_grade discipline
+                                    # as the reachability chokepoint.
+                                    "binaries": [{"tier": "full"}],
                                 },
                             },
                         },
@@ -352,6 +403,11 @@ class TestComputeGaps:
                             "metadata": {
                                 "binary_oracle": {
                                     "classification": "absent",
+                                    # Suppression-grade evidence: the
+                                    # priority read applies the same
+                                    # tier/suppression_grade discipline
+                                    # as the reachability chokepoint.
+                                    "binaries": [{"tier": "full"}],
                                 },
                             },
                         },

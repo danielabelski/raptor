@@ -1070,6 +1070,49 @@ class TestConfirmedTier:
         )
         assert o.compute_tier() == "tool_backed"
 
+    def test_llm_claimed_witness_never_confirmed(self):
+        # The is_tool_evidence firewall must run BEFORE the :witness
+        # suffix check: a sanitized model claim ending in ":witness"
+        # used to export verification_tier=confirmed from pure model
+        # text (hostile-repo steerable).
+        from core.audit.orchestrator import ReviewOutcome
+        o = ReviewOutcome(
+            file="f.c", function="fn", status="finding",
+            body="overflow",
+            evidence_tool="llm-claimed:smt:check-overflow:witness",
+            tools_dispatched={"smt"},
+        )
+        assert o.compute_tier() == "llm_only"
+
+    def test_llm_claimed_runtime_stamp_never_confirmed(self):
+        # Same firewall ordering for the _CONFIRMED_EVIDENCE stamps: a
+        # model claiming "foo+dynamic:crash" gets one llm-claimed
+        # prefix on the full string, and the trailing part must not
+        # satisfy the confirmed-evidence membership check.
+        from core.audit.orchestrator import ReviewOutcome
+        o = ReviewOutcome(
+            file="f.c", function="fn", status="finding",
+            body="crash", evidence_tool="llm-claimed:foo+dynamic:crash",
+            tools_dispatched={"dynamic"},
+        )
+        assert o.compute_tier() == "llm_only"
+
+    def test_real_witness_still_confirmed_after_firewall(self):
+        # Two-direction pin for the firewall reorder: genuine solver
+        # witness stamps keep the confirmed tier.
+        from core.audit.orchestrator import ReviewOutcome
+        for stamp in (
+            "smt:check-overflow:witness",
+            "dead_path_smt:witness",
+            "clean-refuted:smt:check-overflow:witness",
+        ):
+            o = ReviewOutcome(
+                file="f.c", function="fn", status="finding",
+                body="overflow", evidence_tool=stamp,
+                tools_dispatched={"smt"},
+            )
+            assert o.compute_tier() == "confirmed", stamp
+
     def test_detection_role_stamp_does_not_grade_tool_backed(self):
         # Incident regression (openssh instrumented corpus): 136/137
         # tool_backed findings were disproven; the dominant stamps

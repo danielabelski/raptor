@@ -10,7 +10,6 @@ per-call — batching it adds complexity for no gain.
 from __future__ import annotations
 
 import contextlib
-import json
 import logging
 import threading
 from dataclasses import dataclass, field
@@ -365,14 +364,28 @@ def append_journal_for_outcome(
     # suspicious BEFORE the entry is built, so the journal, the
     # audit-log row, and the tallies that follow all carry the gated
     # status instead of shipping the bypass.
-    try:
-        from .promotion_alarm import check_and_emit
-        check_and_emit(
-            out_dir, outcome, stage="journal-write", run_id=run_id,
-            enforce=True,
-        )
-    except Exception:
-        logger.debug("promotion alarm hook failed", exc_info=True)
+    #
+    # Reused verdicts are exempt: a cross-run import re-asserts the
+    # ORIGIN run's already-gated verdict at $0, with its evidence
+    # deliberately downgraded to ``journal:recall`` provenance until a
+    # live tool re-confirms (verdict_reuse doctrine: the LLM_ONLY tier
+    # cap is the designed penalty). Demoting it here decayed the
+    # journaled status one way — finding → suspicious on every reuse —
+    # and fired the CRITICAL injection alarm on a fully legitimate,
+    # LLM-free import path. ``reused``/``reused_from_run`` are
+    # pipeline-set outcome fields, unreachable from raw model output.
+    if not (
+        getattr(outcome, "reused", False)
+        and getattr(outcome, "reused_from_run", "")
+    ):
+        try:
+            from .promotion_alarm import check_and_emit
+            check_and_emit(
+                out_dir, outcome, stage="journal-write", run_id=run_id,
+                enforce=True,
+            )
+        except Exception:
+            logger.debug("promotion alarm hook failed", exc_info=True)
 
     strategies = list(gap.get("strategies") or [])
     if (
@@ -438,7 +451,6 @@ class Collector:
     run_id: str = ""
 
     _log_entries: list[dict[str, Any]] = field(default_factory=list)
-    _flushed: bool = field(default=False)
     _domain_model_hash: str | None = field(default=None, repr=False)
 
     def submit(
@@ -457,10 +469,29 @@ class Collector:
         # separate checked_by record.
         self._append_journal_entry(outcome, gap)
 
+        # Mirror _commit_outcome: derive the verification tier once
+        # the journal chokepoint has settled the status. Without this,
+        # every collector-committed outcome kept the dataclass default
+        # ("speculative"), so propagate_confidence's trusted_clean set
+        # (tool_backed/confirmed cleans) was empty on every standard
+        # run and the caller-confidence FP demotion never fired.
+        compute = getattr(outcome, "compute_tier", None)
+        if callable(compute):
+            try:
+                outcome.verification_tier = compute()
+            except Exception:
+                logger.debug(
+                    "verification tier compute failed for %s:%s",
+                    outcome.file, outcome.function, exc_info=True,
+                )
+
         entry: dict[str, Any] = {
             "action": "orchestrator_review",
             "key": f"{outcome.file}:{outcome.function}:{gap.get('line_start', 0)}",
             "status": outcome.status,
+            "verification_tier": getattr(
+                outcome, "verification_tier", "",
+            ) or "speculative",
             "model": outcome.model,
             "cost_usd": outcome.cost_usd,
             "duration_s": outcome.duration_s,
@@ -540,23 +571,45 @@ class Collector:
             _load_cached.cache_clear()
 
     def flush(self) -> None:
-        """Write all buffered state to disk in bulk."""
-        if self._flushed:
-            return
+        """Write all buffered state to disk in bulk.
+
+        Re-usable, not a one-shot latch: the orchestrator flushes once
+        after the main review loop and again at the true end of the
+        run, and post-loop passes (callee-contract propagation, dark
+        verification, IRIS/live-sink telemetry) keep submitting in
+        between — a latch tripped by the first flush silently
+        discarded everything they buffered. Entries are dropped from
+        the buffer only once written; a failed write keeps them for
+        the next flush (end-of-run or the SIGTERM hook) instead of
+        marking them flushed and losing them. Never raises.
+        """
+        try:
+            flush_journal(self.out_dir)
+        except Exception:
+            logger.debug("journal fsync failed", exc_info=True)
 
         try:
-            try:
-                flush_journal(self.out_dir)
-            except Exception:
-                logger.debug("journal fsync failed", exc_info=True)
-
-            if self._log_entries:
-                self._flush_audit_log()
-        finally:
-            self._flushed = True
+            self._flush_audit_log()
+        except (OSError, TypeError, ValueError):
+            logger.warning(
+                "audit-log flush failed — %d buffered entries retained "
+                "for the next flush",
+                len(self._log_entries), exc_info=True,
+            )
 
     def _flush_audit_log(self) -> None:
+        """Append buffered rows via the hardened JSONL writer.
+
+        ``core.json.append_jsonl`` opens with O_APPEND|O_NOFOLLOW — a
+        symlink planted at the trail path in the target-writable run
+        dir is refused instead of followed (the bare ``open(..., "a")``
+        this replaces bypassed that hardening). Each written row is
+        popped immediately so a mid-batch failure retains only the
+        unwritten tail.
+        """
+        from core.json import append_jsonl
+
         log_path = self.out_dir / ".audit-log.jsonl"
-        lines = [json.dumps(e, separators=(",", ":")) for e in self._log_entries]
-        with open(log_path, "a") as f:
-            f.write("\n".join(lines) + "\n")
+        while self._log_entries:
+            append_jsonl(log_path, self._log_entries[0], compact=True)
+            self._log_entries.pop(0)

@@ -33,8 +33,11 @@ _BATCH_SYSTEM_PROMPT = with_audit_framing(
     "and could contain a vulnerability.\n\n"
     "Respond with a JSON array, one object per function, in the same order "
     "as presented. Each object must have:\n"
-    '  {"file": "<file>", "function": "<name>", "status": "clean"|"suspicious", '
-    '"body": "<one sentence>"}\n\n'
+    '  {"file": "<file>", "function": "<name>", "line_start": <number>, '
+    '"status": "clean"|"suspicious", "body": "<one sentence>"}\n\n'
+    "Copy file, function, and line_start EXACTLY from the function list "
+    "entry (line_start is the first number of its line range) — they key "
+    "your answer back to the right function.\n\n"
     'Use "suspicious" only when there is a concrete reason (e.g. unchecked '
     "input, missing bounds check, unsafe pattern). Default to \"clean\".",
 )
@@ -99,7 +102,13 @@ def format_batch_prompt(
             kind="source-code",
             origin=origin,
         ))
-        listing.append(f"{i}. {ctx['file']}:{ctx['function']}")
+        # line range in the listing: same-file same-name siblings
+        # (static #if branches, overloads) are only distinguishable by
+        # line_start, which the response schema echoes back.
+        listing.append(
+            f"{i}. {ctx['file']}:{ctx['function']}"
+            f":{ctx.get('line_start', '?')}-{ctx.get('line_end', '?')}"
+        )
 
     slots = {
         "function_list": TaintedString(
@@ -122,7 +131,13 @@ def format_batch_prompt(
 # element is dropped and the affected function falls back to individual
 # review, exactly like any other malformed element. Same floor policy
 # as core.llm.response_validation.unknown_response_fields.
-_BATCH_ELEMENT_KEYS = frozenset({"file", "function", "status", "body"})
+# ``line_start`` is the disambiguating echo field: without it, results
+# keyed file:function collapsed same-file same-name siblings and their
+# verdicts swapped. It stays OPTIONAL at parse time (an element without
+# it still matches when its file:function is unique in the batch).
+_BATCH_ELEMENT_KEYS = frozenset({
+    "file", "function", "line_start", "status", "body",
+})
 _BATCH_STATUSES = frozenset({"clean", "suspicious"})
 
 
@@ -315,21 +330,44 @@ def make_batch_review_fn(
 
         results = parse_batch_response(raw_text, contexts)
 
-        # Build a keyed lookup from LLM results by file:function.
-        # Positional fallback is intentionally omitted — if the LLM
-        # reorders items, index-based matching misattributes verdicts.
-        # Unmatched functions get status="error" and fall back to
-        # individual review.
+        # Keyed lookup by file:function:line_start (line_start is the
+        # echo field the schema requires the model to copy). A bare
+        # file:function key collapsed same-file same-name siblings —
+        # one result served BOTH contexts and verdicts swapped.
+        # Fallback: an element without a usable line_start still
+        # matches by file:function, but ONLY when that pair is unique
+        # among the batch's contexts (ambiguous pairs error-route to
+        # individual review rather than guess). Positional matching
+        # stays intentionally omitted — if the LLM reorders items,
+        # index-based matching misattributes verdicts.
+        def _echo_line(value: Any) -> int:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return -1
+
+        ctx_pair_counts: dict[str, int] = {}
+        for ctx in contexts:
+            pair = f"{ctx['file']}:{ctx['function']}"
+            ctx_pair_counts[pair] = ctx_pair_counts.get(pair, 0) + 1
+
         results_by_key: dict[str, dict[str, Any]] = {}
+        results_by_pair: dict[str, dict[str, Any]] = {}
         for r in results:
             if isinstance(r, dict) and r.get("file") and r.get("function"):
-                rkey = f"{r['file']}:{r['function']}"
-                results_by_key[rkey] = r
+                pair = f"{r['file']}:{r['function']}"
+                line = _echo_line(r.get("line_start"))
+                if line >= 0:
+                    results_by_key[f"{pair}:{line}"] = r
+                results_by_pair[pair] = r
 
         outcomes: list[ReviewOutcome] = []
         for _i, ctx in enumerate(contexts):
-            ckey = f"{ctx['file']}:{ctx['function']}"
+            pair = f"{ctx['file']}:{ctx['function']}"
+            ckey = f"{pair}:{ctx.get('line_start', 0)}"
             r = results_by_key.get(ckey)
+            if r is None and ctx_pair_counts.get(pair, 0) == 1:
+                r = results_by_pair.get(pair)
             if r is not None:
                 status = r.get("status", "suspicious")
                 if status not in ("clean", "suspicious"):

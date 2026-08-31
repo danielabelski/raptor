@@ -322,39 +322,65 @@ def _retry_stalled_files(files, initargs, *, _on_retry_done, futures_map):
     recovered — the common case, since a zero-completion stall means
     the WORKERS wedged, not that the files are pathological).
 
-    The retry pool gets the same stall window; a second stall (or a
-    pool-creation failure) hands the remainder back for
-    excluded-file recording. No ``with`` block: the context manager
-    exit would block on wedged workers, which is exactly what the
-    teardown here must never do.
+    PER-FILE stall windows, submitted one at a time: the retry pool is
+    serial (one worker), so a single shared zero-completion window let
+    one genuinely-slow file mark every queued sibling as failed
+    without ever executing it. Each file now gets its own full window;
+    a file that exhausts it is recorded failed, its wedged pool torn
+    down, and the remaining files continue in a fresh pool. No
+    ``with`` block: the context manager exit would block on wedged
+    workers, which is exactly what the teardown here must never do.
     """
-    pool = _make_extractor_pool(initargs, max_workers=1)
-    if pool is None:
-        return list(files)
-    retry_futures = {}
-    for fp in files:
-        fut = pool.submit(_process_file_in_worker, fp)
-        retry_futures[fut] = fp
-        # The caller's completion callback resolves file paths
-        # through its own futures map — register the retry futures
-        # there so results land through the same accounting.
-        futures_map[fut] = fp
-    stalled = _drain_futures(
-        retry_futures, INVENTORY_STALL_TIMEOUT_S, _on_retry_done,
-    )
-    if stalled:
-        for fut in stalled:
-            fut.cancel()
-        pool.shutdown(wait=False, cancel_futures=True)
-        procs = getattr(pool, "_processes", None) or {}
+    def _kill(p) -> None:
+        p.shutdown(wait=False, cancel_futures=True)
+        procs = getattr(p, "_processes", None) or {}
         for proc in list(procs.values()):
             try:
                 proc.terminate()
             except Exception:  # noqa: BLE001
                 pass
-    else:
-        pool.shutdown(wait=True)
-    return [retry_futures[f] for f in stalled]
+
+    still_failed = []
+    pool = None
+    files = list(files)
+    consecutive_stalls = 0
+    try:
+        for idx, fp in enumerate(files):
+            if pool is None:
+                pool = _make_extractor_pool(initargs, max_workers=1)
+                if pool is None:
+                    # No working pool context at all — don't re-probe
+                    # (with its own timeout) once per remaining file.
+                    still_failed.extend(files[idx:])
+                    break
+            fut = pool.submit(_process_file_in_worker, fp)
+            # The caller's completion callback resolves file paths
+            # through its own futures map — register the retry futures
+            # there so results land through the same accounting.
+            futures_map[fut] = fp
+            done, _pending = wait({fut}, timeout=INVENTORY_STALL_TIMEOUT_S)
+            if done:
+                _on_retry_done(fut)
+                consecutive_stalls = 0
+                continue
+            fut.cancel()
+            _kill(pool)
+            pool = None
+            still_failed.append(fp)
+            consecutive_stalls += 1
+            # Two INDEPENDENT fresh pools stalling in a row points at
+            # a systemic wedge (the known class is environmental —
+            # fork-frozen locks — not per-file), so stop burning a
+            # full window per remaining file; one stall alone could
+            # still be a single pathological file, and its siblings
+            # deserve their own attempt.
+            if consecutive_stalls >= 2:
+                still_failed.extend(files[idx + 1:])
+                break
+    finally:
+        if pool is not None:
+            pool.shutdown(wait=True)
+    return still_failed
 
 
 def _drain_futures(futures, timeout_s, on_done):

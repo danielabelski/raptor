@@ -1011,7 +1011,8 @@ def _pinned_llm_config(model_name: str) -> 'LLMConfig':
     #      the config file)
     from core.llm.model_data import resolve_model_limits
     limits = resolve_model_limits(model_name) or {}
-    max_tokens = limits.get("max_output", 4096)
+    known_max_output = limits.get("max_output")
+    max_tokens = known_max_output or 4096
     max_context = limits.get("max_context", 32000)
 
     builder = _PROVIDER_BUILDERS.get(provider)
@@ -1034,8 +1035,19 @@ def _pinned_llm_config(model_name: str) -> 'LLMConfig':
             max_tokens=max_tokens, max_context=max_context,
         )
     else:
+        # The pinned model's own published output cap wins over the
+        # base config's value: ``max(base, pinned)`` sent the base
+        # model's larger limit on every call to a smaller-cap pinned
+        # model — a non-retryable 400, before the first retry. Only
+        # when the pinned model has NO published limit do we keep the
+        # old max() (the base's value was sized for this provider and
+        # beats the blind 4096 floor).
+        pinned_max = (
+            known_max_output if known_max_output
+            else max(base.max_tokens, max_tokens)
+        )
         primary = replace(base, model_name=model_name, role="code",
-                          max_tokens=max(base.max_tokens, max_tokens))
+                          max_tokens=pinned_max)
     return LLMConfig(primary_model=primary, fallback_models=[])
 
 
@@ -1728,10 +1740,21 @@ class LLMClient:
         self, prompt: str, system_prompt: str | None, model: str,
         kwargs: dict[str, Any] | None = None,
     ) -> str:
-        """Generate cache key for prompt."""
-        content = (
-            f"{model}:{system_prompt or ''}:{prompt}:"
-            f"{self._kwargs_for_cache_key(kwargs)}"
+        """Generate cache key for prompt.
+
+        Components are JSON-list-encoded (every string quoted and
+        escaped) instead of ``:``-joined: with a bare join,
+        (system='A', prompt='B:C') and (system='A:B', prompt='C')
+        produced the same digest, so the second caller replayed the
+        first caller's cached response. Changing the key formula
+        orphans existing cache entries — cost-only impact (one fresh
+        generation per unique call), bounded by the 24h TTL that
+        already expires them.
+        """
+        from core.json import dumps_canonical
+        content = dumps_canonical(
+            [model, system_prompt or "", prompt,
+             self._kwargs_for_cache_key(kwargs)],
         )
         return sha256_string(content)
 
@@ -1921,7 +1944,12 @@ class LLMClient:
         and includes generation kwargs so callers passing different
         temperatures (etc.) don't collide either — even though provider
         impls don't currently honour those kwargs, future plumbing is
-        cache-correct from day one."""
+        cache-correct from day one.
+
+        Components are JSON-list-encoded, not ``:``-joined — see
+        ``_get_cache_key`` for the delimiter-injection collision this
+        closes and the (cost-only, TTL-bounded) cache invalidation the
+        formula change implies."""
         # sort_keys → stable digest regardless of dict insertion order.
         # default=str → swallow non-serialisable schema embellishments.
         try:
@@ -1930,10 +1958,11 @@ class LLMClient:
             # Schemas should always serialise; if a caller passes something
             # weird, fall back to repr — still deterministic for that caller.
             schema_json = repr(schema)
-        content = (
-            f"v{self._STRUCTURED_CACHE_VERSION}:"
-            f"{model}:{system_prompt or ''}:{prompt}:{schema_json}:"
-            f"{self._kwargs_for_cache_key(kwargs)}"
+        from core.json import dumps_canonical
+        content = dumps_canonical(
+            [f"v{self._STRUCTURED_CACHE_VERSION}", model,
+             system_prompt or "", prompt, schema_json,
+             self._kwargs_for_cache_key(kwargs)],
         )
         return sha256_string(content)
 
@@ -2428,7 +2457,14 @@ class LLMClient:
 
                 timeout_failures = 0
                 last_safe_e = ""
-                for attempt in range(self.config.max_retries):
+                # ``max_retries`` counts TOTAL attempts here; clamp to
+                # at least one so ``max_retries=0`` means "single
+                # attempt, no retries" — matching the providers' own
+                # ``range(max_retries + 1)`` convention (they pass 0
+                # deliberately for exactly that) — instead of an empty
+                # loop that left ``attempt`` unbound and raised
+                # UnboundLocalError at the give-up log below.
+                for attempt in range(max(self.config.max_retries, 1)):
                     attempt_start = time.monotonic()
                     try:
                         if attempt > 0:
@@ -2937,7 +2973,11 @@ class LLMClient:
 
                 timeout_failures = 0
                 last_safe_e = ""
-                for attempt in range(self.config.max_retries):
+                # Clamp to at least one attempt — ``max_retries=0``
+                # means "single attempt, no retries"; see ``generate``
+                # above for the convention and the UnboundLocalError
+                # this closes.
+                for attempt in range(max(self.config.max_retries, 1)):
                     attempt_start = time.monotonic()
                     try:
                         if attempt > 0:

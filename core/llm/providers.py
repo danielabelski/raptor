@@ -3854,9 +3854,18 @@ class GeminiProvider(LLMProvider):
             result_dict = validated.model_dump()
             full_response = json.dumps(result_dict, indent=2)
 
+            # Per-call usage rides on the response — the client's
+            # aggregate-counter before/after diff multiply-books
+            # concurrent calls' spend under parallel workers (see the
+            # Anthropic instructor leg's identical note).
             return StructuredResponse(
                 result=result_dict,
                 raw=full_response,
+                cost=cost,
+                tokens_used=tokens_used,
+                duration=duration,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
                 resolved_model=extract_resolved_model(response),
             )
 

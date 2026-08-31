@@ -477,6 +477,37 @@ def test_corrupt_json_falls_through_to_empty(tmp_path):
     sc.record_event("x:y", "m", EventType.CHEAP_SHORT_CIRCUIT, "correct")
 
 
+def test_corrupt_json_quarantined_before_fresh_start(tmp_path):
+    """A write over a corrupt sidecar must preserve the corrupt bytes
+    aside (timestamped ``.corrupt`` sibling, mirroring the
+    ``.unverified`` quarantine) — pre-fix the fresh empty state was
+    atomically persisted OVER the accumulated history with nothing
+    left to inspect or recover."""
+    path = tmp_path / "sc.json"
+    corrupt = "{not valid json — months of history lived here"
+    path.write_text(corrupt, encoding="utf-8")
+    sc = ModelScorecard(path)
+    sc.record_event("x:y", "m", EventType.CHEAP_SHORT_CIRCUIT, "correct")
+    quarantined = list(tmp_path.glob("sc.json.*.corrupt"))
+    assert len(quarantined) == 1
+    assert quarantined[0].read_text(encoding="utf-8") == corrupt
+    # Fresh state proceeded: the sidecar is valid JSON carrying the event.
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert "m" in data["models"]
+
+
+def test_corrupt_json_read_only_leaves_file_in_place(tmp_path):
+    """Other direction: a read-only context persists nothing, so the
+    corrupt file stays put (no quarantine churn from mere reads)."""
+    path = tmp_path / "sc.json"
+    corrupt = "{not valid json"
+    path.write_text(corrupt, encoding="utf-8")
+    sc = ModelScorecard(path)
+    assert sc.should_short_circuit("x:y", "m") == Policy.LEARNING
+    assert path.read_text(encoding="utf-8") == corrupt
+    assert not list(tmp_path.glob("*.corrupt"))
+
+
 def test_schema_version_mismatch_raises(tmp_path):
     """A sidecar from a future schema version refuses to be opened
     — surfacing a hard error beats silently downgrading data."""

@@ -1155,9 +1155,40 @@ class ModelScorecard:
                         msg = f"expected dict, got {type(self.data).__name__}"
                         raise TypeError(msg)
                 except (ValueError, TypeError) as e:
-                    logger.warning(
-                        "scorecard: corrupt JSON at %s — reading as empty (error: %s)", path, e
+                    # Quarantine the corrupt bytes BEFORE starting
+                    # fresh: a write ctx persists the empty
+                    # replacement dict on exit, which previously
+                    # overwrote the accumulated reliability history
+                    # with nothing left to inspect or recover.
+                    # Timestamped ``.corrupt`` sibling (mirrors the
+                    # ``.unverified`` quarantine below) so repeated
+                    # corruption events don't clobber each other's
+                    # evidence.
+                    quarantine = path.with_suffix(
+                        path.suffix + f".{int(time.time())}.corrupt",
                     )
+                    if self.write:
+                        try:
+                            import os as _os
+                            _os.replace(path, quarantine)
+                            logger.warning(
+                                "scorecard: corrupt JSON at %s — "
+                                "starting fresh; corrupt file preserved "
+                                "at %s (error: %s)", path, quarantine, e,
+                            )
+                        except OSError as qe:
+                            logger.warning(
+                                "scorecard: corrupt JSON at %s — "
+                                "starting fresh; quarantine to %s "
+                                "FAILED (%s); parse error: %s",
+                                path, quarantine, qe, e,
+                            )
+                    else:
+                        logger.warning(
+                            "scorecard: corrupt JSON at %s — reading "
+                            "as empty; file left in place (read-only "
+                            "context; error: %s)", path, e,
+                        )
                     self.data = {"version": SCHEMA_VERSION, "models": {}}
                 else:
                     # Integrity gate: the sidecar steers

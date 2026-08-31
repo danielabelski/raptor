@@ -40,6 +40,11 @@ class TestHexHelpers:
         )
 
 
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="SO_PEERCRED is Linux-only; _unix_peer_credentials returns "
+           "None (fail-closed) on other platforms",
+)
 class TestUnixPeerCredentials:
     """struct ucred decode: pid is signed, uid/gid are UNSIGNED
     32-bit. A signed uid decode ('3i') turned uids >= 2^31 (SSSD /

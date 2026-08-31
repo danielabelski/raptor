@@ -151,7 +151,9 @@ def _load_or_create_key() -> bytes | None:
         return None
     if data is not None and len(data) == _KEY_LEN:
         return data
-    if data is not None:
+    if data is not None and len(data) > _KEY_LEN:
+        # Over-length can never be a concurrent creator's partial
+        # _KEY_LEN write — genuinely suspect, abort.
         _warn_once_suspect_key(
             path,
             f"wrong length ({len(data)} bytes, expected {_KEY_LEN})",
@@ -159,7 +161,11 @@ def _load_or_create_key() -> bytes | None:
             "created on the next stamp",
         )
         return None
-    data = data or b""
+    # data is None (no key yet) or SHORT (a concurrent creator may be
+    # mid-write between its O_EXCL create and its write): attempt
+    # creation — an absent file wins the O_EXCL, a concurrent creator
+    # makes it fail FileExistsError, whose retry loop below rides out
+    # the mid-write window instead of mis-flagging a suspect key.
 
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     key = secrets.token_bytes(_KEY_LEN)
@@ -169,13 +175,24 @@ def _load_or_create_key() -> bytes | None:
         # Lost the creation race — re-read the winner's key (an
         # attacker pre-placing a symlink also lands here: O_EXCL
         # refuses to create through one, and the re-read refuses it).
+        # SHORT reads (0 <= len < _KEY_LEN) are RETRIED, not aborted:
+        # the winner opens with O_EXCL and writes the key in a second
+        # step, so the loser can legitimately observe an empty or
+        # partial file mid-write — treating that as a suspect
+        # wrong-length key aborted on the first iteration and left the
+        # run unstamped (honest runs then triaged toward tampered).
+        # Only content that can never be a partial _KEY_LEN write
+        # (over-length) aborts immediately; a file still short after
+        # the full retry budget is genuinely wrong-length stable
+        # content and aborts then.
+        raced = None
         for _ in range(20):
             raced = _read_existing_key(path)
             if raced is _REFUSED:
                 return None
             if raced is not None and len(raced) == _KEY_LEN:
                 return raced
-            if raced is not None:
+            if raced is not None and len(raced) > _KEY_LEN:
                 _warn_once_suspect_key(
                     path,
                     f"wrong length ({len(raced)} bytes, expected {_KEY_LEN})",
@@ -183,9 +200,16 @@ def _load_or_create_key() -> bytes | None:
                     "is created on the next stamp",
                 )
                 return None
-            data = raced if raced is not None else b""
             time.sleep(0.01)
-        return data
+        if raced is not None:
+            _warn_once_suspect_key(
+                path,
+                f"wrong length ({len(raced)} bytes, expected {_KEY_LEN}) "
+                "after the creation-race retry budget",
+                "remove the suspect key and investigate; a fresh key "
+                "is created on the next stamp",
+            )
+        return None
     try:
         os.write(fd, key)
     finally:

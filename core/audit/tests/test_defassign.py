@@ -447,6 +447,44 @@ class TestMacroExpansion:
         )
         assert not r.proven
 
+    def test_expression_macro_guard_branch_stays_unknown(self, tmp_path):
+        # An expression-shaped macro guard reduces to a placeholder;
+        # the placeholder must be OPAQUE, not a constant.  A constant
+        # (0) lets the walker const-fold the guarded branch away and
+        # erase the uninitialized use inside it — a false proof.
+        root = tmp_path / "target"
+        root.mkdir()
+        (root / "m.c").write_text(
+            "#define GUARD(c) (!!(c))\n"
+            "int f(int a){int v; if (GUARD(a)) { return v; }"
+            " v = 1; return v;}\n",
+        )
+        r = check_definite_assignment(
+            "int f(int a){int v; if (GUARD(a)) { return v; }"
+            " v = 1; return v;}", "v",
+            target_path=root, rel_file="m.c",
+        )
+        assert not r.proven
+
+    def test_expression_macro_guard_both_arms_assigning_proves(
+        self, tmp_path,
+    ):
+        # Control: the reduction itself stays usable — when both arms
+        # of the macro-guarded branch assign, the proof still lands.
+        root = tmp_path / "target"
+        root.mkdir()
+        (root / "m.c").write_text(
+            "#define GUARD(c) (!!(c))\n"
+            "int f(int a){int v; if (GUARD(a)) { v = 2; }"
+            " else { v = 1; } return v;}\n",
+        )
+        r = check_definite_assignment(
+            "int f(int a){int v; if (GUARD(a)) { v = 2; }"
+            " else { v = 1; } return v;}", "v",
+            target_path=root, rel_file="m.c",
+        )
+        assert r.proven, r.reason
+
 
 # ---------------------------------------------------------------------------
 # Z3 arm

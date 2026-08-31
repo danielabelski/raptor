@@ -939,18 +939,29 @@ def _is_statement_shaped(tokens: list[Token]) -> bool:
 
 
 def _reduce_expression_expansion(
-    tokens: list[Token], variable: str,
+    tokens: list[Token], variable: str, serial: int,
 ) -> list[Token]:
     """Placeholder for an expression-shaped expansion: preserves the
-    evaluated reads of the claimed variable and nothing else."""
+    evaluated reads of the claimed variable and nothing else.
+
+    The placeholder value is an OPAQUE identifier, never a constant:
+    a constant would let the walker's polarity-sensitive folding
+    const-prune a macro-guarded branch away (``if (GUARD(x)) use(v)``
+    reducing to ``if ((0)) …`` erases a real use), turning an unknown
+    guard into a false proof.  An unknown identifier keeps the branch
+    UNKNOWN — both arms walked.  ``serial`` makes each reduction's
+    identifier distinct so two different macros can never mint a
+    correlated-condition pair the source does not have.
+    """
+    opaque = f"__defassign_opaque_{serial}"
     reads = _scan_expansion_for_variable(tokens, variable)
     if reads:
         return [
-            ("punct", "("), ("num", "0"), ("punct", ","),
+            ("punct", "("), ("ident", opaque), ("punct", ","),
             ("punct", "("), ("ident", variable), ("punct", ")"),
             ("punct", ")"),
         ]
-    return [("punct", "("), ("num", "0"), ("punct", ")")]
+    return [("punct", "("), ("ident", opaque), ("punct", ")")]
 
 
 @dataclass
@@ -1014,7 +1025,9 @@ def _process_function_tokens(
             tokens = tokens[:i] + one_level + tokens[after:]
         else:
             reductions += 1
-            placeholder = _reduce_expression_expansion(full, variable)
+            placeholder = _reduce_expression_expansion(
+                full, variable, reductions,
+            )
             tokens = tokens[:i] + placeholder + tokens[after:]
     return _ProcessedSource(
         tokens=tokens,

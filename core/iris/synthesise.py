@@ -623,7 +623,12 @@ def _parse_assumption_response(response: str) -> list[SafetyAssumption]:
     """Parse LLM response into SafetyAssumption objects."""
     from core.json.tolerant import parse_llm_json
 
-    data, _diag = parse_llm_json(response)
+    # require_object=False: the prompt instructs "Output a JSON array"
+    # — the default object-only mode fell back to the brace-span
+    # extractor, which returned only the LAST object of the array, so
+    # all but one synthesised assumption was silently dropped on every
+    # call (the isinstance-list branch below was unreachable).
+    data, _diag = parse_llm_json(response, require_object=False)
     if data is None:
         logger.debug("iris.synthesise: assumption response not valid JSON")
         return []

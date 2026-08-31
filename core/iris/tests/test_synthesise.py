@@ -362,6 +362,28 @@ class TestParseAssumptionResponse:
         result = _parse_assumption_response("not json at all {{{")
         assert result == []
 
+    def test_fenced_array_keeps_all_assumptions(self):
+        """Regression: the prompt instructs "Output a JSON array"; the
+        default require_object=True used to fall back to brace_span and
+        return only the LAST object — 1 of 3 assumptions survived."""
+        body = json.dumps([
+            {"target": f"f{i}", "file": "x.c", "assumption": f"a{i}"}
+            for i in range(3)
+        ])
+        result = _parse_assumption_response(f"```json\n{body}\n```")
+        assert [a.target for a in result] == ["f0", "f1", "f2"]
+
+    def test_prose_wrapped_bare_array_keeps_all_assumptions(self):
+        """Same regression, prose + bare array shape (no fence): the
+        bracket-span strategy must return the whole array."""
+        body = json.dumps([
+            {"target": f"f{i}", "file": "x.c", "assumption": f"a{i}"}
+            for i in range(3)
+        ])
+        resp = f"Here are the safety assumptions:\n{body}\nDone."
+        result = _parse_assumption_response(resp)
+        assert [a.target for a in result] == ["f0", "f1", "f2"]
+
     def test_non_dict_items_skipped(self):
         resp = json.dumps([
             "a string",

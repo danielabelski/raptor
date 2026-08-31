@@ -15,13 +15,19 @@ class FakeResult:
         self.errors = errors or []
 
 
+class FakeFlow:
+    steps = []
+
+
 class FakeServer:
-    def __init__(self, raw_output="", verdicts=None, error=False):
+    def __init__(self, raw_output="", verdicts=None, error=False,
+                 degraded=False):
         self.raw_output = raw_output
         self.verdicts = verdicts or {}
         self.error = error
+        self.degraded = degraded
         self.queries = []
-        self.exists_queries = []
+        self.taint_queries = []
 
     def query(self, cpgql, **kwargs):
         self.queries.append(cpgql)
@@ -29,11 +35,18 @@ class FakeServer:
             raise RuntimeError("joern down")
         return FakeResult(raw_output=self.raw_output)
 
-    def run_taint_exists_query(self, source_method, sink_call, **kwargs):
-        self.exists_queries.append((source_method, sink_call))
+    def run_taint_query(self, source_method, sink_call, *,
+                        errors_out=None, **kwargs):
+        self.taint_queries.append((source_method, sink_call))
         if self.error:
             raise RuntimeError("joern down")
-        return self.verdicts.get((source_method, sink_call), False)
+        if self.degraded:
+            if errors_out is not None:
+                errors_out.append("server restarting")
+            return []
+        if self.verdicts.get((source_method, sink_call), False):
+            return [FakeFlow()]
+        return []
 
 
 # Line 2 is an ANSI-wrapped REPL echo of the same site — must dedupe.
@@ -118,7 +131,7 @@ class TestClassifyTaintBatch:
         ]
         srv = FakeServer()
         classify_taint_batch(matches, srv, sink_call="memcpy")
-        assert srv.exists_queries == [("f", "memcpy"), ("g", "memcpy")]
+        assert srv.taint_queries == [("f", "memcpy"), ("g", "memcpy")]
 
     def test_sink_parsed_from_code_when_no_arg(self):
         matches = [
@@ -127,7 +140,7 @@ class TestClassifyTaintBatch:
         ]
         srv = FakeServer()
         classify_taint_batch(matches, srv)
-        assert srv.exists_queries == [("g", "strcpy")]
+        assert srv.taint_queries == [("g", "strcpy")]
 
     def test_unique_pairs_queried_once(self):
         matches = [
@@ -136,14 +149,14 @@ class TestClassifyTaintBatch:
         ]
         srv = FakeServer()
         classify_taint_batch(matches, srv)
-        assert srv.exists_queries == [("f", "memcpy")]
+        assert srv.taint_queries == [("f", "memcpy")]
 
     def test_unresolvable_match_left_untouched(self):
         matches = [{"file": "a.c", "line": 1, "code": "no call here"}]
         srv = FakeServer()
         classify_taint_batch(matches, srv)
         assert "joern_tainted" not in matches[0]
-        assert srv.exists_queries == []
+        assert srv.taint_queries == []
 
     def test_query_error_leaves_match_unclassified(self):
         matches = [
@@ -151,6 +164,26 @@ class TestClassifyTaintBatch:
         ]
         classify_taint_batch(matches, FakeServer(error=True))
         assert "joern_tainted" not in matches[0]
+
+    def test_degraded_query_not_booked_as_negative(self):
+        # Server-degraded query (errors_out populated, no flows):
+        # "no taint path" and "the query never ran" are
+        # indistinguishable — the match must stay unclassified, never
+        # gain joern_tainted: false.
+        matches = [
+            {"file": "a.c", "line": 1, "caller": "f", "sink": "memcpy"},
+        ]
+        classify_taint_batch(matches, FakeServer(degraded=True))
+        assert "joern_tainted" not in matches[0]
+
+    def test_clean_no_flow_still_books_negative(self):
+        # Two-direction guard: a clean (error-free) empty result IS a
+        # negative — the degraded-skip must not swallow real verdicts.
+        matches = [
+            {"file": "a.c", "line": 1, "caller": "f", "sink": "memcpy"},
+        ]
+        classify_taint_batch(matches, FakeServer())
+        assert matches[0]["joern_tainted"] is False
 
 
 class TestCallsiteProtocolIntegrity:
@@ -329,7 +362,7 @@ class TestCallsiteProtocolIntegrity:
                     "file": "a.c", "line": 1}]
         classify_taint_batch(matches, srv)
         assert "joern_tainted" not in matches[0]
-        assert srv.exists_queries == []
+        assert srv.taint_queries == []
 
 
 class TestRestartRetrySeam:

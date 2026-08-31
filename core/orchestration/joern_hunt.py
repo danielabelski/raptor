@@ -224,9 +224,17 @@ def classify_taint_batch(
     parsed from ``match["code"]``.
 
     Annotates each resolvable match with ``joern_tainted: true/false``
-    (unresolvable matches are left untouched). Existence queries are
-    deduplicated per unique (caller, sink) pair; a query failure
-    degrades that pair to unclassified rather than aborting the batch.
+    (unresolvable matches are left untouched). Queries are deduplicated
+    per unique (caller, sink) pair; a query failure OR a server-degraded
+    query (errors with no flows — ambiguous, see ``run_taint_query``'s
+    ``errors_out`` contract) degrades that pair to unclassified rather
+    than booking a false negative or aborting the batch.
+
+    Uses the path query (``run_taint_query``) rather than the cheaper
+    existence query: only the path query exposes ``errors_out``, and
+    without it a restarting/timed-out server reads as ``joern_tainted:
+    false`` — a verdict downstream consumers act on. Slightly heavier
+    per unique pair; verdict-equivalent at the same bounded depth.
 
     Mutates and returns *matches*.
     """
@@ -239,13 +247,23 @@ def classify_taint_batch(
             continue
         key = (caller, sink)
         if key not in verdicts:
+            query_errors: list = []
             try:
-                verdicts[key] = bool(server.run_taint_exists_query(
+                flows = server.run_taint_query(
                     caller, sink, timeout=timeout,
-                ))
+                    errors_out=query_errors,
+                ) or []
+                if not flows and query_errors:
+                    logger.warning(
+                        "taint classification degraded for %s -> %s: %s",
+                        caller, sink, query_errors,
+                    )
+                    verdicts[key] = None
+                else:
+                    verdicts[key] = bool(flows)
             except Exception:
                 logger.debug(
-                    "taint exists query failed for %s -> %s",
+                    "taint query failed for %s -> %s",
                     caller, sink, exc_info=True,
                 )
                 verdicts[key] = None

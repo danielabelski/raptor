@@ -362,13 +362,10 @@ _ALLOWLIST: tuple[AllowlistEntry, ...] = (
         ),
     ),
     # ----- packages/llm_analysis/agent.py -----
-    AllowlistEntry(
-        file='packages/llm_analysis/agent.py',
-        func_name='AutonomousSecurityAgentV2.generate_patch',
-        attr='file_path',
-        expr_text='{vuln.file_path}',
-        audit_note='markdown for disk (operator review file), not LLM prompt',
-    ),
+    # file_path / level / analysis / patch body now route through
+    # output sanitisation into local names before interpolation, so
+    # only the numeric line span remains a direct attribute
+    # interpolation.
     AllowlistEntry(
         file='packages/llm_analysis/agent.py',
         func_name='AutonomousSecurityAgentV2.generate_patch',
@@ -381,13 +378,6 @@ _ALLOWLIST: tuple[AllowlistEntry, ...] = (
         func_name='AutonomousSecurityAgentV2.generate_patch',
         attr='end_line',
         expr_text='{vuln.end_line}',
-        audit_note='markdown for disk, not LLM prompt',
-    ),
-    AllowlistEntry(
-        file='packages/llm_analysis/agent.py',
-        func_name='AutonomousSecurityAgentV2.generate_patch',
-        attr='level',
-        expr_text='{vuln.level}',
         audit_note='markdown for disk, not LLM prompt',
     ),
     # ----- packages/checker_synthesis/synthesise.py -----

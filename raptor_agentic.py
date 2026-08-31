@@ -2187,15 +2187,14 @@ Examples:
     original_repo_path = repo_path
 
     # Clean up stale raptor_git_* dirs leaked by prior runs killed with
-    # SIGKILL (atexit handlers don't fire on SIGKILL).
-    import glob as _glob
-    import shutil as _shutil
-    import tempfile as _tempfile
-    for _stale in _glob.glob(os.path.join(_tempfile.gettempdir(), "raptor_git_*")):
-        try:
-            _shutil.rmtree(_stale)
-        except OSError:
-            pass
+    # SIGKILL (atexit handlers don't fire on SIGKILL). Defer to the
+    # shared tmp reaper: it covers the raptor_git_ prefix and applies
+    # the age floor, ownership, and liveness gates. The pre-fix bare
+    # glob+rmtree here deleted EVERY raptor_git_* unconditionally, so
+    # two concurrent agentic runs destroyed each other's live clone
+    # scratch at start.
+    from core.run.tmp_reaper import reap_stale_tmp
+    reap_stale_tmp()
 
     # Check for .git directory (required for semgrep)
     git_dir = repo_path / ".git"

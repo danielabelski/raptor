@@ -283,6 +283,9 @@
     "artifacts:write_only_artifact::discovery.json": {
       "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
     },
+    "artifacts:write_only_artifact::empty-models-config.json": {
+      "note": "tier-0 self-test scratch stub: an empty {\"models\": []} config written per-run and handed to child processes via the RAPTOR_CONFIG env var so tier-0 cases provably cannot resolve a paid LLM route; the reader consumes it by path from the env var, no literal filename at the read site"
+    },
     "artifacts:write_only_artifact::expanded_semgrep.sarif": {
       "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
     },

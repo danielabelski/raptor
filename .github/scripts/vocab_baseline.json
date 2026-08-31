@@ -1625,6 +1625,11 @@
     "count": 10,
     "kind": "literal"
   },
+  "libexec/raptor-self-test::_LLM_ENV_VARS": {
+    "count": 10,
+    "kind": "literal",
+    "note": "env vars that make core.llm.detection report an available LLM - a security scrub list the tier-0 harness must strip from child environments, not a learned name vocabulary"
+  },
   "libexec/raptor-sage::dispatch": {
     "count": 12,
     "kind": "literal"
@@ -1687,10 +1692,6 @@
   },
   "libexec/raptor-study-prep::out_data": {
     "count": 10,
-    "kind": "literal"
-  },
-  "libexec/raptor-tune::_KEY_ORDER": {
-    "count": 13,
     "kind": "literal"
   },
   "libexec/raptor-understand::_do_hunt": {

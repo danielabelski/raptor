@@ -1161,3 +1161,73 @@ def test_safe_coercion_tolerates_wrong_type_scalar_cell_fields(tmp_path):
                        "calls": 2, "cost_usd": 0.5}])
     after = sc.get_stat("x:y", "m")
     assert after.calls == 2 and abs(after.cost_usd - 0.5) < 1e-9
+
+
+class TestRecordEventsBatch:
+    """record_events: one lock/write cycle, same cell state as the
+    per-event path, and all-entries-validated-before-lock atomicity."""
+
+    def test_batch_matches_per_event_recording(self, tmp_path):
+        sc_a = ModelScorecard(tmp_path / "a.json")
+        for _ in range(3):
+            sc_a.record_event("x:y", "m", EventType.MULTI_MODEL_CONSENSUS,
+                              "correct")
+        sc_a.record_event("x:y", "m", EventType.MULTI_MODEL_CONSENSUS,
+                          "incorrect")
+
+        sc_b = ModelScorecard(tmp_path / "b.json")
+        sc_b.record_events(
+            [{"decision_class": "x:y", "model": "m",
+              "event_type": EventType.MULTI_MODEL_CONSENSUS,
+              "outcome": "correct"}] * 3
+            + [{"decision_class": "x:y", "model": "m",
+                "event_type": EventType.MULTI_MODEL_CONSENSUS,
+                "outcome": "incorrect"}]
+        )
+
+        stats_a = sc_a.get_stat("x:y", "m")
+        stats_b = sc_b.get_stat("x:y", "m")
+        counts_a = stats_a.events[EventType.MULTI_MODEL_CONSENSUS]
+        counts_b = stats_b.events[EventType.MULTI_MODEL_CONSENSUS]
+        assert (counts_a.correct, counts_a.incorrect) == (3, 1)
+        assert (counts_b.correct, counts_b.incorrect) == (3, 1)
+
+    def test_bad_entry_rejected_before_any_write(self, tmp_path):
+        path = tmp_path / "sc.json"
+        sc = ModelScorecard(path)
+        with pytest.raises(ValueError):
+            sc.record_events([
+                {"decision_class": "x:y", "model": "m",
+                 "event_type": EventType.MULTI_MODEL_CONSENSUS,
+                 "outcome": "correct"},
+                {"decision_class": "x:y", "model": "m",
+                 "event_type": "not-a-real-event", "outcome": "correct"},
+            ])
+        # Validation runs before the lock: the good entry must NOT
+        # have been persisted (atomic no-write on a bad batch).
+        assert not path.exists() or "m" not in json.dumps(
+            json.loads(path.read_text()))
+
+    def test_missing_model_or_class_rejected(self, tmp_path):
+        sc = ModelScorecard(tmp_path / "sc.json")
+        with pytest.raises(ValueError):
+            sc.record_events([{"decision_class": "", "model": "m",
+                               "event_type": EventType.MULTI_MODEL_CONSENSUS,
+                               "outcome": "correct"}])
+
+    def test_empty_batch_is_noop(self, tmp_path):
+        path = tmp_path / "sc.json"
+        ModelScorecard(path).record_events([])
+        assert not path.exists()
+
+    def test_batch_sample_retained_on_incorrect(self, tmp_path):
+        sc = ModelScorecard(tmp_path / "sc.json", retain_samples=True)
+        sc.record_events([
+            {"decision_class": "x:y", "model": "m",
+             "event_type": EventType.MULTI_MODEL_CONSENSUS,
+             "outcome": "incorrect",
+             "sample": {"this_reasoning": "r1", "other_reasoning": "r2"}},
+        ])
+        stats = sc.get_stat("x:y", "m")
+        assert stats.disagreement_samples
+        assert stats.disagreement_samples[0]["this_reasoning"] == "r1"

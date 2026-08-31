@@ -513,6 +513,46 @@ class ModelScorecard:
         is true; capped at :data:`MAX_DISAGREEMENT_SAMPLES` per
         cell on a most-recent-wins basis.
         """
+        self._validate_event(event_type, outcome)
+        with self._with_lock() as data:
+            self._apply_event(
+                data, decision_class, model, event_type, outcome,
+                model_version=model_version, sample=sample,
+            )
+
+    def record_events(self, events: list[dict]) -> None:
+        """Record a batch of observations under ONE lock/write cycle.
+
+        Each entry: ``{"decision_class": str, "model": str,
+        "event_type": str, "outcome": Outcome}`` plus optional
+        ``model_version`` / ``sample`` (same semantics as
+        :meth:`record_event`). Every entry is validated BEFORE the
+        lock is taken, so a bad entry raises without a partial write.
+
+        Exists because each :meth:`record_event` call is a full
+        flock + load + verify + atomic-rewrite cycle; bulk seeding
+        (imports, back-propagation, test fixtures) at one write per
+        event is O(n) fsyncs and measured in seconds on slow disks.
+        Mirrors :meth:`register_uses`'s one-batched-write contract.
+        """
+        if not events:
+            return
+        for ev in events:
+            self._validate_event(ev.get("event_type"), ev.get("outcome"))
+            if not ev.get("model") or not ev.get("decision_class"):
+                msg = "record_events: each entry needs model and decision_class"
+                raise ValueError(msg)
+        with self._with_lock() as data:
+            for ev in events:
+                self._apply_event(
+                    data, ev["decision_class"], ev["model"],
+                    ev["event_type"], ev["outcome"],
+                    model_version=ev.get("model_version"),
+                    sample=ev.get("sample"),
+                )
+
+    @staticmethod
+    def _validate_event(event_type: str | None, outcome: str | None) -> None:
         if event_type not in ALL_EVENT_TYPES:
             msg = (
                 f"unknown event_type {event_type!r} — must be one of "
@@ -522,36 +562,48 @@ class ModelScorecard:
         if outcome not in ("correct", "incorrect"):
             msg = f"outcome must be 'correct' or 'incorrect', got {outcome!r}"
             raise ValueError(msg)
-        with self._with_lock() as data:
-            cell = self._ensure_cell(data, model, decision_class)
-            now_iso = _now_iso()
-            # setdefault on the event-type key too: cells persisted
-            # before an event type existed lack its key (the schema
-            # migration only backfills known-at-migration types).
-            bucket = cell["events"].setdefault(event_type, {}).setdefault(
-                bucket_key(now_iso), {"correct": 0, "incorrect": 0}
-            )
-            bucket[outcome] += 1
-            cell["last_seen_at"] = now_iso
-            if model_version:
-                cell["model_version"] = model_version
-            if (outcome == "incorrect"
-                    and self.retain_samples
-                    and sample is not None):
-                samples = cell.setdefault("disagreement_samples", [])
-                samples.append({
-                    "ts": _now_iso(),
-                    "event_type": event_type,
-                    **sample,
-                })
-                # Trim to most-recent N. We cap rather than rotate
-                # because operators inspecting samples want the
-                # latest failure modes — older samples may reflect
-                # an earlier model snapshot.
-                if len(samples) > MAX_DISAGREEMENT_SAMPLES:
-                    cell["disagreement_samples"] = (
-                        samples[-MAX_DISAGREEMENT_SAMPLES:]
-                    )
+
+    def _apply_event(
+        self,
+        data: dict,
+        decision_class: str,
+        model: str,
+        event_type: str,
+        outcome: Outcome,
+        *,
+        model_version: str | None = None,
+        sample: dict[str, str] | None = None,
+    ) -> None:
+        """Mutate one cell for one observation. Caller holds the lock."""
+        cell = self._ensure_cell(data, model, decision_class)
+        now_iso = _now_iso()
+        # setdefault on the event-type key too: cells persisted
+        # before an event type existed lack its key (the schema
+        # migration only backfills known-at-migration types).
+        bucket = cell["events"].setdefault(event_type, {}).setdefault(
+            bucket_key(now_iso), {"correct": 0, "incorrect": 0}
+        )
+        bucket[outcome] += 1
+        cell["last_seen_at"] = now_iso
+        if model_version:
+            cell["model_version"] = model_version
+        if (outcome == "incorrect"
+                and self.retain_samples
+                and sample is not None):
+            samples = cell.setdefault("disagreement_samples", [])
+            samples.append({
+                "ts": _now_iso(),
+                "event_type": event_type,
+                **sample,
+            })
+            # Trim to most-recent N. We cap rather than rotate
+            # because operators inspecting samples want the
+            # latest failure modes — older samples may reflect
+            # an earlier model snapshot.
+            if len(samples) > MAX_DISAGREEMENT_SAMPLES:
+                cell["disagreement_samples"] = (
+                    samples[-MAX_DISAGREEMENT_SAMPLES:]
+                )
 
     def register_uses(self, uses: list[dict]) -> None:
         """Record per-(model, decision_class) USAGE — a volume/presence signal,

@@ -302,8 +302,21 @@ def _hostname_of(url: str) -> str:
 
 
 def _is_loopback(host: str) -> bool:
-    h = host.lower()
-    return h in _LOCAL_BYPASS or h.startswith("127.")
+    from ipaddress import ip_address
+    h = host.lower().strip().strip("[]")
+    if h in _LOCAL_BYPASS:
+        return True
+    # Only IP LITERALS earn the loopback classification. The previous
+    # substring test (``startswith("127.")``) also matched HOSTNAMES
+    # like ``127.attacker.example``, which were then fetched DIRECT —
+    # past the operator proxy and the chokepoint allowlist. Parse
+    # first (same shape as detection.py's ``_host_is_local``); names
+    # that merely look loopback-ish take the normal proxy path, and
+    # ``is_loopback`` covers all of 127.0.0.0/8 plus IPv6 ``::1``.
+    try:
+        return ip_address(h).is_loopback
+    except ValueError:
+        return False
 
 
 def url_is_loopback(url: str) -> bool:

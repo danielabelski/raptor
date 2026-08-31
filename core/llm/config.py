@@ -1485,6 +1485,22 @@ def _default_cache_ttl() -> float | None:
     return val if val > 0 else None
 
 
+def _default_cache_dir() -> Path:
+    """Anchor the response cache to the RAPTOR install (RAPTOR_DIR),
+    not the process cwd.  The old relative ``Path("out/llm_cache")``
+    resolved against whatever directory the process happened to start
+    in — a bare-shell invocation from a scanned repo dropped the cache
+    into the target tree and missed the real cache on every call.
+    Falls back to the relative path only when RAPTOR_DIR is unset
+    (hermetic test environments) — same convention as the scorecard
+    sidecar resolvers (``validate_feedback`` / ``tool_evidence``).
+    """
+    raptor_dir = os.environ.get("RAPTOR_DIR")
+    if raptor_dir:
+        return Path(raptor_dir) / "out" / "llm_cache"
+    return Path("out/llm_cache")
+
+
 def _default_enable_caching() -> bool:
     """Default LLM response caching: on, env-overridable.
 
@@ -1520,7 +1536,7 @@ class LLMConfig:
     retry_delay: float = 2.0
     retry_delay_remote: float = 5.0
     enable_caching: bool = field(default_factory=_default_enable_caching)
-    cache_dir: Path = Path("out/llm_cache")
+    cache_dir: Path = field(default_factory=_default_cache_dir)
     # Drop cache entries older than this on read. Default 24h: repeat
     # queries within a working day stay free and deterministic, while a
     # verdict from last month's model behaviour doesn't silently steer

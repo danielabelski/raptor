@@ -990,3 +990,37 @@ class TestOperatorPrimaryOverride:
             picked = _get_default_primary_model()
             assert picked is not None
             assert picked.provider == "gemini"
+
+
+class TestCacheDirAnchoredToRaptorDir:
+    """``LLMConfig.cache_dir`` must resolve against the RAPTOR install,
+    not the process cwd — a bare-shell invocation from a scanned repo
+    otherwise dropped ``out/llm_cache/`` into the target tree and
+    missed the real cache on every call."""
+
+    def test_anchored_under_raptor_dir_not_cwd(self, monkeypatch, tmp_path):
+        from core.llm.config import _default_cache_dir
+        raptor_dir = tmp_path / "raptor-install"
+        scanned_repo = tmp_path / "scanned-repo"
+        raptor_dir.mkdir()
+        scanned_repo.mkdir()
+        monkeypatch.setenv("RAPTOR_DIR", str(raptor_dir))
+        monkeypatch.chdir(scanned_repo)
+        resolved = _default_cache_dir().resolve()
+        assert resolved == (raptor_dir / "out" / "llm_cache").resolve()
+        assert not str(resolved).startswith(str(scanned_repo.resolve()))
+
+    def test_fallback_relative_when_raptor_dir_unset(self, monkeypatch):
+        """Other direction: hermetic environments without RAPTOR_DIR
+        keep the historical relative default rather than raising."""
+        from core.llm.config import _default_cache_dir
+        monkeypatch.delenv("RAPTOR_DIR", raising=False)
+        assert _default_cache_dir() == Path("out/llm_cache")
+
+    def test_llmconfig_default_uses_factory(self, monkeypatch, tmp_path):
+        from core.llm.config import LLMConfig
+        raptor_dir = tmp_path / "raptor-install"
+        raptor_dir.mkdir()
+        monkeypatch.setenv("RAPTOR_DIR", str(raptor_dir))
+        cfg = LLMConfig(primary_model=None)
+        assert cfg.cache_dir == raptor_dir / "out" / "llm_cache"

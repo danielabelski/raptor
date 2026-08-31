@@ -363,6 +363,25 @@ class TestUrlIsLoopback:
         assert not egress.url_is_loopback("http://ollama.internal.corp:11434")
         assert not egress.url_is_loopback("not a url")
 
+    def test_loopback_lookalike_hostnames_are_not_loopback(self):
+        """Only IP literals earn the loopback classification — a
+        '127.'-prefixed HOSTNAME resolves wherever its owner points it,
+        and classifying it loopback fetched it DIRECT past the proxy
+        and the chokepoint allowlist."""
+        assert not egress._is_loopback("127.attacker.example")
+        assert not egress._is_loopback("127.0.0.1.evil")
+        assert not egress._is_loopback("localhost.attacker.example")
+        assert not egress.url_is_loopback("http://127.attacker.example/x")
+
+    def test_ip_literals_still_loopback(self):
+        """Other direction: real loopback literals keep the bypass."""
+        assert egress._is_loopback("127.0.0.1")
+        assert egress._is_loopback("127.5.4.3")  # full 127.0.0.0/8
+        assert egress._is_loopback("::1")
+        assert egress._is_loopback("[::1]")
+        assert egress._is_loopback("localhost")
+        assert egress._is_loopback("0.0.0.0")
+
 
 class TestLoopbackSafeGet:
     def test_loopback_bypasses_proxy_env(self, monkeypatch):

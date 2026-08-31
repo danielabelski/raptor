@@ -1152,6 +1152,11 @@
     "count": 18,
     "kind": "literal"
   },
+  "core/inventory/extractors.py::_SLASH_COMMENT_LANGS": {
+    "count": 14,
+    "kind": "literal",
+    "note": "closed language taxonomy (which inventoried languages share the C // and /* */ comment family for the regex comment-count fallback), not a learned name vocabulary; same class as _TS_PROBE_LANGUAGES"
+  },
   "core/inventory/extractors.py::_TS_PROBE_LANGUAGES": {
     "count": 16,
     "kind": "literal"

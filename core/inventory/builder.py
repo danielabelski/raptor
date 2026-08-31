@@ -8,7 +8,6 @@ needs a cached call-graph view of the project.
 
 import ast
 import fnmatch
-import hashlib
 import logging
 import os
 from concurrent.futures import (
@@ -24,7 +23,7 @@ from typing import Any
 from core.build.macro_config import extract_build_tus, extract_macro_config
 from core.build.rust_modules import extract_rust_crate_modules
 from core.config import RaptorConfig
-from core.hash import sha256_bytes
+from core.hash import sha256_bytes, sha256_string
 from core.json import load_json, save_json
 
 from .build_membership import (
@@ -84,33 +83,81 @@ def _extract_python_dunder_all(content: str) -> list[str] | None:
     so a public-named function that's been omitted from ``__all__`` still
     qualifies as a dead-island candidate.
 
-    Module-level only. Conditional / runtime-mutated ``__all__`` (e.g.
-    ``__all__.append(...)`` after the initial assignment) is captured
-    only via the initial Assign / AugAssign — runtime extensions aren't
-    seen, which is the conservative direction (more uncertainty, not
-    less confidence in "internal" claims).
+    Module-level only. COMPUTED ``__all__`` (comprehensions,
+    ``list(REGISTRY)``, function results) returns ``None`` — the export
+    set is unknowable statically, and returning ``[]`` would read as an
+    authoritative "nothing exported", turning every public function in
+    the module into a confident dead-island candidate. ``__all__ +=
+    [...]`` / ``__all__.append(...)`` / ``.extend(...)`` with literal
+    values are harvested; non-literal extensions also degrade to
+    ``None`` (more uncertainty, never less confidence).
     """
     try:
         tree = ast.parse(content)
     except (SyntaxError, ValueError):
         return None
+
+    def _literal_names(value: ast.expr) -> list[str] | None:
+        """Names from a literal list/tuple/set, or None when computed."""
+        if isinstance(value, (ast.List, ast.Tuple, ast.Set)):
+            return [
+                el.value for el in value.elts
+                if isinstance(el, ast.Constant) and isinstance(el.value, str)
+            ]
+        return None
+
     names: list[str] = []
     saw_declaration = False
     for node in tree.body:
-        targets: list[ast.Name] = []
-        value = None
+        value: ast.expr | None = None
+        is_extension = False
         if isinstance(node, ast.Assign):
-            targets.extend(t for t in node.targets if isinstance(t, ast.Name) and t.id == "__all__")
+            if not any(isinstance(t, ast.Name) and t.id == "__all__"
+                       for t in node.targets):
+                continue
             value = node.value
         elif isinstance(node, ast.AnnAssign):
-            if isinstance(node.target, ast.Name) and node.target.id == "__all__":
-                targets.append(node.target)
+            if not (isinstance(node.target, ast.Name)
+                    and node.target.id == "__all__"):
+                continue
             value = node.value
-        if not targets or value is None:
+        elif isinstance(node, ast.AugAssign):
+            if not (isinstance(node.target, ast.Name)
+                    and node.target.id == "__all__"):
+                continue
+            value = node.value
+            is_extension = True
+        elif isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
+            call = node.value
+            if not (isinstance(call.func, ast.Attribute)
+                    and isinstance(call.func.value, ast.Name)
+                    and call.func.value.id == "__all__"
+                    and call.func.attr in ("append", "extend")):
+                continue
+            saw_declaration = True
+            if call.func.attr == "append":
+                if (len(call.args) == 1
+                        and isinstance(call.args[0], ast.Constant)
+                        and isinstance(call.args[0].value, str)):
+                    names.append(call.args[0].value)
+                    continue
+                return None  # non-literal append — set unknowable
+            if len(call.args) == 1:
+                harvested = _literal_names(call.args[0])
+                if harvested is not None:
+                    names.extend(harvested)
+                    continue
+            return None  # non-literal extend — set unknowable
+        if value is None:
             continue
         saw_declaration = True
-        if isinstance(value, (ast.List, ast.Tuple, ast.Set)):
-            names.extend(el.value for el in value.elts if isinstance(el, ast.Constant) and isinstance(el.value, str))
+        harvested = _literal_names(value)
+        if harvested is None:
+            return None  # computed value — export set unknowable
+        if is_extension:
+            names.extend(harvested)
+        else:
+            names = list(harvested)  # re-assignment replaces
     if not saw_declaration:
         return None
     return names
@@ -377,7 +424,10 @@ def default_cache_dir(
     # fingerprint (no config / non-C target) leaves the key unchanged.
     if config_fingerprint:
         key += "\0cfg=" + config_fingerprint
-    target_hash = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+    # core.hash.sha256_string, not a hand-rolled utf-8 encode: target
+    # paths come from the filesystem and can carry surrogate escapes
+    # (non-UTF-8 filenames), which a strict encode crashes on.
+    target_hash = sha256_string(key)[:16]
     return _DEFAULT_INVENTORY_CACHE_ROOT / target_hash
 
 
@@ -456,12 +506,13 @@ def build_inventory(
     # Fold the membership sets into the cache key: a compile_commands / mod-tree
     # change (a file added to / removed from the build) must invalidate cached
     # build_excluded marks even when file contents are unchanged.
+    # sha256_string (surrogateescape) — TU/module entries are
+    # filesystem paths and may not be valid UTF-8.
     if build_tus:
-        cfg_fp += "|tu=" + hashlib.sha256(
-            "\0".join(sorted(build_tus)).encode("utf-8")).hexdigest()[:16]
+        cfg_fp += "|tu=" + sha256_string("\0".join(sorted(build_tus)))[:16]
     if crate_modules:
-        cfg_fp += "|rs=" + hashlib.sha256(
-            "\0".join(sorted(crate_modules)).encode("utf-8")).hexdigest()[:16]
+        cfg_fp += "|rs=" + sha256_string(
+            "\0".join(sorted(crate_modules)))[:16]
 
     if output_dir is None:
         output_dir = str(default_cache_dir(
@@ -536,11 +587,36 @@ def build_inventory(
     checklist_file = output_path / 'checklist.json'
     old_inventory = load_json(checklist_file)
 
+    # Parse-affecting configuration fingerprint. The default cache dir
+    # folds this into its KEY, but an explicit ``output_dir`` (project
+    # mode) reuses one directory across runs — without an in-artifact
+    # stamp, the per-file stat/sha fast path would keep returning
+    # entries parsed under a STALE macro config / TU set (stale
+    # ``build_excluded`` marks, stale #ifdef blanking) after
+    # compile_commands.json changes.
+    parse_fingerprint = cfg_fp + ("|unreachable" if allow_unreachable else "")
+    old_parse_fp = (
+        old_inventory.get('parse_fingerprint', '')
+        if isinstance(old_inventory, dict) else ''
+    )
+
     old_files_by_path = {}
-    if isinstance(old_inventory, dict):
+    if isinstance(old_inventory, dict) and old_parse_fp == parse_fingerprint:
         for f in old_inventory.get('files', []):
             if f.get('path') and f.get('sha256'):
+                # Legacy checklists keyed per-file units under
+                # 'functions'; normalize so every downstream 'items'
+                # access works when the entry is reused verbatim.
+                if 'items' not in f and 'functions' in f:
+                    f = dict(f)
+                    f['items'] = f.get('functions') or []
                 old_files_by_path[f['path']] = f
+    elif isinstance(old_inventory, dict):
+        logger.info(
+            "inventory: build configuration changed since the cached "
+            "checklist was written — re-parsing all files (coverage "
+            "marks are still carried forward)",
+        )
 
     files_info = []
     # Seed `excluded_files` with the directories pruned at walk time so
@@ -713,6 +789,7 @@ def build_inventory(
     inventory = {
         'generated_at': datetime.now(timezone.utc).isoformat(),
         'target_path': str(target_path),
+        'parse_fingerprint': parse_fingerprint,
         'total_files': len(files_info),
         'total_items': total_items,
         'total_functions': total_functions,
@@ -894,6 +971,16 @@ def _carry_forward_coverage(
 ) -> None:
     """Carry forward checked_by from old inventory to new for unchanged files.
 
+    Marks are MERGED (union, existing order preserved), never
+    overwritten: the multi-run project promotion calls this repeatedly
+    with older checklists against the newest one, and an overwrite
+    would regress fresh coverage marks to the stalest run's list.
+
+    Keys carry an occurrence ordinal alongside (path, name, kind):
+    same-named items in one file (overloads, methods of different
+    classes) are distinct review units, and a name-only key smeared one
+    twin's checked_by onto the other — silently overstating coverage.
+
     Args:
         old: Previous inventory dict.
         new: Current inventory dict (mutated in place).
@@ -905,25 +992,37 @@ def _carry_forward_coverage(
     def _get_items(fi):
         return fi.get("items", fi.get("functions", [])) or []
 
-    # Build lookup: (path, name, kind) -> checked_by from old inventory
+    def _keyed_items(file_info):
+        """(path, name, kind, occurrence-ordinal) per item, ordinal
+        counted in file order among same-(name, kind) items — stable
+        across runs for unchanged files, unlike line numbers under
+        unrelated edits."""
+        path = file_info.get('path')
+        counts: dict[tuple, int] = {}
+        for item in _get_items(file_info):
+            base = (item.get('name'), item.get('kind', 'function'))
+            ordinal = counts.get(base, 0)
+            counts[base] = ordinal + 1
+            yield (path, *base, ordinal), item
+
+    # Build lookup: keyed item -> checked_by from old inventory
     old_coverage = {}
     for file_info in old.get('files', []):
-        path = file_info.get('path')
-        if path in modified:
+        if file_info.get('path') in modified:
             continue  # Don't carry forward stale coverage
-        for item in _get_items(file_info):
-            key = (path, item.get('name'), item.get('kind', 'function'))
+        for key, item in _keyed_items(file_info):
             checked_by = item.get('checked_by', [])
             if checked_by:
                 old_coverage[key] = checked_by
 
     # Apply to new inventory
     for file_info in new.get('files', []):
-        path = file_info.get('path')
-        for item in _get_items(file_info):
-            key = (path, item.get('name'), item.get('kind', 'function'))
+        for key, item in _keyed_items(file_info):
             if key in old_coverage:
-                item['checked_by'] = list(old_coverage[key])
+                existing = item.get('checked_by') or []
+                item['checked_by'] = existing + [
+                    run for run in old_coverage[key] if run not in existing
+                ]
 
 
 def _count_source_files(dirpath: Path, extensions: set[str], cap: int = 1000) -> int:

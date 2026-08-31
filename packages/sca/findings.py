@@ -36,6 +36,7 @@ from typing import Any
 from core.cve import EpssClient, KevClient
 from core.cve.vulnrichment import VulnrichmentClient
 
+from ._atomic import atomic_write_text
 from .models import (
     Advisory,
     Confidence,
@@ -190,9 +191,68 @@ def _filter_fork_tag_false_positives(
     return out
 
 
-def _group_is_fork_tag_fp(dep, group, in_range_fn, ver_error):
-    """True when EVERY advisory in the group matches only via ranges
-    that our local in_range (with fork-tag detection) rejects."""
+# Upstream branch / channel names that show up as prerelease tokens on
+# branch-snapshot builds of the SAME project (``1.0.0-master``). These
+# are NOT fork indicators: a branch snapshot builds the upstream
+# codebase, so a server-confirmed vulnerability match must stay
+# reported. Only genuine org/fork tags (``0.4.3-succinct``,
+# ``1.0.0-fork.mycorp``) qualify for the false-positive prune below.
+_UPSTREAM_BRANCH_TOKENS = frozenset({
+    "master", "main", "trunk", "head", "default",
+    "develop", "development", "staging",
+    "stable", "latest", "release",
+})
+
+
+def _version_has_fork_tag(version: str | None) -> bool:
+    """Strict fork-tag classification for the post-filter.
+
+    True only when *version* carries a semver prerelease whose tokens
+    are an org/fork tag (per ``is_fork_tag``) AND none of them is a
+    known upstream branch/channel name. Without the branch check, any
+    digit-free prerelease qualified — so a vulnerable ``1.0.0-master``
+    pin (an upstream branch snapshot, not a fork) was silently pruned
+    even though the server confirmed the match.
+    """
+    if not version:
+        return False
+    from .versions.semver import is_fork_tag
+    from .versions.semver import parse as parse_semver
+    try:
+        pre = parse_semver(version)[3]
+    except ValueError:
+        return False
+    if not pre:
+        return False
+    if any(token.lower() in _UPSTREAM_BRANCH_TOKENS for token in pre):
+        return False
+    return is_fork_tag(pre)
+
+
+def _group_is_fork_tag_fp(
+    dep: Dependency,
+    group: list[Advisory],
+    in_range_fn: Any,
+    ver_error: type[Exception],
+) -> bool:
+    """True when the group's match is the fork-tag false-positive class.
+
+    Two conditions, both required:
+
+    1. The dep's installed version carries a genuine org/fork tag
+       (strict classification — see ``_version_has_fork_tag``).
+    2. EVERY advisory in the group matches only via SEMVER ranges that
+       our local ``in_range`` (with fork-tag detection) rejects.
+
+    Server-side matching already confirmed these groups; the prune
+    exists ONLY to align the live-API path with the offline-DB path on
+    the fork-tag prerelease class (``0.4.3-succinct`` matching a
+    ``fixed: 0.4.3`` range). Any other local disagreement keeps the
+    server's verdict — silently under-reporting a confirmed match is
+    the expensive direction.
+    """
+    if not _version_has_fork_tag(dep.version):
+        return False
     saw_semver_range = False
     for adv in group:
         for ar in adv.affected:
@@ -584,14 +644,10 @@ def write_findings_json(
     rows.extend(_scan_health_to_row(h) for h in scan_health)
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    try:
-        with tmp.open("w", encoding="utf-8") as fh:
-            _json.dump(rows, fh, indent=2, default=_json_default)
-    except Exception:
-        tmp.unlink(missing_ok=True)
-        raise
-    tmp.replace(path)
+    # Shared atomic-write primitive: random-suffix tempfile opened
+    # O_EXCL|O_NOFOLLOW then renamed — a predictable ``<name>.json.tmp``
+    # sibling is squattable / symlinkable in shared output dirs.
+    atomic_write_text(path, _json.dumps(rows, indent=2, default=_json_default))
     return len(rows)
 
 

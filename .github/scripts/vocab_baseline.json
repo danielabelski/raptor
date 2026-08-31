@@ -2253,10 +2253,6 @@
     "count": 15,
     "kind": "literal"
   },
-  "packages/sca/discovery.py::LOCKFILE_NAMES": {
-    "count": 12,
-    "kind": "literal"
-  },
   "packages/sca/discovery.py::MANIFEST_FILENAMES": {
     "count": 33,
     "kind": "literal"
@@ -2272,6 +2268,12 @@
   "packages/sca/ecosystems.py::KNOWN_ECOSYSTEMS": {
     "count": 10,
     "kind": "literal"
+  },
+  "packages/sca/findings.py::_UPSTREAM_BRANCH_TOKENS": {
+    "count": 11,
+    "kind": "literal",
+    "note": "Upstream BRANCH/CHANNEL terminology (master/main/trunk/develop/stable...) used to tell upstream branch-snapshot prerelease tags from org/fork suffixes in the fork-tag post-filter \u2014 cross-ecosystem VCS/release convention like the semver prerelease-channel allowance directly below it in this file's sibling (versions/semver.py::_PRERELEASE_KEYWORDS), not a target's learnable API vocabulary; new names are additions to community convention, not to any project surface.",
+    "reviewed": "2026-08-31"
   },
   "packages/sca/findings.py::_hygiene_finding_to_row": {
     "count": 13,

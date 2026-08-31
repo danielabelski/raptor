@@ -570,3 +570,93 @@ def test_genuine_prerelease_not_filtered() -> None:
     assert len(findings) == 1, (
         "genuine prerelease should still produce a finding"
     )
+
+
+def test_branch_snapshot_prerelease_not_filtered() -> None:
+    """A vulnerable ``1.0.0-master`` pin is an upstream BRANCH
+    snapshot, not a fork — the server-confirmed match must survive
+    the fork-tag post-filter. Pre-fix, any digit-free prerelease
+    token counted as a fork tag and the finding vanished."""
+    d = _dep(name="some-pkg", version="1.0.0-master", ecosystem="npm")
+    adv = Advisory(
+        osv_id="GHSA-branch",
+        aliases=["CVE-2099-0002"],
+        summary="test",
+        details="",
+        affected=[AffectedRange(
+            type="SEMVER",
+            events=[{"introduced": "0"}, {"fixed": "1.0.0"}],
+        )],
+        severity=CVSSScore(
+            score=9.8,
+            vector="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+            severity="critical",
+        ),
+        fixed_versions=["1.0.0"],
+        references=[],
+    )
+    findings = build_vuln_findings(
+        [d], [OsvResult(dep_key=d.key(), advisories=[adv])],
+    )
+    assert len(findings) == 1, (
+        "branch-snapshot prerelease must still produce a finding"
+    )
+
+
+def test_explicit_fork_tag_still_filtered() -> None:
+    """The genuine fork-tag class (org/fork suffix at the fix base,
+    e.g. ``1.0.0-fork.mycorp``) stays pruned — the filter's original
+    purpose survives the tightening."""
+    d = _dep(name="some-pkg", version="1.0.0-fork.mycorp", ecosystem="npm")
+    adv = Advisory(
+        osv_id="GHSA-fork",
+        aliases=["CVE-2099-0003"],
+        summary="test",
+        details="",
+        affected=[AffectedRange(
+            type="SEMVER",
+            events=[{"introduced": "0"}, {"fixed": "1.0.0"}],
+        )],
+        severity=CVSSScore(
+            score=9.8,
+            vector="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+            severity="critical",
+        ),
+        fixed_versions=["1.0.0"],
+        references=[],
+    )
+    findings = build_vuln_findings(
+        [d], [OsvResult(dep_key=d.key(), advisories=[adv])],
+    )
+    assert findings == [], (
+        "explicit fork tag at the fix base should stay filtered"
+    )
+
+
+def test_write_findings_json_atomic_no_predictable_tmp(
+    tmp_path: Path,
+) -> None:
+    """Content round-trips through the shared atomic-write primitive
+    and no predictable ``<name>.json.tmp`` sibling is left behind
+    (nor pre-creatable: a squatted sibling must not break the write)."""
+    out = tmp_path / "findings.json"
+    squat = tmp_path / "findings.json.tmp"
+    squat.write_text("squatted", encoding="utf-8")
+
+    d = _dep()
+    findings = build_vuln_findings(
+        [d], [OsvResult(dep_key=d.key(), advisories=[_adv()])],
+    )
+    n = write_findings_json(out, vuln_findings=findings)
+    assert n == 1
+
+    rows = json.loads(out.read_text(encoding="utf-8"))
+    assert rows[0]["vuln_type"] == "sca:vulnerable_dependency"
+    assert rows[0]["sca"]["name"] == "lodash"
+    # The squatted predictable-name sibling was never used.
+    assert squat.read_text(encoding="utf-8") == "squatted"
+    # No stray temp files remain.
+    leftovers = {p.name for p in tmp_path.iterdir()} - {
+        "findings.json", "findings.json.tmp",
+    }
+    assert leftovers == set()

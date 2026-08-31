@@ -127,6 +127,9 @@
     "artifacts:orphan_reader::study-discards.json": {
       "note": "writer exists (core/concepts/study.py writes it via save_json; core/audit/orchestrator.py reads) \u2014 the artifact indexer does not resolve the substrate writer call through the path variable, so the read looks orphaned"
     },
+    "artifacts:orphan_reader::trajectory-*.json": {
+      "note": "salvage-file reader: the writer emits trajectory-<hex>.json via a computed name on run_id collision (_write_atomic fallback), so the literal glob has no textual writer; reader and writer are pinned together by the store round-trip tests"
+    },
     "artifacts:write_only_artifact::-manifest.json": {
       "note": "seed-harvest corpus manifest (packages/frida/seeds.py writes <seeds>-manifest.json): operator-facing harvest accounting, deliberately written NEXT TO the corpus dir so AFL never ingests it as a seed; consumed by the operator reviewing a harvest, production code uses extract_seeds' return value"
     },

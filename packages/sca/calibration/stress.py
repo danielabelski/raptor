@@ -284,8 +284,8 @@ def run_stress_sweep(
     *,
     samples: Sequence[ProjectSample] | None = None,
     out_root: Path | None = None,
-    git_clone_timeout: int = 300,
-    sca_timeout: int = 600,
+    git_clone_timeout: float = 300,
+    sca_timeout: float = 600,
     max_workers: int = 4,
     use_existing_clones: bool = False,
     results_sink: "list[StressResult] | None" = None,
@@ -299,10 +299,12 @@ def run_stress_sweep(
     zero completions after forty finished scans is worse than none.
 
     Scans run in parallel (``max_workers`` threads). Each scan is
-    bounded by ``sca_timeout`` — if ``run_sca`` hasn't returned by
-    then, the result is recorded as an error and the sweep continues.
-    The underlying thread may linger until process exit, but won't
-    block other scans.
+    bounded by its OWN budget of ``git_clone_timeout + sca_timeout``,
+    measured from the moment a worker starts it (queue time excluded)
+    — if it hasn't returned by then, a timeout result is recorded and
+    the sweep continues. The scan thread itself cannot be killed and
+    may linger until process exit, but won't block other scans or the
+    final summary.
 
     ``out_root`` defaults to a STABLE per-machine path under
     ``~/.raptor/cache/sca/stress/clones/``. Stable so that the
@@ -344,6 +346,13 @@ def run_stress_sweep(
             out_root = SCA_CACHE_ROOT / "stress" / "clones"
     out_root.mkdir(parents=True, exist_ok=True)
 
+    # Per-scan wall-clock budget: a scan must clone
+    # (``git_clone_timeout``) and then scan (``sca_timeout``). The
+    # budget is enforced against each scan's own start time — an
+    # earlier revision applied it as a single global deadline from
+    # sweep start, so once total wall time exceeded ONE scan's
+    # budget every still-running or still-queued healthy project
+    # was falsely reported as timed out.
     per_scan_budget = sca_timeout + git_clone_timeout
     results: list[StressResult] = (
         results_sink if results_sink is not None else []
@@ -386,6 +395,11 @@ def run_stress_sweep(
             max_workers=max_workers,
         )
         interrupted = False
+        # Futures whose scan overran its own budget. Their threads
+        # cannot be killed — the future is dropped from ``pending``
+        # (result already recorded) and the final shutdown skips
+        # joining them.
+        abandoned: set[concurrent.futures.Future] = set()
         try:
             future_to_sample = {
                 executor.submit(
@@ -394,46 +408,120 @@ def run_stress_sweep(
                 ): sample
                 for sample in samples
             }
-            completed: set = set()
+            sweep_labels = {
+                f"{s.ecosystem}/{s.name}" for s in samples
+            }
+            pending: set[concurrent.futures.Future] = set(
+                future_to_sample,
+            )
+
+            def _record(result: StressResult) -> None:
+                results.append(result)
+                logger.info(
+                    "[%d/%d] %s/%s%s",
+                    len(results), len(future_to_sample),
+                    result.ecosystem, result.project,
+                    " (error)" if result.error else "",
+                )
+
+            # Poll granularity for budget checks. ``wait`` returns
+            # early on any completion, so the poll only bounds how
+            # late an over-budget scan is detected.
+            poll = min(1.0, max(0.05, per_scan_budget / 10.0))
             try:
-                for future in concurrent.futures.as_completed(
-                    future_to_sample, timeout=per_scan_budget,
-                ):
-                    completed.add(future)
-                    sample = future_to_sample[future]
-                    try:
-                        result = future.result()
-                    except BaseException as e:  # noqa: BLE001
-                        # BaseException, not Exception: a library
-                        # sys.exit() or comparable escape inside a
-                        # scan thread must degrade THIS project with
-                        # a named reason, never kill the sweep
-                        # summary-less (an uncaught SystemExit exits
-                        # with no traceback at all — the worst
-                        # post-mortem). KeyboardInterrupt is the
-                        # operator's and still propagates.
-                        if isinstance(e, KeyboardInterrupt):
-                            raise
-                        result = StressResult(
+                while pending:
+                    done, _not_done = concurrent.futures.wait(
+                        pending, timeout=poll,
+                        return_when=concurrent.futures.FIRST_COMPLETED,
+                    )
+                    for future in done:
+                        pending.discard(future)
+                        sample = future_to_sample[future]
+                        try:
+                            result = future.result()
+                        except BaseException as e:  # noqa: BLE001
+                            # BaseException, not Exception: a library
+                            # sys.exit() or comparable escape inside a
+                            # scan thread must degrade THIS project with
+                            # a named reason, never kill the sweep
+                            # summary-less (an uncaught SystemExit exits
+                            # with no traceback at all — the worst
+                            # post-mortem). KeyboardInterrupt is the
+                            # operator's and still propagates.
+                            if isinstance(e, KeyboardInterrupt):
+                                raise
+                            result = StressResult(
+                                project=sample.name,
+                                ecosystem=sample.ecosystem,
+                                elapsed_seconds=0.0,
+                                deps_analysed=0, vuln_findings=0,
+                                eco_breakdown={},
+                                error=(
+                                    f"unexpected {type(e).__name__}: "
+                                    f"{str(e)[:200]}"
+                                ),
+                            )
+                        _record(result)
+
+                    # Per-scan budget check. Only scans that have
+                    # actually STARTED (registered in the in-flight
+                    # registry) can time out, and only against their
+                    # own clock — queue time never counts.
+                    now = time.monotonic()
+                    for future in list(pending):
+                        sample = future_to_sample[future]
+                        label = f"{sample.ecosystem}/{sample.name}"
+                        started = _scan_started_at(label)
+                        if (started is None
+                                or now - started <= per_scan_budget):
+                            continue
+                        pending.discard(future)
+                        abandoned.add(future)
+                        _record(StressResult(
                             project=sample.name,
                             ecosystem=sample.ecosystem,
-                            elapsed_seconds=0.0,
+                            elapsed_seconds=now - started,
                             deps_analysed=0, vuln_findings=0,
                             eco_breakdown={},
                             error=(
-                                f"unexpected {type(e).__name__}: "
-                                f"{str(e)[:200]}"
+                                f"scan timed out: exceeded its "
+                                f"{per_scan_budget}s budget (clone "
+                                f"{git_clone_timeout}s + scan "
+                                f"{sca_timeout}s); worker abandoned "
+                                f"after {now - started:.0f}s"
                             ),
-                        )
-                    results.append(result)
-                    logger.info(
-                        "[%d/%d] %s/%s%s",
-                        len(results), len(future_to_sample),
-                        sample.ecosystem, sample.name,
-                        " (error)" if result.error else "",
-                    )
-            except concurrent.futures.TimeoutError:
-                pass
+                        ))
+
+                    # Starvation escape: when EVERY worker is held by
+                    # an over-budget scan, queued futures may never
+                    # start and the loop would spin forever. Cancel
+                    # them with an honest reason instead. Trade-off:
+                    # an over-budget scan might still finish and free
+                    # its worker, but each queued scan would then
+                    # need a full budget of its own anyway — a
+                    # bounded sweep beats the best-case save.
+                    if pending and _over_budget_running(
+                        sweep_labels, per_scan_budget,
+                    ) >= max_workers:
+                        for future in list(pending):
+                            if not future.cancel():
+                                # Already running — its own budget
+                                # applies on later polls.
+                                continue
+                            pending.discard(future)
+                            sample = future_to_sample[future]
+                            _record(StressResult(
+                                project=sample.name,
+                                ecosystem=sample.ecosystem,
+                                elapsed_seconds=0.0,
+                                deps_analysed=0, vuln_findings=0,
+                                eco_breakdown={},
+                                error=(
+                                    "never started: all "
+                                    f"{max_workers} worker(s) held "
+                                    "by over-budget scans"
+                                ),
+                            ))
             except KeyboardInterrupt:
                 # Ctrl-C / SIGINT: without this, a plain shutdown
                 # drains the ENTIRE queued backlog (queued items
@@ -444,21 +532,13 @@ def run_stress_sweep(
                 interrupted = True
                 executor.shutdown(wait=False, cancel_futures=True)
                 raise
-            for future, sample in future_to_sample.items():
-                if future not in completed:
-                    results.append(StressResult(
-                        project=sample.name,
-                        ecosystem=sample.ecosystem,
-                        elapsed_seconds=float(per_scan_budget),
-                        deps_analysed=0, vuln_findings=0,
-                        eco_breakdown={},
-                        error=(
-                            f"scan timed out (>{per_scan_budget}s budget)"
-                        ),
-                    ))
         finally:
             if not interrupted:
-                executor.shutdown(wait=True)
+                # Abandoned (over-budget) scans cannot be joined
+                # without blocking the summary on exactly the scans
+                # the budget bounds — skip the join when any exist
+                # (interpreter exit still joins pool threads).
+                executor.shutdown(wait=not abandoned)
     finally:
         _hb_stop.set()
         if cleanup_dir is not None:
@@ -484,11 +564,30 @@ def _in_flight() -> list[str]:
     return [k for k, _ in items]
 
 
+def _scan_started_at(label: str) -> float | None:
+    """Monotonic start time of a currently-running scan, or None
+    when it hasn't started (still queued) or already finished."""
+    with _ACTIVE_SCANS_LOCK:
+        return _ACTIVE_SCANS.get(label)
+
+
+def _over_budget_running(labels: set[str], budget: float) -> int:
+    """Count of THIS sweep's currently-running scans older than
+    ``budget``. Restricted to the sweep's own labels so a
+    concurrent sweep in the same process can't inflate the count."""
+    now = time.monotonic()
+    with _ACTIVE_SCANS_LOCK:
+        return sum(
+            1 for label, t0 in _ACTIVE_SCANS.items()
+            if label in labels and now - t0 > budget
+        )
+
+
 def _scan_one(
     sample: ProjectSample,
     out_root: Path,
     *,
-    git_clone_timeout: int,
+    git_clone_timeout: float,
 ) -> StressResult:
     label = f"{sample.ecosystem}/{sample.name}"
     logger.info("sca.calibration.stress: scan starting: %s", label)
@@ -507,7 +606,7 @@ def _scan_one_inner(
     sample: ProjectSample,
     out_root: Path,
     *,
-    git_clone_timeout: int,
+    git_clone_timeout: float,
 ) -> StressResult:
     proj_out = out_root / f"{sample.ecosystem}-{sample.name}"
     proj_out.mkdir(parents=True, exist_ok=True)
@@ -1034,6 +1133,15 @@ def _rmtree(path: Path) -> None:
     shutil.rmtree(path, ignore_errors=True)
 
 
+# Human-readable labels for the severity enum. Only the rendered
+# text block uses them — data structures and JSON keep the
+# lowercase enum values (``StressDiff.severity``, exit-code logic).
+_SEVERITY_LABELS = {
+    "ok": "Ok", "warn": "Warn", "fail": "Fail",
+    "new": "New", "orphan": "Orphan",
+}
+
+
 def render_diffs(diffs: Sequence[StressDiff]) -> str:
     """Render diff results as a human-readable text block."""
     lines: list[str] = []
@@ -1043,9 +1151,9 @@ def render_diffs(diffs: Sequence[StressDiff]) -> str:
 
     lines.append(
         f"summary: {len(diffs)} project(s); "
-        f"ok={counts['ok']} warn={counts['warn']} "
-        f"fail={counts['fail']} new={counts['new']} "
-        f"orphan={counts['orphan']}"
+        f"Ok={counts['ok']} Warn={counts['warn']} "
+        f"Fail={counts['fail']} New={counts['new']} "
+        f"Orphan={counts['orphan']}"
     )
 
     # Order diffs: fail > warn > new > orphan > ok
@@ -1053,7 +1161,8 @@ def render_diffs(diffs: Sequence[StressDiff]) -> str:
     for d in sorted(diffs, key=lambda x: (
         severity_rank.get(x.severity, 9), x.project,
     )):
-        prefix = f"  [{d.severity:^6s}] {d.ecosystem}/{d.project}"
+        label = _SEVERITY_LABELS.get(d.severity, d.severity)
+        prefix = f"  [{label:^6s}] {d.ecosystem}/{d.project}"
         if not d.issues:
             lines.append(prefix)
             continue

@@ -86,6 +86,53 @@ def test_canonical_dedups_repeated_lockfile_versions() -> None:
     assert len(select_canonical_for_osv(deps)) == 1
 
 
+def test_canonical_keeps_distinct_manifest_versions() -> None:
+    """Two manifests declaring DIFFERENT versions of the same dep are
+    independent claims — both must reach OSV, or the vulnerable one
+    could be silently skipped."""
+    deps = [
+        _dep("requests", "2.31.0", path="/a/requirements.txt"),
+        _dep("requests", "2.19.1", path="/b/requirements.txt"),
+    ]
+    canonical = select_canonical_for_osv(deps)
+    versions = sorted(d.version for d in canonical)
+    assert versions == ["2.19.1", "2.31.0"]
+
+
+def test_canonical_dedups_repeated_manifest_versions() -> None:
+    """Identical (ecosystem, name, version) manifest duplicates still
+    collapse to a single canonical row."""
+    deps = [
+        _dep("requests", "2.31.0", path="/a/requirements.txt"),
+        _dep("requests", "2.31.0", path="/b/requirements.txt"),
+    ]
+    assert len(select_canonical_for_osv(deps)) == 1
+
+
+def test_canonical_resolved_manifest_version_beats_placeholder() -> None:
+    """A literal ``${VAR}`` "version" (Dockerfile RUN scanned before
+    ARG expansion) is the same declaration as the resolved ARG pin —
+    only the concrete version survives."""
+    deps = [
+        _dep("black", "20.8b1", path="/a/Dockerfile"),
+        _dep("black", "${BLACK_VERSION}", path="/a/Dockerfile"),
+    ]
+    canonical = select_canonical_for_osv(deps)
+    assert [d.version for d in canonical] == ["20.8b1"]
+
+
+def test_canonical_placeholder_only_manifest_row_survives() -> None:
+    """When every manifest row is a placeholder, one still surfaces so
+    the dep isn't silently dropped from the run."""
+    deps = [
+        _dep("black", "${BLACK_VERSION}", path="/a/Dockerfile"),
+        _dep("black", "${OTHER_VERSION}", path="/b/Dockerfile"),
+    ]
+    canonical = select_canonical_for_osv(deps)
+    assert len(canonical) == 1
+    assert canonical[0].version == "${BLACK_VERSION}"
+
+
 def test_canonical_keeps_corridor_row_when_nothing_better() -> None:
     """A range pin (``pkg<2.0``) resolves to version=None but carries a
     corridor bound — it must reach OSV via the corridor path rather

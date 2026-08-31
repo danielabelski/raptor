@@ -35,7 +35,7 @@ import zipfile
 from dataclasses import dataclass
 from io import BytesIO
 
-from core.zip import extract_files_from_zip
+from core.zip import ZipEntryCountExceeded, ZipOpenError, extract_files_from_zip
 from .osv import _canonical_name, parse_osv_record
 from .versions import VersionError, in_range as _in_range
 from typing import TYPE_CHECKING
@@ -241,8 +241,6 @@ class OsvOfflineDB:
         # the operator-visible ``skipped`` metric meaningful, we
         # separately count ``.json`` entries in the archive and
         # attribute the (expected - returned) delta to safety drops.
-        # An IOError opening the zip falls through to the substrate
-        # returning {}, which triggers the "no advisories" branch.
         expected_json_entries = 0
         try:
             with zipfile.ZipFile(BytesIO(blob)) as _zf_count:
@@ -253,16 +251,33 @@ class OsvOfflineDB:
             logger.warning(
                 "sca.osv_offline: invalid zip for %s: %s", ecosystem, e)
             return None
-        files = extract_files_from_zip(
-            blob,
-            selector=lambda info: (
-                info.filename if info.filename.endswith(".json") else None
-            ),
-        )
-        if not files and expected_json_entries == 0:
+        # FAIL CLOSED on the substrate's typed refusals (corrupt zip,
+        # over-entry-cap / bomb shape): abort ingest BEFORE the
+        # DELETE below so a refused download can never wipe an
+        # ecosystem's advisories and stamp a fresh ingest_meta —
+        # existing cached advisories stay live until a good download
+        # ingests.
+        try:
+            files = extract_files_from_zip(
+                blob,
+                selector=lambda info: (
+                    info.filename if info.filename.endswith(".json") else None
+                ),
+            )
+        except (ZipOpenError, ZipEntryCountExceeded) as e:
+            logger.warning(
+                "sca.osv_offline: refusing zip for %s (%s); "
+                "keeping existing advisories", ecosystem, e)
+            return None
+        if not files:
+            # Covers both a genuinely advisory-free archive
+            # (expected == 0) and every-entry-dropped-by-safety
+            # (expected > 0): either way there is nothing to ingest,
+            # so keep the existing advisories instead of wiping.
             logger.warning(
                 "sca.osv_offline: no advisories extracted for %s "
-                "(zip empty / invalid / over entry cap)", ecosystem,
+                "(%d .json entries in archive); keeping existing "
+                "advisories", ecosystem, expected_json_entries,
             )
             return None
         skipped += expected_json_entries - len(files)

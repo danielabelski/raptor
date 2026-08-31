@@ -256,7 +256,7 @@ fi
 # Fast path: print the framework version and exit without launching a
 # session. Sits AFTER the dangerous-env strip and the python3 check on
 # purpose: this exec's an interpreter, so it needs the same
-# PYTHONSTARTUP/LD_PRELOAD defence as every other python3-reaching
+# startup-file/loader-preload defence as every other python3-reaching
 # path, and a missing python3 should die with the friendly message.
 case "${1:-}" in
     --version|-V|version)

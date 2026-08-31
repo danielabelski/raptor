@@ -20,8 +20,13 @@ _OSS_SPDX_IDS = frozenset({
     "CC0-1.0",
     "Zlib",
     "BlueOak-1.0.0",
+    # BSL-1.0 is the Boost Software License (OSI-approved) — not the
+    # Business Source License, whose SPDX id is BUSL-1.1.
+    "BSL-1.0",
     # Weak copyleft
     "MPL-2.0",
+    "EPL-1.0",
+    "CDDL-1.0", "CDDL-1.1",
     "LGPL-2.0", "LGPL-2.0-only", "LGPL-2.0-or-later",
     "LGPL-2.1", "LGPL-2.1-only", "LGPL-2.1-or-later",
     "LGPL-3.0", "LGPL-3.0-only", "LGPL-3.0-or-later",
@@ -39,6 +44,9 @@ _OSS_SPDX_IDS = frozenset({
 _LICENSE_FILENAME_PATTERNS = (
     "LICENSE", "LICENSE.txt", "LICENSE.md", "LICENSE.rst",
     "LICENCE", "LICENCE.txt", "LICENCE.md",
+    # The Unlicense's own convention is a file literally named
+    # UNLICENSE (unlicense.org publishes it that way).
+    "UNLICENSE", "UNLICENSE.*", "UNLICENCE", "UNLICENCE.*",
     "COPYING", "COPYING.txt", "COPYING.md",
     "COPYRIGHT", "COPYRIGHT.txt", "COPYRIGHT.md",
     # Dual-license: many projects ship `LICENSE-MIT` + `LICENSE-APACHE`
@@ -133,10 +141,13 @@ _SPDX_HEADER_RE = re.compile(
 # Compound headers (``SPDX-License-Identifier: MIT OR Apache-2.0``)
 # need to capture the FULL expression — operators + operands — not
 # just the first id. Matches the shared grammar in
-# ``core/license/spdx.py``.
+# ``core/license/spdx.py``, bounded to ONE line: an SPDX header is a
+# single line, and ``\s`` spans newlines — ``MIT\nOR consult ...``
+# prose after a genuine MIT header must not be swallowed into a
+# phantom compound expression.
 _SPDX_COMPOUND_HEADER_RE = re.compile(
-    r"SPDX-License-Identifier\s*:\s*"
-    r"([A-Za-z0-9.+\-]+(?:\s+(?:AND|OR|WITH)\s+[A-Za-z0-9.+\-]+)+)",
+    r"SPDX-License-Identifier[ \t]*:[ \t]*"
+    r"([A-Za-z0-9.+\-]+(?:[ \t]+(?:AND|OR|WITH)[ \t]+[A-Za-z0-9.+\-]+)+)",
     re.IGNORECASE,
 )
 
@@ -273,7 +284,19 @@ def _classify_text(text: str) -> tuple:
     compound_m = _SPDX_COMPOUND_HEADER_RE.search(text)
     if compound_m:
         expr = compound_m.group(1).strip()
-        operands = split_compound_expression(expr)
+        # The header regex above is IGNORECASE, so the split must be
+        # too — a case-sensitive split returned ZERO operands for
+        # lowercase operators, and zero operands read as "no non-OSS
+        # operand found" → an oss/high classification of arbitrary
+        # text ("Proprietary and Confidential" included).
+        operands = split_compound_expression(
+            expr, case_insensitive_operators=True,
+        )
+        if not operands:
+            # Belt-and-braces: matched the header shape but not the
+            # expression grammar — never classify from an expression
+            # we could not decompose.
+            return expr, "unknown", "low"
         # Conservative: all-OSS-operands means the compound is OSS;
         # any non-OSS operand (or a license-WITH-exception form
         # whose exception isn't a recognised license) drops to
@@ -305,9 +328,15 @@ def _classify_text(text: str) -> tuple:
         )
         if canonical:
             return canonical, "oss", "high"
-        # SPDX header present but not in our OSS allowlist (e.g. a
-        # custom commercial identifier) — treat as proprietary.
-        return spdx, "proprietary", "high"
+        # SPDX header present but not in our OSS allowlist. The
+        # allowlist is deliberately partial (~95% coverage), so a
+        # miss is far more likely an allowlist GAP (a less-common OSI
+        # license) than a commercial identifier — classify unknown,
+        # never proprietary, unless the body ALSO carries an explicit
+        # proprietary marker. Either way the operator sees the id.
+        if any(marker in text.lower() for marker in _PROPRIETARY_MARKERS):
+            return spdx, "proprietary", "low"
+        return spdx, "unknown", "low"
     # Fingerprint matching: pick the EARLIEST hit in the text,
     # not the first in registry order. Pre-fix Firefox's
     # license.html (which contains both "Mozilla Public License"
@@ -575,10 +604,24 @@ def _read_license_full(path: Path, byte_cap: int) -> str:
     resolve, but a TOCTOU swap between the check and the open
     could otherwise pivot us through a symlink. O_NOFOLLOW
     refuses to open a symlink at the final path component.
+    ``O_NONBLOCK`` + ``fstat(S_ISREG)`` close the matching FIFO
+    race: the caller's ``is_file()`` gate can be swapped for a
+    FIFO between check and open, and a blocking open/read on a
+    reader-less FIFO hangs detection. (Truncating semantics —
+    read the first ``byte_cap`` bytes of an oversized body — are
+    deliberate here, which is why this is not
+    ``core.security.capped_read.read_capped``: that helper
+    fail-closes to None on oversize.)
     """
     import os
+    import stat
     try:
-        fd = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW)
+        fd = os.open(
+            str(path),
+            os.O_RDONLY
+            | os.O_NOFOLLOW
+            | getattr(os, "O_NONBLOCK", 0),
+        )
     except OSError:
         return ""
     try:
@@ -587,6 +630,8 @@ def _read_license_full(path: Path, byte_cap: int) -> str:
         os.close(fd)
         return ""
     try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return ""
         buf = fobj.read(byte_cap)
         return buf.decode("utf-8", errors="replace")
     except OSError:

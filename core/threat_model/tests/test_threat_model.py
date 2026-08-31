@@ -66,7 +66,24 @@ def test_context_map_seeds_focus_areas_and_bug_shapes(tmp_path):
     assert model.known_bug_shapes[0].endswith("No auth before shell execution (critical)")
     assert any("Hardcoded secret" in item for item in model.known_bug_shapes)
     assert model.version == 2
-    assert model.data_flows[0]["id"] == "DF-001"
+    # Content-derived id (stable across regenerated maps), never
+    # positional: the same flow must hash to the same id.
+    flow_id = model.data_flows[0]["id"]
+    assert flow_id.startswith("DF-")
+    remodel = from_context_map(_project(tmp_path), {
+        "entry_points": [{"name": "POST /login", "file": "routes.py"}],
+        "sinks": [{"name": "subprocess.run", "file": "worker.py"}],
+        "unchecked_flows": [
+            # A NEW flow in front must not steal the old flow's id.
+            {"entry_point": "EP-999", "sink": "SINK-999",
+             "missing_boundary": "other", "severity": "low"},
+            {"entry_point": "EP-001", "sink": "SINK-001",
+             "missing_boundary": "No auth before shell execution",
+             "severity": "critical"},
+        ],
+    })
+    assert remodel.data_flows[1]["id"] == flow_id
+    assert remodel.data_flows[0]["id"] != flow_id
     assert model.threats[0]["status"] == "needs_evidence"
     assert model.threats[0]["risk_score"] >= 90
     assert any(c["id"] == "CTRL-004" for c in model.controls)
@@ -928,3 +945,82 @@ def test_cli_remove_matches_sanitised_value(tmp_path):
     _handle_threat_model(mgr, args)
     updated = load_model(json_path)
     assert "test value" not in updated.focus_areas
+
+
+def test_legacy_schema_map_flows_carry_locations(tmp_path):
+    """Old-schema maps use ``sources``/``sinks`` — every consumer must
+    apply the same fallback chain, or flow summaries degrade to bare
+    IDs with lost locations (the drifted-copy regression)."""
+    project = _project(tmp_path)
+    model = from_context_map(project, {
+        "sources": [{"id": "EP-1", "name": "POST /login",
+                     "file": "routes.py", "line": 4}],
+        "sinks": [{"id": "S-1", "name": "subprocess.run",
+                   "file": "worker.py", "line": 9}],
+        "unchecked_flows": [{
+            "entry_point": "EP-1", "sink": "S-1",
+            "missing_boundary": "no auth", "severity": "high",
+        }],
+    })
+    flow = model.data_flows[0]
+    assert flow["source"] == "POST /login"
+    assert flow["source_location"] == "routes.py:4"
+    assert flow["sink_location"] == "worker.py:9"
+
+
+def test_expired_accepted_risk_with_z_suffix_is_an_error(tmp_path):
+    """A ``Z``-suffixed expiry must parse (CPython <3.11 rejects the
+    suffix) — an EXPIRED accepted risk downgraded to an 'unparseable
+    date' warning is a silent policy hole."""
+    project = _project(tmp_path)
+    model = blank_for_project(project)
+    model.threats = [{"id": "T-1", "title": "t", "status": "accepted"}]
+    model.accepted_risks = [{
+        "id": "AR-1", "threat_id": "T-1", "owner": "ops",
+        "accepted_until": "2020-01-01T00:00:00Z",
+    }]
+    issues = lint_model(model)
+    expired = [i for i in issues if "expired" in i["message"]]
+    assert expired and expired[0]["severity"] == "error"
+    unparseable = [i for i in issues if "unparseable" in i["message"]]
+    assert not unparseable
+
+
+def test_save_model_mtime_guard_still_refuses_stale_writer(tmp_path):
+    """The lock serialises the check with the write; the mtime compare
+    itself must keep refusing a stale writer."""
+    import os
+    import pytest
+    project = _project(tmp_path)
+    model = blank_for_project(project)
+    json_path = tmp_path / "threat-model.json"
+    md_path = tmp_path / "THREAT_MODEL.md"
+    save_model(model, json_path, md_path)
+    stale_mtime = json_path.stat().st_mtime - 100
+    with pytest.raises(RuntimeError, match="another"):
+        save_model(model, json_path, md_path, expected_mtime=stale_mtime)
+    # Matching mtime writes fine (and the sidecar lock file exists).
+    save_model(model, json_path, md_path,
+               expected_mtime=json_path.stat().st_mtime)
+    assert os.path.exists(str(json_path) + ".lock")
+
+
+def test_flows_differing_only_in_severity_get_distinct_ids(tmp_path):
+    """Severity is content: identical (entry, sink, boundary) at high
+    vs low severity are distinct flows — a shared id let the
+    left-wins merge keep the low-severity twin."""
+    project = _project(tmp_path)
+    base = {"entry_point": "EP-1", "sink": "S-1",
+            "missing_boundary": "no auth"}
+    model = from_context_map(project, {
+        "entry_points": [{"id": "EP-1", "name": "POST /x"}],
+        "sinks": [{"id": "S-1", "name": "exec"}],
+        "unchecked_flows": [
+            {**base, "severity": "high"},
+            {**base, "severity": "low"},
+        ],
+    })
+    ids = [f["id"] for f in model.data_flows]
+    assert len(ids) == 2 and ids[0] != ids[1]
+    threat_ids = [t["id"] for t in model.threats]
+    assert len(set(threat_ids)) == len(threat_ids)

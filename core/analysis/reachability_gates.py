@@ -10,11 +10,12 @@ Consumers: /audit orchestrator, /validate demoter, /agentic dedup,
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from pathlib import Path
 from typing import Any
+
+from core.analysis._joern_lines import parse_marker_records
 
 logger = logging.getLogger(__name__)
 
@@ -199,6 +200,17 @@ def is_entry_unreachable(
 
     if joern_server is not None:
         joern_callers = _joern_find_callers(function_name, joern_server)
+        if joern_callers is None:
+            # Degraded consultation (dead server / query error /
+            # garbled reply): the cross-check that exists precisely to
+            # catch the indirect calls the graph missed could not run,
+            # so "no callers" is unverified — a transient hiccup must
+            # not demote a finding.
+            logger.debug(
+                "entry-unreachability not asserted for %s: Joern caller "
+                "consultation unavailable", function_name,
+            )
+            return False
         if joern_callers:
             logger.debug(
                 "entry-unreachability overridden by Joern: %s has %d caller(s)",
@@ -212,10 +224,21 @@ def is_entry_unreachable(
 def _joern_find_callers(
     function_name: str,
     joern_server,
-) -> list[dict[str, str]]:
-    """Query Joern for call sites that invoke function_name."""
+) -> list[dict[str, str]] | None:
+    """Query Joern for call sites that invoke function_name.
+
+    Tri-state result, mirroring the :data:`GUARD_UNAVAILABLE`
+    doctrine: an empty LIST means a healthy query genuinely found zero
+    callers (safe to treat as unreachability evidence); ``None`` means
+    the consultation degraded (dead server, query error or exception,
+    or a reply whose only records were undecodable) — consumers must
+    read it as "cannot verify", never as proof of zero callers.
+    Deterministic non-answers (unqueryable function name, missing
+    query file) keep the empty-list shape: the Joern cross-check is
+    structurally impossible there and the call-graph verdict stands.
+    """
     if not joern_server.is_alive():
-        return []
+        return None
     if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", function_name):
         return []
 
@@ -227,18 +250,23 @@ def _joern_find_callers(
     try:
         result = joern_server.query(query, timeout=15, validate=False)
         if result.errors:
-            return []
-        callers = []
-        for line in (result.raw_output or "").splitlines():
-            if line.startswith("JOERN_CALLER:"):
-                try:
-                    callers.append(json.loads(line[len("JOERN_CALLER:"):]))
-                except (json.JSONDecodeError, ValueError):
-                    continue
+            return None
+        records, decode_errors = parse_marker_records(
+            result.raw_output or "", "JOERN_CALLER:",
+        )
+        callers = [r for r in records if isinstance(r, dict)]
+        if not callers and decode_errors:
+            # Records were printed but none decoded — a garbled
+            # transcript is not evidence of zero callers.
+            logger.debug(
+                "joern callers reply for %s garbled: %s",
+                function_name, decode_errors[:3],
+            )
+            return None
         return callers
     except Exception:
         logger.debug("joern callers query failed for %s", function_name, exc_info=True)
-        return []
+        return None
 
 
 # ─── Conduit detection ───────────────────────────────────────────────────────
@@ -383,13 +411,12 @@ def query_unguarded_sinks(
         result = joern_server.query(query, timeout=30, validate=False)
         if result.errors:
             return []
-        sinks = []
-        for line in (result.raw_output or "").splitlines():
-            if line.startswith("JOERN_UNGUARDED:"):
-                try:
-                    sinks.append(json.loads(line[len("JOERN_UNGUARDED:"):]))
-                except (json.JSONDecodeError, ValueError):
-                    continue
+        # Transport-tolerant parse: on the server transport the
+        # records ride the final expression's value echo.
+        records, _decode_errors = parse_marker_records(
+            result.raw_output or "", "JOERN_UNGUARDED:",
+        )
+        sinks = [r for r in records if isinstance(r, dict)]
         # Deterministic order: Joern's traversal order is not stable
         # across server sessions, and these records feed the review
         # prompt — unordered evidence made reviewer input (and hence
@@ -431,13 +458,12 @@ def query_sink_arg_index(
         result = joern_server.query(query, timeout=30, validate=False)
         if result.errors:
             return []
-        args = []
-        for line in (result.raw_output or "").splitlines():
-            if line.startswith("JOERN_SINK_ARG:"):
-                try:
-                    args.append(json.loads(line[len("JOERN_SINK_ARG:"):]))
-                except (json.JSONDecodeError, ValueError):
-                    continue
+        # Transport-tolerant parse — same doctrine as
+        # query_unguarded_sinks.
+        records, _decode_errors = parse_marker_records(
+            result.raw_output or "", "JOERN_SINK_ARG:",
+        )
+        args = [r for r in records if isinstance(r, dict)]
         # Deterministic order — same doctrine as query_unguarded_sinks.
         args.sort(key=lambda a: (
             str(a.get("sink") or ""),

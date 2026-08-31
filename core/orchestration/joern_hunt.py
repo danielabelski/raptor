@@ -22,52 +22,53 @@ CPG cache exists, falling back to grep-only hunting.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from typing import Any
 
+from core.analysis._joern_lines import parse_marker_line
+
 logger = logging.getLogger(__name__)
 
-try:
-    from packages.joern.runner import _escape_scala_string
-except ImportError:  # pragma: no cover - replicates the runner helper
-    def _escape_scala_string(value: str) -> str:
-        """Escape a value for Scala string literal context."""
-        return (
-            value.replace("\\", "\\\\")
-            .replace('"', '\\"')
-            .replace("\n", "\\n")
-            .replace("\r", "\\r")
-        )
+# Import direction is packages → core elsewhere too (the runner itself
+# imports core.analysis._joern_lines), so this cross-package import is
+# cycle-free; the canonical Scala-side escape definition must come from
+# its single authority rather than a drifting local copy.
+from packages.joern.runner import SCALA_JSON_ESC_DEF, _escape_scala_string
 
 _IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _CALL_NAME_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(")
-_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 _CALLER_MARKER = "JOERN_CALLER:"
 
 # Same shape as packages/joern/queries/callers.sc, inlined so the sink
 # name is substituted after identifier validation (no template file
 # round-trip) and the marker parsing stays next to its producer.
-# Every interpolated value (caller, file, code) is backslash+quote
-# escaped and has \r\n flattened on the Scala side, so a filename
-# containing a quote or newline cannot break the JSON line or forge
-# extra records.
-_CALLSITE_QUERY_TEMPLATE = '''import io.shiftleft.semanticcpg.language._
-
-def jsonEsc(v: String): String = v.replace("\\\\", "\\\\\\\\").replace("\\"", "\\\\\\"").replace("\\r", "").replace("\\n", " ")
+# Every interpolated value (caller, file, code) routes through the
+# canonical jsonEsc, so a filename containing a quote, newline, tab, or
+# U+2028-class separator cannot break the JSON line or forge extra
+# records. Dual transport: records are println'd (the subprocess
+# transport sees stdout but not the final expression) AND carried in
+# the final expression's string echo (the server's /query-sync returns
+# the final-expression echo but not println output).
+_CALLSITE_QUERY_TEMPLATE = (
+    "import io.shiftleft.semanticcpg.language._\n\n"
+    + SCALA_JSON_ESC_DEF
+    + r'''
 val callSites = cpg.call.name("__SINK__")
 val callerLines = callSites.map { c =>
   val callerFn = jsonEsc(c.method.name)
   val callerFile = jsonEsc(c.method.filename)
   val line = c.lineNumber.getOrElse(0)
+  // .take(200) on the RAW string BEFORE jsonEsc — escape-then-truncate
+  // can bisect an injected \" and leave a dangling backslash.
   val code = jsonEsc(c.code.take(200))
   s"""JOERN_CALLER:{"caller":"$callerFn","file":"$callerFile","line":$line,"code":"$code"}"""
 }.l
 callerLines.foreach(println)
-"JOERN_CALLERS_DONE"
+callerLines.mkString("\n")
 '''
+)
 
 
 def _is_identifier(value: Any) -> bool:
@@ -141,41 +142,38 @@ def find_sink_callsites(
     seen: set[tuple[str, int]] = set()
     decode_failures = 0
     for raw_line in (result.raw_output or "").splitlines():
-        line = _ANSI_ESCAPE_RE.sub("", raw_line).strip()
-        marker_idx = line.find(_CALLER_MARKER)
-        if marker_idx < 0:
-            continue
-        payload = line[marker_idx + len(_CALLER_MARKER):]
-        try:
-            data = json.loads(payload)
-        except (json.JSONDecodeError, ValueError):
-            if '\\"' in payload:
-                # REPL value echoes re-print lines with escaped
-                # quotes — expected noise, not a dropped record.
-                continue
+        # parse_marker_line owns the transport tolerance: ANSI strip,
+        # echo-prefix unwrap, trailing echo-framing quotes.  Echo
+        # discrimination is by the ``val resN: String = "`` prefix
+        # shape, NOT by escaped quotes in the payload — genuinely
+        # printed records deliberately CONTAIN ``\"`` (jsonEsc), so a
+        # real parse failure on quote-bearing code must still surface.
+        records, decode_error = parse_marker_line(raw_line, _CALLER_MARKER)
+        if decode_error is not None:
             # A directly printed record that does not parse means a
             # call site is being dropped — say so instead of a
             # silent continue.
             decode_failures += 1
             logger.warning(
                 "find_sink_callsites(%s): undecodable JOERN_CALLER "
-                "line (call site dropped): %r", sink_call, payload[:200],
+                "line (call site dropped): %s", sink_call, decode_error,
             )
             continue
-        if not isinstance(data, dict):
-            continue
-        key = (data.get("file", ""), int(data.get("line") or 0))
-        if key in seen:
-            continue
-        seen.add(key)
-        matches.append({
-            "file": data.get("file", ""),
-            "line": int(data.get("line") or 0),
-            "code": data.get("code", ""),
-            "caller": data.get("caller", ""),
-            "sink": sink_call,
-            "source": "joern",
-        })
+        for data in records:
+            if not isinstance(data, dict):
+                continue
+            key = (data.get("file", ""), int(data.get("line") or 0))
+            if key in seen:
+                continue
+            seen.add(key)
+            matches.append({
+                "file": data.get("file", ""),
+                "line": int(data.get("line") or 0),
+                "code": data.get("code", ""),
+                "caller": data.get("caller", ""),
+                "sink": sink_call,
+                "source": "joern",
+            })
     if decode_failures:
         logger.warning(
             "find_sink_callsites(%s): %d marker line(s) failed to "

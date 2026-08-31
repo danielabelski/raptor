@@ -396,16 +396,91 @@ class TestEntryUnreachableJoernOverride:
         assert is_entry_unreachable("orphan", self._cm, joern_server=server) is False
 
     def test_joern_no_callers_stays_unreachable(self):
+        # Healthy query, genuinely zero records: demotion preserved.
         server = _FakeJoernServer(raw_output="")
         assert is_entry_unreachable("orphan", self._cm, joern_server=server) is True
 
-    def test_joern_error_stays_unreachable(self):
+    def test_joern_error_blocks_demotion(self):
+        # A degraded consultation is not proof of zero callers.
         server = _FakeJoernServer(raw_output="", errors=["timeout"])
-        assert is_entry_unreachable("orphan", self._cm, joern_server=server) is True
+        assert is_entry_unreachable("orphan", self._cm, joern_server=server) is False
 
-    def test_joern_dead_server_stays_unreachable(self):
+    def test_joern_dead_server_blocks_demotion(self):
         server = _FakeJoernServer(alive=False)
-        assert is_entry_unreachable("orphan", self._cm, joern_server=server) is True
+        assert is_entry_unreachable("orphan", self._cm, joern_server=server) is False
+
+    def test_joern_exception_blocks_demotion(self):
+        class _RaisingServer:
+            def is_alive(self):
+                return True
+
+            def query(self, cpgql, *, timeout=30, validate=False):
+                raise RuntimeError("connection reset")
+
+        assert is_entry_unreachable(
+            "orphan", self._cm, joern_server=_RaisingServer(),
+        ) is False
+
+    def test_joern_garbled_records_block_demotion(self):
+        # Records were printed but none decoded: a garbled transcript
+        # is a degraded consultation, not evidence of zero callers.
+        server = _FakeJoernServer(
+            raw_output='JOERN_CALLER:{"caller":"disp", TRUNCATED\n',
+        )
+        assert is_entry_unreachable("orphan", self._cm, joern_server=server) is False
+
+    def test_joern_echoed_caller_overrides_unreachability(self):
+        # Server transport: the record rides the final expression's
+        # string echo, first line prefixed with the val-resN binder.
+        stdout = (
+            'val res3: String = """JOERN_CALLER:{"caller":"dispatch",'
+            '"file":"src/dispatch.c","line":42,"code":"orphan(buf)"}"""'
+        )
+        server = _FakeJoernServer(raw_output=stdout)
+        assert is_entry_unreachable("orphan", self._cm, joern_server=server) is False
+
+
+class TestJoernFindCallersTriState:
+    """_joern_find_callers mirrors the GUARD_UNAVAILABLE doctrine."""
+
+    def test_dead_server_unavailable(self):
+        assert rg._joern_find_callers(
+            "fn", _FakeJoernServer(alive=False)) is None
+
+    def test_result_errors_unavailable(self):
+        server = _FakeJoernServer(raw_output="", errors=["boom"])
+        assert rg._joern_find_callers("fn", server) is None
+
+    def test_healthy_zero_records_is_empty_list(self):
+        assert rg._joern_find_callers("fn", _FakeJoernServer()) == []
+
+    def test_invalid_name_is_deterministic_empty(self):
+        # Structurally unqueryable — not transient, graph verdict stands.
+        assert rg._joern_find_callers(
+            "fn; rm -rf", _FakeJoernServer()) == []
+
+    def test_multiline_echo_first_and_last_records_parse(self):
+        # First echoed line carries the binder prefix, last carries
+        # the closing triple quote; both records must decode.
+        stdout = (
+            'val res0: String = """JOERN_CALLER:{"caller":"a",'
+            '"file":"a.c","line":1,"code":"orphan(x)"}\n'
+            'JOERN_CALLER:{"caller":"b","file":"b.c","line":2,'
+            '"code":"orphan(y)"}"""'
+        )
+        callers = rg._joern_find_callers("orphan", _FakeJoernServer(raw_output=stdout))
+        assert [c["caller"] for c in callers] == ["a", "b"]
+
+    def test_single_line_escaped_echo_recovered(self):
+        # Short strings echo single-quoted with Java-escaped content.
+        stdout = (
+            'val res1: String = "JOERN_CALLER:{\\"caller\\":\\"cb\\",'
+            '\\"file\\":\\"t.c\\",\\"line\\":7,\\"code\\":\\"orphan(z)\\"}"'
+        )
+        callers = rg._joern_find_callers("orphan", _FakeJoernServer(raw_output=stdout))
+        assert callers == [
+            {"caller": "cb", "file": "t.c", "line": 7, "code": "orphan(z)"},
+        ]
 
 
 # ─── query_unguarded_sinks ──────────────────────────────────────────────────
@@ -423,6 +498,21 @@ class TestQueryUnguardedSinks:
         server = _FakeJoernServer()
         assert query_unguarded_sinks("fn; rm -rf", server) == []
 
+    def test_echoed_records_parse_and_dedupe(self):
+        # Server transport: records ride the final expression echo;
+        # the summary line and closing quotes are framing.
+        stdout = (
+            'val res2: String = """JOERN_GUARD_SUMMARY:1/3\n'
+            'JOERN_UNGUARDED:{"sink":"memcpy","line":10,'
+            '"code":"memcpy(d, s, n)","guarded":false}"""'
+        )
+        server = _FakeJoernServer(raw_output=stdout)
+        sinks = query_unguarded_sinks("fn", server)
+        assert sinks == [{
+            "sink": "memcpy", "line": 10,
+            "code": "memcpy(d, s, n)", "guarded": False,
+        }]
+
 
 class TestQuerySinkArgIndex:
     def test_none_server(self):
@@ -435,6 +525,18 @@ class TestQuerySinkArgIndex:
     def test_invalid_sink_name(self):
         server = _FakeJoernServer()
         assert query_sink_arg_index("fn", "sink; bad", server) == []
+
+    def test_echoed_record_parses(self):
+        stdout = (
+            'val res0: String = """JOERN_SINK_ARG:{"sink":"memcpy",'
+            '"arg_index":2,"arg_code":"src","source_param":"buf"}"""'
+        )
+        server = _FakeJoernServer(raw_output=stdout)
+        args = query_sink_arg_index("fn", "memcpy", server)
+        assert args == [{
+            "sink": "memcpy", "arg_index": 2,
+            "arg_code": "src", "source_param": "buf",
+        }]
 
 
 # ─── _joern_find_callers reads its query from _QUERIES_DIR ───────────────────

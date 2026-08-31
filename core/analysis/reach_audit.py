@@ -195,7 +195,13 @@ def _stage_one_hop(ctx: _ClassifyCtx, R) -> str | None:
 
 
 def _joern_has_callers(function_name: str) -> bool:
-    """Check whether Joern finds callers that tree-sitter missed."""
+    """Check whether Joern finds callers that tree-sitter missed.
+
+    Advisory PROMOTE channel only: it can rescue a graph-derived
+    not_called, never demote.  The tri-state ``None`` (consultation
+    unavailable) therefore maps to False — no rescue, the graph
+    verdict stands, same as a run without a Joern lane.
+    """
     if _joern_server is None:
         return False
     try:

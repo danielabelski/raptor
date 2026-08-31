@@ -22,6 +22,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from core.analysis._joern_lines import parse_marker_line, parse_marker_records
+
 from .models import FlowStep, JoernCPG, JoernMethodSummary, JoernResult, TaintFlow
 from .prereqs import _joern_parse_path, _joern_path
 from typing import TYPE_CHECKING
@@ -80,6 +82,19 @@ def _escape_scala_string(value: str) -> str:
         .replace("\n", "\\n")
         .replace("\r", "\\r")
     )
+
+
+#: The one Scala-side escape helper for CPG text interpolated into a
+#: JSON-string record context (``MARKER:{json}`` lines). Order matters:
+#: backslash before quote. ``\r`` is stripped; ``\n`` and every
+#: remaining C0 control char (tab included — strict ``json.loads``
+#: rejects ALL raw control chars) plus U+0085/U+2028/U+2029 (Python
+#: ``str.splitlines`` splits on these before any parsing) flatten to
+#: single spaces so each record stays one line. Kept on ONE line so
+#: the quote-escape and newline-escape stay visibly paired. Generated
+#: queries embed this constant; the ``queries/*.sc`` files carry the
+#: identical line (drift-guarded by tests/test_template_json_escaping).
+SCALA_JSON_ESC_DEF = r'''def jsonEsc(v: String): String = v.replace("\\", "\\\\").replace("\"", "\\\"").replace("\r", "").replace("\n", " ").flatMap(c => if (c.toInt < 0x20 || c.toInt == 0x85 || c.toInt == 0x2028 || c.toInt == 0x2029) " " else c.toString)'''
 
 
 def _default_sandbox_runner():
@@ -995,21 +1010,27 @@ import io.shiftleft.semanticcpg.language._
 import io.shiftleft.codepropertygraph.generated.nodes.CfgNode
 import scala.util.Try
 
+''' + SCALA_JSON_ESC_DEF + r'''
+
 implicit val engineContext: EngineContext = EngineContext(config = EngineConfig(maxCallDepth = __MAX_CALL_DEPTH__))
 val source = __SOURCE_FILTER__
 val sink = cpg.call.name("__SINK_CALL__").argument
-val flows = sink.reachableByFlows(source).l
+// .take(500) BEFORE .l bounds materialisation. Higher = more flows
+// materialised and echoed per query (unbounded transport bytes);
+// lower = real flows silently dropped past the cap (the JOERN_FLOW
+// protocol has no truncation marker). 500 mirrors tiered_taint.sc.
+val flows = sink.reachableByFlows(source).take(500).l
 val flowLines = flows.map { flow =>
   val steps = flow.elements.map { e =>
     val ln = e.lineNumber.getOrElse(0)
-    val cd = e.code.take(200).replace("\\", "\\\\").replace("\"", "\\\"").replace("\r", "").replace("\n", " ")
+    val cd = jsonEsc(e.code.take(200))
     val (fn, fl) = e match {
       case n: CfgNode =>
         (Try(n.method.name).getOrElse(""), Try(n.method.filename).getOrElse(""))
       case _ => ("", "")
     }
-    val fnEsc = fn.replace("\\", "\\\\").replace("\"", "\\\"").replace("\r", "").replace("\n", " ")
-    val flEsc = fl.replace("\\", "\\\\").replace("\"", "\\\"").replace("\r", "").replace("\n", " ")
+    val fnEsc = jsonEsc(fn)
+    val flEsc = jsonEsc(fl)
     s"""{"line":${ln},"code":"${cd}","function":"${fnEsc}","file":"${flEsc}"}"""
   }.mkString(",")
   "JOERN_FLOW:[" + steps + "]"
@@ -1497,14 +1518,6 @@ def _infer_call(code: str) -> str:
     return m.group(1) if m else ""
 
 
-def _try_parse_flow_json(json_str: str) -> tuple:
-    try:
-        data = json.loads(json_str)
-        return data, None
-    except (json.JSONDecodeError, ValueError) as exc:
-        return None, str(exc)
-
-
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
@@ -1517,56 +1530,56 @@ def _parse_output(stdout: str) -> tuple:
     (joern 4.x) wraps values in ANSI colour codes and echoes the final
     string as ``val resN: String = \"\"\"JOERN_FLOWS_START...``, and
     each flow may appear multiple times (println + value echoes, the
-    latter with escaped quotes).  So: strip ANSI, match sentinels by
-    prefix/suffix rather than exact line, accept any line whose payload
-    parses as JSON, and dedupe.
+    latter with escaped quotes).  ``parse_marker_line`` owns that
+    transport tolerance; echo discrimination is by the echo prefix
+    shape, not by escaped quotes in the payload (genuinely printed
+    records deliberately contain ``\\"`` via jsonEsc).
+
+    A genuinely printed record that fails to decode is recorded in
+    ``errors`` regardless of sentinel state: the subprocess transport
+    never prints the final-expression sentinels, and sentinel-gated
+    error recording let dropped flows read as genuine negatives to
+    refuting callers that honour the ``result.errors`` contract.
     """
     flows: list[TaintFlow] = []
     errors: list[str] = []
     seen_flows: set[str] = set()
-    in_flows = False
 
     for raw_line in stdout.splitlines():
         line = _ANSI_ESCAPE_RE.sub("", raw_line).strip()
+        # Sentinel lines are framing, never content.
         if line.endswith("JOERN_FLOWS_START"):
-            in_flows = True
             continue
         if line.startswith("JOERN_FLOWS_END") or line.endswith("JOERN_FLOWS_END"):
-            in_flows = False
             continue
 
-        marker_idx = line.find("JOERN_FLOW:")
-        if marker_idx < 0:
+        records, decode_error = parse_marker_line(line, "JOERN_FLOW:")
+        if decode_error is not None:
+            errors.append(f"failed to parse flow: {decode_error}")
             continue
-
-        json_str = line[marker_idx + len("JOERN_FLOW:"):]
-        steps_data, parse_err = _try_parse_flow_json(json_str)
-        if parse_err:
-            # Value echoes re-print flows with escaped quotes; only
-            # report unparseable lines inside the sentinel block that
-            # aren't such echoes.
-            if in_flows and '\\"' not in json_str:
-                errors.append(f"failed to parse flow: {parse_err}")
-            continue
-        dedupe_key = json.dumps(steps_data, sort_keys=True)
-        if dedupe_key in seen_flows:
-            continue
-        seen_flows.add(dedupe_key)
-        if isinstance(steps_data, list) and steps_data:
-            steps = [FlowStep.from_dict(s) for s in steps_data if isinstance(s, dict)]
-            if steps:
-                src_fn = steps[0].function or _infer_function(steps[0].code)
-                sink_fn = _infer_call(steps[-1].code) if len(steps) > 1 else ""
-                funcs = {s.function for s in steps if s.function}
-                flow = TaintFlow(
-                    source_method=src_fn,
-                    source_param=steps[0].variable or steps[0].code,
-                    sink_call=sink_fn,
-                    sink_arg_idx=-1,
-                    steps=steps,
-                    is_inter_procedural=len(funcs) > 1,
-                )
-                flows.append(flow)
+        for steps_data in records:
+            dedupe_key = json.dumps(steps_data, sort_keys=True)
+            if dedupe_key in seen_flows:
+                continue
+            seen_flows.add(dedupe_key)
+            if isinstance(steps_data, list) and steps_data:
+                steps = [
+                    FlowStep.from_dict(s)
+                    for s in steps_data if isinstance(s, dict)
+                ]
+                if steps:
+                    src_fn = steps[0].function or _infer_function(steps[0].code)
+                    sink_fn = _infer_call(steps[-1].code) if len(steps) > 1 else ""
+                    funcs = {s.function for s in steps if s.function}
+                    flow = TaintFlow(
+                        source_method=src_fn,
+                        source_param=steps[0].variable or steps[0].code,
+                        sink_call=sink_fn,
+                        sink_arg_idx=-1,
+                        steps=steps,
+                        is_inter_procedural=len(funcs) > 1,
+                    )
+                    flows.append(flow)
 
     return flows, errors
 
@@ -1614,8 +1627,21 @@ def _parse_errors(stderr: str) -> list[str]:
     return errors
 
 
+_SUMMARY_MARKER = "METHOD_SUMMARY:"
+
+
 def _build_summary_batch_query(method_names: list[str]) -> str | None:
-    """Build a Joern query that fetches summaries for multiple methods."""
+    """Build a Joern query that fetches summaries for multiple methods.
+
+    One ``METHOD_SUMMARY:{json}`` line per method with every string
+    field jsonEsc'd — the previous pipe-and-comma format carried CPG
+    code snippets with zero escaping, so a ``|`` or ``,`` inside a
+    snippet forged extra fields/entries. Records are println'd (the
+    ``joern --script`` subprocess transport sees stdout but not the
+    final expression) AND carried in the final expression's string
+    echo (the server's /query-sync returns the final expression echo
+    but not println output).
+    """
     if not method_names:
         return None
     safe = [n for n in method_names if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", n)]
@@ -1623,47 +1649,62 @@ def _build_summary_batch_query(method_names: list[str]) -> str | None:
         return None
     names_list = ", ".join(f'"{n}"' for n in safe)
     return (
+        SCALA_JSON_ESC_DEF + "\n"
+        # .take(200) on the RAW element BEFORE jsonEsc — escape-then-
+        # truncate can bisect an injected \" and leave a dangling
+        # backslash that breaks the whole record.
+        'def jsonArr(xs: List[String]): String = '
+        'xs.map(x => "\\"" + jsonEsc(x.take(200)) + "\\"")'
+        '.mkString("[", ",", "]")\n'
+        # Explicit EngineContext, mirroring tiered_taint.sc's
+        # `(tier1Ctx)` style: the server REPL session is persistent,
+        # and an earlier query's top-level `implicit val engineContext`
+        # (standard_sinks.sc declares one) makes bare implicit
+        # resolution ambiguous with JoernConsole's own context —
+        # a compile error that silently loses the whole batch.
+        "val summaryCtx = "
+        "io.joern.dataflowengineoss.queryengine.EngineContext()\n"
         f"val names = List({names_list})\n"
-        "names.map { n =>\n"
-        '  val m = cpg.method.nameExact(n).headOption.getOrElse(null)\n'
-        '  if (m != null) {\n'
-        '    val taints = m.parameter.reachableBy(cpg.method.nameExact(n).parameter).code.l\n'
+        "val summaryLines = names.map { n =>\n"
+        "  val m = cpg.method.nameExact(n).headOption.getOrElse(null)\n"
+        "  if (m != null) {\n"
+        "    val taints = m.parameter.reachableBy(cpg.method.nameExact(n).parameter)(summaryCtx).code.l\n"
         '    val pre = m.ast.isCall.name(".*check.*|.*assert.*|.*validate.*").code.l\n'
-        '    val ret = m.methodReturn.typ.name.l\n'
-        '    s"METHOD:${n}|TAINTS:${taints.mkString(",")}|PRE:${pre.mkString(",")}|RET:${ret.mkString(",")}"\n'
-        '  } else s"METHOD:${n}|NOTFOUND"\n'
-        "}.mkString(\"\\n\")"
+        "    val ret = m.methodReturn.typ.name.l\n"
+        '    s"""METHOD_SUMMARY:{"method":"${jsonEsc(n)}","found":true,'
+        '"taints":${jsonArr(taints)},"pre":${jsonArr(pre)},'
+        '"ret":${jsonArr(ret)}}"""\n'
+        '  } else s"""METHOD_SUMMARY:{"method":"${jsonEsc(n)}","found":false}"""\n'
+        "}\n"
+        "summaryLines.foreach(println)\n"
+        'summaryLines.mkString("\\n")'
     )
 
 
 def parse_summary_output(raw: str) -> dict[str, JoernMethodSummary]:
-    """Parse the batch summary output into JoernMethodSummary objects."""
+    """Parse ``METHOD_SUMMARY:{json}`` lines into JoernMethodSummary objects.
+
+    ``parse_marker_records`` owns the transport tolerance: ANSI strip,
+    echo prefixes/framing, Java-escaped value-echo recovery (a
+    ONE-method batch's final expression echoes as a single-line escaped
+    string), and println/echo dedupe.  A genuinely printed record that
+    fails to decode is logged as a warning — the return shape has no
+    error slot, so the log is the record; echo duplicates stay silent.
+    """
+    records, errors = parse_marker_records(raw, _SUMMARY_MARKER)
+    for err in errors:
+        logger.warning("method summary record dropped: %s", err)
     results: dict[str, JoernMethodSummary] = {}
-    for line in raw.splitlines():
-        line = line.strip().strip('"')
-        if not line.startswith("METHOD:"):
+    for data in records:
+        if not isinstance(data, dict) or not data.get("found"):
             continue
-        parts = line.split("|")
-        name = parts[0].removeprefix("METHOD:")
-        if len(parts) < 2 or "NOTFOUND" in parts[1]:
+        name = data.get("method", "")
+        if not isinstance(name, str) or not name:
             continue
-        taints: list[str] = []
-        pre: list[str] = []
-        ret: list[str] = []
-        for part in parts[1:]:
-            if part.startswith("TAINTS:"):
-                val = part.removeprefix("TAINTS:")
-                taints = [v for v in val.split(",") if v]
-            elif part.startswith("PRE:"):
-                val = part.removeprefix("PRE:")
-                pre = [v for v in val.split(",") if v]
-            elif part.startswith("RET:"):
-                val = part.removeprefix("RET:")
-                ret = [v for v in val.split(",") if v]
         results[name] = JoernMethodSummary(
             method=name,
-            taint_rules=taints,
-            preconditions=pre,
-            returns=ret,
+            taint_rules=[str(v) for v in data.get("taints") or [] if v],
+            preconditions=[str(v) for v in data.get("pre") or [] if v],
+            returns=[str(v) for v in data.get("ret") or [] if v],
         )
     return results

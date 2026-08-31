@@ -200,6 +200,74 @@ class TestParseOutput:
         assert flows == []
         assert errors == []
 
+    def test_subprocess_transport_bad_record_recorded_without_sentinels(self):
+        # The subprocess transport never prints the final-expression
+        # sentinels; a dropped flow must still reach result.errors so
+        # refuting callers don't read it as a genuine negative.
+        output = (
+            "some jvm output\n"
+            "JOERN_FLOW:{not json\n"
+        )
+        flows, errors = _parse_output(output)
+        assert flows == []
+        assert len(errors) == 1
+        assert "failed to parse flow" in errors[0]
+
+    def test_subprocess_transport_good_record_without_sentinels(self):
+        steps = [
+            {"file": "a.c", "function": "f", "line": 1,
+             "code": "x", "variable": "x"},
+        ]
+        flows, errors = _parse_output(f"JOERN_FLOW:{json.dumps(steps)}\n")
+        assert len(flows) == 1
+        assert errors == []
+
+    def test_quote_bearing_genuine_failure_not_suppressed(self):
+        # jsonEsc deliberately injects \" into printed records —
+        # escaped quotes in the payload must not read as echo noise.
+        output = (
+            "JOERN_FLOWS_START\n"
+            'JOERN_FLOW:[{"code":"puts(\\"hi\\")", broken\n'
+            "JOERN_FLOWS_END\n"
+        )
+        flows, errors = _parse_output(output)
+        assert flows == []
+        assert len(errors) == 1
+
+    def test_final_expression_echo_first_and_last_lines_parse(self):
+        # Server transport: records ride the final expression's
+        # string echo — binder prefix on the first line, closing
+        # triple quote on the last.
+        first = [{"file": "a.c", "function": "f", "line": 1,
+                  "code": "x", "variable": "x"}]
+        last = [{"file": "b.c", "function": "g", "line": 2,
+                 "code": "y", "variable": "y"}]
+        output = (
+            'val res0: String = """JOERN_FLOWS_START\n'
+            f"JOERN_FLOW:{json.dumps(first)}\n"
+            f"JOERN_FLOW:{json.dumps(last)}\n"
+            'JOERN_FLOWS_END"""\n'
+        )
+        flows, errors = _parse_output(output)
+        assert [f.steps[0].file for f in flows] == ["a.c", "b.c"]
+        assert errors == []
+
+    def test_escaped_value_echo_deduped_against_println_copy(self):
+        # A transcript carrying the println copy AND a single-line
+        # Java-escaped value echo of the same record yields it once,
+        # with no error for the echo line.
+        steps = [{"file": "a.c", "function": "f", "line": 1,
+                  "code": "x", "variable": "x"}]
+        record = f"JOERN_FLOW:{json.dumps(steps)}"
+        echoed = record.replace("\\", "\\\\").replace('"', '\\"')
+        output = (
+            f"{record}\n"
+            f'val res0: String = "{echoed}"\n'
+        )
+        flows, errors = _parse_output(output)
+        assert len(flows) == 1
+        assert errors == []
+
 
 class TestParseErrors:
     def test_extracts_errors(self):

@@ -165,6 +165,25 @@ class TestCallsiteProtocolIntegrity:
         assert "jsonEsc(c.method.filename)" in _CALLSITE_QUERY_TEMPLATE
         assert "jsonEsc(c.code.take(200))" in _CALLSITE_QUERY_TEMPLATE
 
+    def test_template_embeds_canonical_json_esc(self):
+        # Single authority for the Scala-side escape: a local copy can
+        # silently lose the tab/C0/U+2028 flattening the canonical
+        # definition carries.
+        from packages.joern.runner import SCALA_JSON_ESC_DEF
+
+        from core.orchestration.joern_hunt import _CALLSITE_QUERY_TEMPLATE
+        assert SCALA_JSON_ESC_DEF in _CALLSITE_QUERY_TEMPLATE
+
+    def test_template_dual_transport(self):
+        from core.orchestration.joern_hunt import _CALLSITE_QUERY_TEMPLATE
+        # Subprocess transport: println per record. Server transport:
+        # /query-sync drops println output, so the records must ALSO
+        # ride the final expression's string echo.
+        assert "callerLines.foreach(println)" in _CALLSITE_QUERY_TEMPLATE
+        assert _CALLSITE_QUERY_TEMPLATE.rstrip().endswith(
+            'callerLines.mkString("\\n")'
+        )
+
     def test_quoted_filename_round_trips(self):
         # What Joern prints after the Scala-side escaping for a file
         # literally named `weird"name .c` (quote and newline in the
@@ -208,6 +227,89 @@ class TestCallsiteProtocolIntegrity:
             matches = find_sink_callsites(
                 "memcpy", FakeServer(raw_output=raw))
         assert matches == []
+        assert not caplog.records
+
+    def test_quote_bearing_genuine_failure_still_warns(self, caplog):
+        # jsonEsc deliberately injects \" into printed records, so
+        # escaped quotes in the payload must NOT read as REPL-echo
+        # noise: a directly printed record that fails to parse is a
+        # dropped call site and must surface.
+        import logging
+
+        raw = (
+            'JOERN_CALLER:{"caller":"log_it","code":"puts(\\"hi\\")", \n'
+            "JOERN_CALLERS_DONE"
+        )
+        with caplog.at_level(logging.WARNING,
+                             logger="core.orchestration.joern_hunt"):
+            matches = find_sink_callsites(
+                "memcpy", FakeServer(raw_output=raw))
+        assert matches == []
+        assert any("undecodable" in r.message for r in caplog.records)
+
+    def test_server_echo_first_and_last_records_parse(self):
+        # Server transport: /query-sync drops println output — records
+        # ride the final expression echo whose first line carries the
+        # binder prefix and whose last line carries the closing quotes.
+        raw = (
+            'val res0: String = """JOERN_CALLER:{"caller":"first",'
+            '"file":"a.c","line":1,"code":"memcpy(a, b, c)"}\n'
+            'JOERN_CALLER:{"caller":"last","file":"z.c","line":9,'
+            '"code":"memcpy(x, y, z)"}"""'
+        )
+        matches = find_sink_callsites("memcpy", FakeServer(raw_output=raw))
+        assert [(m["caller"], m["file"]) for m in matches] == [
+            ("first", "a.c"), ("last", "z.c"),
+        ]
+
+    def test_server_list_binder_echo_recovered_without_warnings(self, caplog):
+        # Server transport transcript of the callsite query: the REPL
+        # also echoes the intermediate `val callerLines = ...` binder
+        # as a List with one Java-escaped element per line, framed by
+        # `List(` / `)` lines, BEFORE the final-expression echo. The
+        # binder echo must recover (or dedupe) silently — reading it as
+        # dropped records produced phantom warnings on every
+        # multi-callsite target.
+        import logging
+
+        raw = (
+            "val callerLines: List[String] = List(\n"
+            '  "JOERN_CALLER:{\\"caller\\":\\"parse_alpha\\",'
+            '\\"file\\":\\"entry.c\\",\\"line\\":25,'
+            '\\"code\\":\\"memcpy(out, buf + 1, claimed)\\"}",\n'
+            '  "JOERN_CALLER:{\\"caller\\":\\"dispatch_cb\\",'
+            '\\"file\\":\\"table.c\\",\\"line\\":90,'
+            '\\"code\\":\\"memcpy(dst, src, n)\\"}"\n'
+            ")\n"
+            'val res1: String = """JOERN_CALLER:{"caller":"parse_alpha",'
+            '"file":"entry.c","line":25,'
+            '"code":"memcpy(out, buf + 1, claimed)"}\n'
+            'JOERN_CALLER:{"caller":"dispatch_cb","file":"table.c",'
+            '"line":90,"code":"memcpy(dst, src, n)"}"""'
+        )
+        with caplog.at_level(logging.WARNING,
+                             logger="core.orchestration.joern_hunt"):
+            matches = find_sink_callsites(
+                "memcpy", FakeServer(raw_output=raw))
+        assert [(m["caller"], m["line"]) for m in matches] == [
+            ("parse_alpha", 25), ("dispatch_cb", 90),
+        ]
+        assert not caplog.records
+
+    def test_single_line_escaped_echo_recovered(self, caplog):
+        # A one-record result echoes single-quoted with Java-escaped
+        # content; one unescape round recovers the record silently.
+        import logging
+
+        raw = (
+            'val res0: String = "JOERN_CALLER:{\\"caller\\":\\"cb\\",'
+            '\\"file\\":\\"t.c\\",\\"line\\":7,\\"code\\":\\"memcpy(p, q, r)\\"}"'
+        )
+        with caplog.at_level(logging.WARNING,
+                             logger="core.orchestration.joern_hunt"):
+            matches = find_sink_callsites(
+                "memcpy", FakeServer(raw_output=raw))
+        assert [(m["caller"], m["line"]) for m in matches] == [("cb", 7)]
         assert not caplog.records
 
     def test_trailing_newline_sink_rejected(self):

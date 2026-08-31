@@ -741,7 +741,11 @@ class SourceBuilder:
             # string-aware so a "https://..." image value survives.
             try:
                 data = load_jsonc(raw)
-            except json.JSONDecodeError:
+            except ValueError:
+                # json.JSONDecodeError plus load_jsonc's non-finite
+                # rejection (NaN/Infinity raise plain ValueError) —
+                # a scanned repo's devcontainer.json must degrade,
+                # never crash the source-build path.
                 continue
             image = data.get("image") if isinstance(data, dict) else None
             if isinstance(image, str) and image.strip():

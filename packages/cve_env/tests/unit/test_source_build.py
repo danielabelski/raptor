@@ -1652,6 +1652,19 @@ def test_find_devcontainer_image_invalid_json_returns_none(tmp_path: Path) -> No
     builder = SourceBuilder()
     assert builder._find_devcontainer_image(repo) is None
 
+def test_find_devcontainer_image_non_finite_json_returns_none(tmp_path: Path) -> None:
+    """load_jsonc rejects NaN/Infinity with plain ValueError (not
+    JSONDecodeError) — a scanned repo's devcontainer.json carrying a
+    non-finite constant must degrade to None, not crash the
+    source-build path."""
+    repo = tmp_path / "repo"
+    (repo / ".devcontainer").mkdir(parents=True)
+    (repo / ".devcontainer" / "devcontainer.json").write_text(
+        '{"image": "python:3.12", "memory": Infinity}'
+    )
+    builder = SourceBuilder()
+    assert builder._find_devcontainer_image(repo) is None
+
 def test_find_devcontainer_image_no_image_key_returns_none(tmp_path: Path) -> None:
     """Line 699: valid JSON with no usable ``image`` → None."""
     repo = tmp_path / "repo"

@@ -266,11 +266,13 @@ def _make_llm_client(opts: AuditPipelineOpts):
     else:
         llm_cfg = LLMConfig(max_cost_per_scan=max_cost)
         client = LLMClient(config=llm_cfg)
-    _ensure_dispatcher_route(client, models)
+    _ensure_dispatcher_route(client, models, run_dir=opts.out_dir)
     return client, models, primary_model
 
 
-def _ensure_dispatcher_route(client, models: list[str]) -> None:
+def _ensure_dispatcher_route(
+    client, models: list[str], run_dir: Path | None = None,
+) -> None:
     """Self-serve an in-process dispatcher for dispatcher-only models.
 
     Bedrock is dispatcher-only (this process holds the AWS
@@ -304,7 +306,12 @@ def _ensure_dispatcher_route(client, models: list[str]) -> None:
         from core.llm.dispatcher.lifecycle import (
             ensure_route_for_model_configs,
         )
-        ensure_route_for_model_configs(candidates, label="raptor-audit")
+        # run_dir places the dispatcher's L5 audit JSONL inside the
+        # audit run's own output directory (in-memory only when the
+        # dir doesn't exist yet).
+        ensure_route_for_model_configs(
+            candidates, label="raptor-audit", run_dir=run_dir,
+        )
     except Exception:  # provider errors surface downstream
         logger.warning(
             "could not start in-process LLM dispatcher for "

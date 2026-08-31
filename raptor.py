@@ -662,7 +662,7 @@ def _run_with_lifecycle(command: str, script_path: Path, args: list,
     # final summary — a confusing ordering artefact operators
     # actually noticed.
     print(f"\n[*] {label}\n", flush=True)
-    rc = _run_script(script_path, args)
+    rc = _run_script(script_path, args, out_dir=out_dir)
 
     # Write coverage records from tool outputs (before lifecycle complete)
     try:
@@ -727,13 +727,18 @@ _NO_TRUST_REPO_SEEN = False
 _active_dispatcher = None
 
 
-def _get_or_start_dispatcher():
+def _get_or_start_dispatcher(audit_path=None):
     """Lazy single dispatcher per ``raptor.py`` invocation.
 
     Credential-isolation: the spawned analysis script gets
     ``RAPTOR_LLM_SOCKET`` + a per-spawn token via ``spawn_worker``,
     and ``core/llm/providers.py`` routes its SDK calls through the
     dispatcher. API keys remain in env as fallback.
+
+    ``audit_path`` (a :class:`Path`, or ``None``) is where the
+    dispatcher's L5 audit JSONL lands; ``None`` keeps events
+    in-memory/logger-only. First construction wins — the singleton's
+    audit destination cannot move mid-invocation.
     """
     global _active_dispatcher
     if _active_dispatcher is not None:
@@ -784,6 +789,7 @@ def _get_or_start_dispatcher():
         _active_dispatcher = LLMDispatcher(
             run_id=f"raptor-{uuid.uuid4().hex[:8]}",
             creds=creds,
+            audit_path=audit_path,
         )
         atexit.register(_active_dispatcher.shutdown)
         return _active_dispatcher
@@ -844,13 +850,17 @@ def _cleanup_refused_run_dir(out_dir: Path) -> None:
         out_dir.rmdir()
 
 
-def _run_script(script_path: Path, args: list) -> int:
+def _run_script(script_path: Path, args: list, out_dir: Path | None = None) -> int:
     """
     Run a RAPTOR script with given arguments.
 
     Args:
         script_path: Path to the Python script to run
         args: Command-line arguments to pass to the script
+        out_dir: The run's output directory when the caller has one
+            (the lifecycle wrapper does) — the dispatcher's L5 audit
+            JSONL then lands inside it. ``None`` (direct, run-less
+            invocations) keeps audit events in-memory only.
 
     Returns:
         Exit code from the script
@@ -875,7 +885,11 @@ def _run_script(script_path: Path, args: list) -> int:
 
     try:
         from core.config import RaptorConfig
-        dispatcher = _get_or_start_dispatcher()
+        audit_path = None
+        if out_dir is not None:
+            from core.llm.dispatcher.lifecycle import audit_path_for_run_dir
+            audit_path = audit_path_for_run_dir(out_dir)
+        dispatcher = _get_or_start_dispatcher(audit_path=audit_path)
         if dispatcher is not None:
             from core.llm.dispatcher.spawn import spawn_worker
             # Worker credential posture. Default: provider keys still

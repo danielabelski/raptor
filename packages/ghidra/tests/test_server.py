@@ -1,5 +1,9 @@
 """Tests for the persistent sandboxed Ghidra server."""
 
+import os
+import sys
+import time
+
 import pytest
 
 from packages.ghidra.detect import pyghidra_available
@@ -427,3 +431,76 @@ class TestRestartBudget:
             server_mod.GhidraServerError, match="not started",
         ):
             srv.restart()
+
+
+class TestWorkerConnectionIdleTimeout:
+    """The worker must exit when idle past --idle-timeout WITH a
+    client connected, not only while waiting in accept() — an
+    idle-but-connected (or wedged) parent must not hold the JVM
+    worker process alive forever."""
+
+    def _run_worker(self, tmp_path, monkeypatch):
+        import threading
+
+        from packages.ghidra import server_worker
+
+        sock_path = str(tmp_path / "w.sock")
+        monkeypatch.setattr(
+            sys, "argv",
+            ["server_worker", sock_path, "--idle-timeout", "1"],
+        )
+        box: dict = {}
+
+        def run():
+            box["rc"] = server_worker.main()
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        deadline = time.monotonic() + 5
+        while not os.path.exists(sock_path):
+            if time.monotonic() > deadline:
+                raise AssertionError("worker socket never appeared")
+            time.sleep(0.02)
+        return sock_path, thread, box
+
+    def test_idle_connected_client_does_not_pin_worker(
+            self, tmp_path, monkeypatch):
+        import socket as socket_mod
+
+        sock_path, thread, box = self._run_worker(tmp_path, monkeypatch)
+        client = socket_mod.socket(socket_mod.AF_UNIX,
+                                   socket_mod.SOCK_STREAM)
+        client.connect(sock_path)
+        try:
+            thread.join(timeout=8)
+            assert not thread.is_alive(), (
+                "worker still alive with an idle connected client")
+            assert box.get("rc") == 0
+        finally:
+            client.close()
+
+    def test_requests_still_served_under_connection_timeout(
+            self, tmp_path, monkeypatch):
+        import json as json_mod
+        import socket as socket_mod
+
+        sock_path, thread, box = self._run_worker(tmp_path, monkeypatch)
+        client = socket_mod.socket(socket_mod.AF_UNIX,
+                                   socket_mod.SOCK_STREAM)
+        client.settimeout(5)
+        client.connect(sock_path)
+        try:
+            stream = client.makefile("rwb")
+            stream.write(b'{"id": 1, "op": "ping"}\n')
+            stream.flush()
+            resp = json_mod.loads(stream.readline())
+            assert resp == {"id": 1, "ok": True, "pong": True}
+            stream.write(b'{"id": 2, "op": "shutdown"}\n')
+            stream.flush()
+            resp = json_mod.loads(stream.readline())
+            assert resp["ok"] is True and resp["bye"] is True
+            thread.join(timeout=5)
+            assert not thread.is_alive()
+            assert box.get("rc") == 0
+        finally:
+            client.close()

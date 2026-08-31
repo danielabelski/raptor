@@ -41,7 +41,6 @@ import core.startup.process_init  # noqa: E402,F401
 from core.json import dumps_display  # noqa: E402
 
 import argparse  # noqa: E402
-import json  # noqa: E402
 import logging  # noqa: E402
 from datetime import datetime, timezone  # noqa: E402
 from typing import Any, Dict  # noqa: E402
@@ -51,6 +50,7 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 from core.sage.config import SageConfig  # noqa: E402
 from core.security.log_sanitisation import escape_nonprintable  # noqa: E402
+from core.security.redaction import redact_secrets  # noqa: E402
 
 
 def _safe(text, *, preserve_newlines: bool = False) -> str:
@@ -298,10 +298,13 @@ def _resolve_memory_id(client, id_or_prefix):
     if len(candidate) >= 36:
         return candidate
     memories, _ = _fetch_all_memories(client)
+    # memory_id can be None on rows the fetch walk tolerates — a
+    # .startswith on it would AttributeError every prefix command.
     matches = sorted({
-        getattr(m, "memory_id", "")
+        mid
         for m in memories
-        if getattr(m, "memory_id", "").startswith(candidate)
+        for mid in (getattr(m, "memory_id", None),)
+        if isinstance(mid, str) and mid.startswith(candidate)
     })
     if len(matches) == 1:
         return matches[0]
@@ -370,7 +373,9 @@ def cmd_recall(client, args):
         )
         if args.domain:
             query_kwargs["domain_tag"] = args.domain
-        if args.min_confidence:
+        # `is not None`, not truthiness: --min-confidence 0 is an
+        # explicit "no floor" and must reach the server.
+        if args.min_confidence is not None:
             query_kwargs["min_confidence"] = args.min_confidence
         response = client.query(**query_kwargs)
     except Exception as e:
@@ -460,7 +465,12 @@ def cmd_list(client, args):
 
 
 def cmd_remember(client, args):
-    content = " ".join(args.content)
+    # Redact before store, like every core/sage/hooks.py writer
+    # (_propose_redacted): a pasted token would otherwise be committed
+    # durably to the consensus store with PUBLIC classification. The
+    # embedding is computed over the redacted text so what is recalled
+    # is what was stored.
+    content = redact_secrets(" ".join(args.content))
     if not content:
         print("Usage: raptor-sage remember <text> [--domain D] [--type T]",
               file=sys.stderr)
@@ -601,7 +611,8 @@ def cmd_backlog(client, args):
 
 
 def cmd_task(client, args):
-    content = " ".join(args.content)
+    # Same pre-store redaction as cmd_remember.
+    content = redact_secrets(" ".join(args.content))
 
     if args.id:
         if not args.task_status:

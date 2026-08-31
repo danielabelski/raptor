@@ -480,16 +480,42 @@ def build_inventory(
         msg = f"Target path does not exist: {target_path}"
         raise FileNotFoundError(msg)
 
-    if target.is_file() and detect_language(str(target)) is None:
+    if (target.is_file() and detect_language(str(target)) is None
+            and (target.suffix
+                 or detect_language_from_shebang(str(target)) is None)):
+        # Directory mode admits extensionless shebang scripts; the
+        # single-file gate must accept the same files (the shebang
+        # probe only runs when there is no extension, mirroring the
+        # walk).
         msg = f"Target file has no recognized source extension: {target_path}"
         raise ValueError(msg)
 
     # Collect files in single pass
-    file_list, pruned_dirs = _collect_source_files(target, extensions)
+    file_list, pruned_dirs = _collect_source_files(
+        target, extensions, exclude_patterns,
+    )
     if scope:
-        scope_prefixes = tuple(
-            str((target / s).resolve()) for s in scope
-        )
+        target_resolved = target.resolve()
+        resolved_prefixes: list[str] = []
+        for s in scope:
+            entry = Path(s)
+            cand = (entry if entry.is_absolute()
+                    else target_resolved / entry).resolve()
+            # A scope entry must stay under the target. pathlib joins
+            # DISCARD the left side for absolute entries and ``..``
+            # segments escape it — either silently empties the
+            # inventory (a run over zero functions reads as clean
+            # downstream) or scopes to unrelated trees, so both are
+            # hard errors. Absolute paths under the target are
+            # accepted (relativized by resolution).
+            if cand != target_resolved and target_resolved not in cand.parents:
+                msg = (
+                    f"scope entry escapes the target tree: {s!r} "
+                    f"(resolved to {cand}; target is {target_resolved})"
+                )
+                raise ValueError(msg)
+            resolved_prefixes.append(str(cand))
+        scope_prefixes = tuple(resolved_prefixes)
         before = len(file_list)
         # separator-aware: scope "src/a" must not match "src/abc".
         def _in_scope(f: Path):
@@ -919,6 +945,7 @@ def _count_source_files(dirpath: Path, extensions: set[str], cap: int = 1000) ->
 
 def _collect_source_files(
     target: Path, extensions: set[str],
+    exclude_patterns: list[str] | None = None,
 ) -> tuple[list[Path], list[dict[str, Any]]]:
     """Collect all source files in a single pass.
 
@@ -927,8 +954,12 @@ def _collect_source_files(
     can record them in ``excluded_files`` for operator visibility.
 
     Prunes the descent at walk time on directory-shaped patterns from
-    `DEFAULT_EXCLUDES` (`node_modules/`, `vendor/`, `__pycache__/`,
-    `.git/` etc.). Pre-fix `os.walk` descended into them all, then
+    ``exclude_patterns`` (the caller's list — defaults to
+    `DEFAULT_EXCLUDES`; a hardcoded module constant here meant a
+    caller-supplied replacement list could never RE-include a default
+    directory, while the artifact's ``excluded_patterns`` field claimed
+    it applied). E.g. `node_modules/`, `vendor/`, `__pycache__/`,
+    `.git/`. Pre-fix `os.walk` descended into them all, then
     `_process_single_file` later marked each enumerated file as
     excluded — but `node_modules` on a real project is hundreds of
     thousands of files. The walk-time stat() of every one of those
@@ -944,9 +975,11 @@ def _collect_source_files(
     # Patterns with `/` suffix and no glob meta-chars are pure directory
     # names that prune cleanly. Patterns with `*` (e.g.
     # `cmake-build-*/`) need fnmatch — handle separately.
+    if exclude_patterns is None:
+        exclude_patterns = DEFAULT_EXCLUDES
     exact_dir_names = set()
     glob_dir_patterns = []
-    for pat in DEFAULT_EXCLUDES:
+    for pat in exclude_patterns:
         if not pat.endswith('/'):
             continue
         bare = pat.rstrip('/')
@@ -1063,26 +1096,20 @@ def _is_github_workflow(rel_path: str, content: str) -> bool:
     """True when a YAML file is a CI workflow with reviewable units.
 
     Path-based primary signal (anything under ``.github/workflows/``),
-    plus a content check for workflow-shaped YAML found elsewhere
-    (both a trigger block and a ``jobs:`` block at top level — the
-    combination is unique to GitHub workflows among common YAML
-    dialects).
+    plus a content check for jobs-shaped CI YAML found elsewhere. The
+    content check must match the yaml extractor's own predicate — a
+    top-level ``jobs:`` block (see ``GitHubWorkflowExtractor``) —
+    exactly: requiring an additional trigger key here excluded files
+    the extractor would have yielded job items for (Azure Pipelines
+    style ``trigger:`` + ``jobs:``, or a YAML-roundtripped workflow
+    whose unquoted ``on:`` was rewritten to ``true:``).
     """
     norm = rel_path.replace(os.sep, "/")
     if ".github/workflows/" in norm or norm.startswith(".github/workflows/"):
         return True
-    has_jobs = False
-    has_on = False
-    for line in content.split("\n"):
-        if line.startswith("jobs:"):
-            has_jobs = True
-        elif line.startswith(("on:", '"on":', "'on':")):
-            # Quoted spellings included — authors quote the key to
-            # dodge YAML 1.1's on→true boolean coercion.
-            has_on = True
-        if has_jobs and has_on:
-            return True
-    return False
+    from .extractors import GitHubWorkflowExtractor
+    return any(GitHubWorkflowExtractor._JOBS_RE.match(line)
+               for line in content.split("\n"))
 
 
 _worker_ctx: dict[str, Any] = {}

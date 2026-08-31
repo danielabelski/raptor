@@ -123,6 +123,43 @@ class TestCompoundSpdxHeader:
         assert lic.classification == "oss"
         assert lic.spdx_id == "GPL-3.0 WITH Classpath-exception-2.0"
 
+    def test_with_exception_does_not_launder_anded_operand(self, tmp_path):
+        # The WITH exception is laundered only for its OWN pair: an
+        # AND-joined non-OSS operand elsewhere in the expression must
+        # still drop the whole compound to proprietary. Pre-fix, a
+        # \bWITH\b-anywhere check judged the whole expression by its
+        # FIRST operand, so this exact shape classified oss/high.
+        (tmp_path / "LICENSE").write_text(
+            "SPDX-License-Identifier: MIT WITH Classpath-exception-2.0 "
+            "AND LicenseRef-Proprietary-1.0\n",
+        )
+        lic = detect_target_license(tmp_path)
+        assert lic.classification == "proprietary"
+        assert lic.confidence == "high"
+
+    def test_with_exception_pair_beside_oss_operand_stays_oss(
+            self, tmp_path):
+        # Benign direction: an OSS-principal WITH pair joined to an
+        # OSS operand keeps the compound OSS.
+        (tmp_path / "LICENSE").write_text(
+            "SPDX-License-Identifier: MIT WITH Classpath-exception-2.0 "
+            "AND Apache-2.0\n",
+        )
+        lic = detect_target_license(tmp_path)
+        assert lic.classification == "oss"
+        assert lic.confidence == "high"
+
+    def test_with_exception_non_oss_principal_is_proprietary(
+            self, tmp_path):
+        # The pair itself is judged by its principal: a non-OSS
+        # principal cannot ride the exception to an OSS verdict.
+        (tmp_path / "LICENSE").write_text(
+            "SPDX-License-Identifier: LicenseRef-Proprietary-1.0 "
+            "WITH Classpath-exception-2.0\n",
+        )
+        lic = detect_target_license(tmp_path)
+        assert lic.classification == "proprietary"
+
     def test_compound_takes_precedence_over_single(self, tmp_path):
         # Defends against the regex-precedence bug: the single-id
         # SPDX regex would otherwise match just ``MIT`` and silently

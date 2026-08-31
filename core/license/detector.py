@@ -151,6 +151,14 @@ _SPDX_COMPOUND_HEADER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# WITH-exception evaluation needs the AND/OR-joined UNITS of a
+# compound expression (``X WITH Y`` stays one unit, judged by its
+# principal X) — split_compound_expression flattens the operators
+# away, so these splitters recover the structure. Case-insensitive to
+# match the IGNORECASE header regex above.
+_ANDOR_SPLIT_RE_CI = re.compile(r"\s+(?:AND|OR)\s+", re.IGNORECASE)
+_WITH_SPLIT_RE_CI = re.compile(r"\s+WITH\s+", re.IGNORECASE)
+
 
 @dataclass(frozen=True)
 class TargetLicense:
@@ -298,26 +306,37 @@ def _classify_text(text: str) -> tuple:
             # we could not decompose.
             return expr, "unknown", "low"
         # Conservative: all-OSS-operands means the compound is OSS;
-        # any non-OSS operand (or a license-WITH-exception form
-        # whose exception isn't a recognised license) drops to
-        # proprietary. Operators reading the result see the full
-        # expression in ``spdx_id``.
+        # any non-OSS operand drops to proprietary. Operators reading
+        # the result see the full expression in ``spdx_id``.
         non_oss = [
             op for op in operands
             if not any(oss.lower() == op.lower() for oss in _OSS_SPDX_IDS)
         ]
         if not non_oss:
             return expr, "oss", "high"
-        # Special-case ``X WITH Y``: the exception (Y) often isn't a
-        # standalone SPDX license id. If the principal license (X)
-        # is OSS and the operator separator is WITH, treat the whole
-        # as OSS. ``\bWITH\b`` keyword check on the original text
-        # disambiguates from AND/OR.
-        if (re.search(r"\bWITH\b", expr, re.IGNORECASE)
-                and operands
-                and any(oss.lower() == operands[0].lower()
-                        for oss in _OSS_SPDX_IDS)):
-            return expr, "oss", "high"
+        # ``X WITH Y`` handling: the exception (Y) often isn't a
+        # standalone SPDX license id, so it must not count as a
+        # non-OSS operand when its principal (X) is OSS. Evaluate
+        # per AND/OR-joined UNIT — each unit is either a bare id or
+        # an ``X WITH Y`` pair judged by its principal — so the
+        # exception is laundered ONLY for its own pair. A bare
+        # \bWITH\b-anywhere check judged the whole expression by
+        # operands[0], letting ``MIT WITH Y AND <proprietary>``
+        # classify oss/high — inverting the conservative
+        # all-operands rule above.
+        if re.search(r"\bWITH\b", expr, re.IGNORECASE):
+            units = [
+                u.strip()
+                for u in _ANDOR_SPLIT_RE_CI.split(expr)
+                if u.strip()
+            ]
+            def _unit_is_oss(unit: str) -> bool:
+                principal = _WITH_SPLIT_RE_CI.split(unit, maxsplit=1)[0]
+                principal = principal.strip()
+                return any(oss.lower() == principal.lower()
+                           for oss in _OSS_SPDX_IDS)
+            if units and all(_unit_is_oss(u) for u in units):
+                return expr, "oss", "high"
         return expr, "proprietary", "high"
     m = _SPDX_HEADER_RE.search(text)
     if m:

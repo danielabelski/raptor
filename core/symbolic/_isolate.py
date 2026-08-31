@@ -233,8 +233,19 @@ def _remove_private_tmp(path: str) -> None:
     try:
         for root, dirs, _files in os.walk(path):
             for name in dirs:
+                entry = os.path.join(root, name)
+                # os.walk(followlinks=False) still LISTS a symlink-to-
+                # directory in dirnames (it just doesn't descend), and
+                # os.chmod follows symlinks (Linux has no lchmod) — so
+                # chmoding it would apply 0700 to the symlink's TARGET,
+                # which a hostile child can point anywhere OUTSIDE its
+                # private tmp. Skip links: rmtree below removes the
+                # link itself without descending, and a link needs no
+                # permission restore anyway.
+                if os.path.islink(entry):
+                    continue
                 try:
-                    os.chmod(os.path.join(root, name), 0o700)
+                    os.chmod(entry, 0o700)
                 except OSError:
                     pass
     except OSError:

@@ -206,6 +206,49 @@ def test_private_dir_cleanup_defeats_permission_griefing(tmp_path: Path):
             (victim / "a").chmod(0o700)
 
 
+def test_private_dir_cleanup_never_chmods_through_symlink(tmp_path: Path):
+    """A hostile child can leave ``evil -> <outside dir>`` in its
+    private tmp. os.walk lists the symlink-to-directory in dirnames
+    even with followlinks=False, and os.chmod follows symlinks — so
+    the pre-fix permission-restore walk applied 0700 to the symlink's
+    TARGET, stripping group/other access from a directory outside the
+    sandbox grant. The walk must skip links; the outside dir keeps its
+    mode and survives, while the private tmp is still removed."""
+    from core.symbolic._isolate import _remove_private_tmp
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    outside.chmod(0o755)
+    private = tmp_path / "raptor-symex-private"
+    private.mkdir()
+    (private / "evil").symlink_to(outside)
+    _remove_private_tmp(str(private))
+    assert not private.exists()
+    assert outside.exists()
+    assert (outside.stat().st_mode & 0o777) == 0o755
+
+
+def test_private_dir_cleanup_still_restores_real_subdir_perms(
+        tmp_path: Path):
+    """Fix regression guard for the other direction: with a symlink
+    present alongside a mode-0 REAL subdirectory, the griefing defense
+    must still restore and remove the real one."""
+    from core.symbolic._isolate import _remove_private_tmp
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    private = tmp_path / "raptor-symex-private"
+    nested = private / "a" / "b"
+    nested.mkdir(parents=True)
+    (private / "evil").symlink_to(outside)
+    (private / "a").chmod(0o000)
+    try:
+        _remove_private_tmp(str(private))
+        assert not private.exists()
+        assert outside.exists()
+    finally:
+        if private.exists():  # restore perms so pytest tmp cleanup works
+            (private / "a").chmod(0o700)
+
+
 def _hang_forever() -> None:
     """Child payload for the budget-kill direction test."""
     import time as _time

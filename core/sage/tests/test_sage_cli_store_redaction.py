@@ -17,6 +17,7 @@ import contextlib
 import importlib.util
 import io
 import os
+import sys
 import unittest
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
@@ -25,11 +26,22 @@ from types import SimpleNamespace
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 _cli = None
+_SDK_MODULES = ("sage_sdk", "sage_sdk.models", "sage_sdk.client",
+                "sage_sdk.auth")
+_saved_sdk_modules: dict[str, object] = {}
 
 
 def setUpModule():
     global _cli
     os.environ.setdefault("_RAPTOR_TRUSTED", "1")
+    # sage_sdk is an optional dependency the CLI must tolerate missing
+    # when a client is injected (the cmd_remember/cmd_task guard).
+    # Poison it out of sys.modules so the sdk-absent path is exercised
+    # deterministically — on a box where the sdk happens to be
+    # installed, and on a runner where it never was.
+    for name in _SDK_MODULES:
+        _saved_sdk_modules[name] = sys.modules.pop(name, None)
+        sys.modules[name] = None  # import raises ImportError
     loader = SourceFileLoader(
         "raptor_sage_cli_store_redaction",
         str(REPO_ROOT / "libexec" / "raptor-sage"),
@@ -39,6 +51,15 @@ def setUpModule():
     )
     _cli = importlib.util.module_from_spec(spec)
     loader.exec_module(_cli)
+
+
+def tearDownModule():
+    for name in _SDK_MODULES:
+        saved = _saved_sdk_modules.pop(name, None)
+        if saved is None:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = saved
 
 
 class _RecordingClient:

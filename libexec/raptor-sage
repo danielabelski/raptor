@@ -482,20 +482,23 @@ def cmd_remember(client, args):
                   else 0.8)
     tags = [t.strip() for t in args.tags.split(",")] if args.tags else None
 
+    valid_types = ("fact", "observation", "inference", "task")
+    if memory_type not in valid_types:
+        print(f"Unknown type: {memory_type}. "
+              f"Valid: {', '.join(valid_types)}", file=sys.stderr)
+        return 1
+
+    # sage_sdk is an optional dependency: an injected client (tests,
+    # shims) accepts the plain type string, so its absence must not
+    # abort the command before the client is even consulted (same
+    # guard as cmd_task).
     try:
         from sage_sdk.models import MemoryType
-        type_map = {
-            "fact": MemoryType.fact,
-            "observation": MemoryType.observation,
-            "inference": MemoryType.inference,
-            "task": MemoryType.task,
-        }
-        mt = type_map.get(memory_type)
-        if mt is None:
-            print(f"Unknown type: {memory_type}. "
-                  f"Valid: {', '.join(type_map)}", file=sys.stderr)
-            return 1
+        mt = getattr(MemoryType, memory_type)
+    except ImportError:
+        mt = memory_type
 
+    try:
         embedding = client.embed(content)
         propose_kwargs: Dict[str, Any] = dict(
             content=content,

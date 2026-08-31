@@ -919,7 +919,15 @@ def infer_spec_with_llm_sync(
             prompt, system_prompt=system_prompt, task_type="audit",
             call_class="spec_inference",
         )
-        text = response.text if hasattr(response, "text") else str(response)
+        # The production client returns LLMResponse, whose payload is
+        # ``.content`` — ``str(response)`` is the dataclass repr,
+        # which never parses as a spec, so the paid leg silently
+        # produced nothing.  ``.text`` kept for other client shapes.
+        text = getattr(response, "content", None)
+        if not isinstance(text, str):
+            text = getattr(response, "text", None)
+        if not isinstance(text, str):
+            text = str(response)
     except Exception:  # noqa: BLE001 — inference is best-effort; fall back to mechanical spec
         logger.debug("LLM spec inference unavailable for %s:%s", file_path, function_name)
         return mechanical_spec

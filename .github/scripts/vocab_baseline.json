@@ -2035,9 +2035,10 @@
     "count": 11,
     "kind": "literal"
   },
-  "packages/exploit_feasibility/schema.py::CONTEXT_SCHEMA": {
-    "count": 11,
-    "kind": "literal"
+  "packages/exploit_feasibility/schema.py::_DICT_SECTIONS": {
+    "count": 13,
+    "kind": "literal",
+    "note": "artifact structure keys: the typed dict sections of the save_exploit_context file the validator walks - section names of an on-disk artifact shape, not a learned API/sink name vocabulary"
   },
   "packages/exploit_feasibility/smt_onegadget.py::_X86_64_REGS": {
     "count": 17,

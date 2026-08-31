@@ -432,12 +432,21 @@ def select_cross_family_checker(
 
     Returns ``None`` if no suitable candidate exists. ``"unknown"`` family
     candidates are skipped — they cannot be proven cross-family. The
+    same rule applies to the PRODUCER: an unrecognized producer id
+    (e.g. a rebadged or aggregator-aliased model) makes every
+    ``same_family`` comparison return False, which would hand back a
+    "cross-family" checker that may share the producer's lineage.
+    Unprovable is not cross-family, so an unknown producer returns
+    ``None`` — the caller skips the checker leg rather than trusting a
+    rebadged same-family model as an independent validator. The
     ordering of ``candidates`` is preserved so callers can pass a
     preference list (e.g. cheapest-first or fastest-first).
 
     Caller composes this with ``llm_response_schema.validate_response``:
     the chosen candidate becomes the model used inside the retry callback.
     """
+    if family_of(producer_model_id) == "unknown":
+        return None
     for candidate in candidates:
         if not same_family(producer_model_id, candidate) and family_of(candidate) != "unknown":
             return candidate

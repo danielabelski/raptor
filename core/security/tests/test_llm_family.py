@@ -169,14 +169,17 @@ def test_select_preserves_caller_ordering():
     assert pick == "openai/o3-mini"
 
 
-def test_select_works_when_producer_is_unknown_family():
-    """If the producer is unknown-family, any known-family candidate is
-    cross-family by our same_family() rule."""
+def test_select_refuses_unknown_family_producer():
+    """An unknown-family PRODUCER cannot prove any candidate is
+    cross-family — ``custom-model-xyz`` may be a rebadged Claude, and
+    handing back ``claude-opus-4-7`` as an "independent" checker would
+    void the cross-family invariant. Unprovable = no checker, symmetric
+    with the unknown-candidate skip."""
     pick = select_cross_family_checker(
         "custom-model-xyz",
         ["claude-opus-4-7"],
     )
-    assert pick == "claude-opus-4-7"
+    assert pick is None
 
 
 def test_select_skips_unknown_producer_against_unknown_candidate():

@@ -598,7 +598,7 @@ the JVM-installer caveat.
 | `XDG_CACHE_HOME` and other `XDG_*` | Allowlisted through; `fake_home` sandbox runs override `HOME` and the `XDG_*_HOME` set to a fresh directory. Sandbox calibration profiles live under `~/.cache/raptor/`. |
 | `OLLAMA_HOST` | See the LLM section above (re-read per access, remote hosts redacted in logs). |
 | `PYTEST_CURRENT_TEST` | Detection only: suppresses the probe warm and attributes live-API leaks to test contexts. Never set manually. |
-| `ASAN_OPTIONS`, `UBSAN_OPTIONS`, `AFL_INPUT_FILE` | Written by RAPTOR into fuzzing/crash-verification child envs (sanitizer contracts); operator values are not consumed. |
+| `ASAN_OPTIONS`, `UBSAN_OPTIONS` | Written by RAPTOR into fuzzing/crash-verification child envs (sanitizer contracts); operator values are not consumed. |
 | `AFL_PATH` | Read when probing for AFL++ binary-only tracers (`afl-qemu-trace`, `afl-frida-trace.so`); also set in the campaign child env (setdefault) to the resolved tracer's directory so `afl-fuzz -Q`/`-O` finds a tracer that is not adjacent to the afl-fuzz binary. |
 | `CONDA_DEFAULT_ENV`, `VIRTUAL_ENV` | Read only to phrase install hints for missing tools. |
 | `SEMGREP_ENABLE_VERSION_CHECK`, `SEMGREP_SEND_METRICS` | Semgrep's own phone-home switches. Force-set to off by RAPTOR in every sanitised child env so every semgrep invocation shape stays offline — the argv flags only cover subcommands that accept them; operator values do not reach those children. The test conftest only *defaults* them off, so an ambient value survives in the test session's own process. |

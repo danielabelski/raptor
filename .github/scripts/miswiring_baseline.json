@@ -124,6 +124,9 @@
     "artifacts:orphan_reader::requirements*.txt": {
       "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
     },
+    "artifacts:orphan_reader::showmap-edges.txt": {
+      "note": "written by the external afl-showmap tool, not by repo code (run_showmap builds the -o path and hands it to the sandboxed afl-showmap invocation); _parse_showmap_output reads it back as the banner-format-drift fallback, so the indexer only ever sees the read"
+    },
     "artifacts:orphan_reader::study-discards.json": {
       "note": "writer exists (core/concepts/study.py writes it via save_json; core/audit/orchestrator.py reads) \u2014 the artifact indexer does not resolve the substrate writer call through the path variable, so the read looks orphaned"
     },

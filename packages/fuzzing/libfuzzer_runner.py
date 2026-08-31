@@ -134,14 +134,43 @@ class LibFuzzerRunner:
 
     @staticmethod
     def _seed_working_corpus(source: Path, destination: Path) -> None:
-        """Copy caller-provided seeds into the sandbox-writable corpus dir."""
-        for item in source.rglob("*"):
-            if not item.is_file():
+        """Copy caller-provided seeds into the sandbox-writable corpus dir.
+
+        Symlinks are rejected at every level, same as the AFL corpus
+        stager: a hostile in-repo corpus can plant file symlinks
+        (``seed -> ~/.ssh/id_rsa`` would copy host secrets into the run
+        dir as fuzz inputs handed to the untrusted harness — and into
+        persisted run artifacts) or directory-symlink loops that wedge
+        the traversal. Only regular files reached through regular
+        directories are copied.
+        """
+        skipped = 0
+        pending: list[Path] = [source]
+        while pending:
+            current = pending.pop()
+            try:
+                entries = sorted(current.iterdir())
+            except OSError:
+                skipped += 1
                 continue
-            relative = item.relative_to(source)
-            target = destination / relative
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(item, target)
+            for item in entries:
+                if item.is_symlink():
+                    skipped += 1
+                    continue
+                if item.is_dir():
+                    pending.append(item)
+                    continue
+                if not item.is_file():
+                    skipped += 1
+                    continue
+                relative = item.relative_to(source)
+                target = destination / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(item, target)
+        if skipped:
+            logger.warning(
+                "corpus seeding: skipped %d non-regular entries "
+                "(symlinks / special files / unreadable dirs)", skipped)
 
     def run(self, telemetry=None) -> LibFuzzerResult:
         """Run the campaign and return the result.

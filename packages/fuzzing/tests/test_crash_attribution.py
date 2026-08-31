@@ -277,3 +277,63 @@ class TestSummaryShape:
                 crash_id=cid, seed_name="s", origin_id=origin, source_file="f",
             )
         assert summary.by_finding() == {"F-A": ["1", "3"], "F-B": ["2"]}
+
+
+class TestDuplicateCrashIds:
+    """Consumers key attribution lookups by crash_id — when two
+    attributable crashes arrive sharing one id, every attribution for
+    that id is dropped (a wrong finding-confirmation is worse than
+    none). Unique ids are unaffected."""
+
+    _SEED_ENTRY = TestAttributeCrashes._SEED_ENTRY
+
+    def _two_crashes_same_id(self, tmp_path: Path):
+        afl, files = _mk_afl_tree(
+            tmp_path,
+            [_ORIG_A],
+            [
+                "id:000000,sig:06,src:000000,op:havoc",
+                "id:000000,sig:11,src:000000,op:arith8",
+            ],
+        )
+        manifest = _mk_manifest(tmp_path, [self._SEED_ENTRY])
+        crashes = []
+        for f in files:
+            crash = _crash(f)
+            crash.crash_id = "000000"  # degenerate: no instance suffix
+            crashes.append(crash)
+        return crashes, manifest
+
+    def test_colliding_ids_drop_all_attributions(self, tmp_path):
+        # The second crash filename must differ, but AFL never writes
+        # two id:000000 crashes in ONE instance dir — this simulates a
+        # foreign merge without instance suffixes.
+        crashes, manifest = self._two_crashes_same_id(tmp_path)
+        summary = attribute_crashes(crashes, manifest)
+        assert summary.attributed == {}
+        assert summary.unattributed == 2
+
+    def test_three_way_collision_stays_dropped(self, tmp_path):
+        crashes, manifest = self._two_crashes_same_id(tmp_path)
+        third = crashes[0].input_file.parent / (
+            "id:000000,sig:04,src:000000,op:flip1")
+        third.write_bytes(b"c")
+        crash3 = _crash(third)
+        crash3.crash_id = "000000"
+        summary = attribute_crashes([*crashes, crash3], manifest)
+        assert summary.attributed == {}
+        assert summary.unattributed == 3
+
+    def test_unique_ids_both_attributed(self, tmp_path):
+        afl, files = _mk_afl_tree(
+            tmp_path,
+            [_ORIG_A],
+            [
+                "id:000000,sig:06,src:000000,op:havoc",
+                "id:000001,sig:11,src:000000,op:arith8",
+            ],
+        )
+        manifest = _mk_manifest(tmp_path, [self._SEED_ENTRY])
+        summary = attribute_crashes([_crash(f) for f in files], manifest)
+        assert sorted(summary.attributed) == ["000000", "000001"]
+        assert summary.unattributed == 0

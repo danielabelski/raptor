@@ -119,16 +119,28 @@ class CrashCollector:
     def _parse_crash_file(self, crash_file: Path) -> Crash:
         """Parse crash metadata from filename and content."""
         # AFL crash format: id:000000,sig:06,src:000000,op:havoc,rep:16
+        # Merged multi-instance dirs add a trailing ",instance:<name>"
+        # part to disambiguate identical AFL ids across instances.
         parts = crash_file.stem.split(",")
 
         crash_id = None
         signal = None
+        instance = None
 
         for part in parts:
             if part.startswith("id:"):
                 crash_id = part.split(":")[1]
             elif part.startswith("sig:"):
                 signal = part.split(":")[1]
+            elif part.startswith("instance:"):
+                instance = part.split(":", 1)[1]
+
+        # Carry the instance disambiguator into crash_id: AFL ids are
+        # only unique per instance, and consumers key dicts by crash_id
+        # (SMT-seed attribution, witness records) — two instances' id
+        # 000000 must not collapse into one key.
+        if crash_id and instance:
+            crash_id = f"{crash_id},instance:{instance}"
 
         size = crash_file.stat().st_size
         timestamp = crash_file.stat().st_mtime

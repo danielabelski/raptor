@@ -99,5 +99,52 @@ class TestLibFuzzerRunner(unittest.TestCase):
             )
 
 
+class TestSeedWorkingCorpusSymlinks(unittest.TestCase):
+    """Corpus seeding must never dereference symlinks: a hostile
+    in-repo corpus can plant ``seed -> <host secret>`` and the copied
+    bytes would be handed to the untrusted harness and persisted in
+    run artifacts. Mirrors the AFL corpus stager's contract."""
+
+    def test_file_symlink_rejected_regular_files_copied(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            secret = tmp / "secret"
+            secret.write_bytes(b"PRIVATE-KEY-MATERIAL")
+            source = tmp / "corpus"
+            (source / "nested").mkdir(parents=True)
+            (source / "seed-real").write_bytes(b"A")
+            (source / "nested" / "seed-deep").write_bytes(b"B")
+            (source / "seed-link").symlink_to(secret)
+            dest = tmp / "dest"
+            dest.mkdir()
+
+            LibFuzzerRunner._seed_working_corpus(source, dest)
+
+            self.assertEqual((dest / "seed-real").read_bytes(), b"A")
+            self.assertEqual(
+                (dest / "nested" / "seed-deep").read_bytes(), b"B")
+            self.assertFalse((dest / "seed-link").exists())
+            copied = {p.read_bytes() for p in dest.rglob("*") if p.is_file()}
+            self.assertNotIn(b"PRIVATE-KEY-MATERIAL", copied)
+
+    def test_directory_symlink_not_traversed(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            outside = tmp / "outside"
+            outside.mkdir()
+            (outside / "leak").write_bytes(b"OUTSIDE")
+            source = tmp / "corpus"
+            source.mkdir()
+            (source / "seed0").write_bytes(b"A")
+            (source / "dirlink").symlink_to(outside)
+            dest = tmp / "dest"
+            dest.mkdir()
+
+            LibFuzzerRunner._seed_working_corpus(source, dest)
+
+            self.assertEqual((dest / "seed0").read_bytes(), b"A")
+            self.assertFalse((dest / "dirlink").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

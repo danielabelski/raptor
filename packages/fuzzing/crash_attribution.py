@@ -187,6 +187,7 @@ def attribute_crashes(
         return summary
 
     queue_cache: dict[Path, dict[str, str]] = {}
+    collided_ids: set[str] = set()
     for crash in crashes:
         crash_file = Path(crash.input_file)
         located = _instance_for_crash(crash_file)
@@ -205,6 +206,24 @@ def attribute_crashes(
         entry = provenance.get(seed_name)
         if entry is None:
             summary.unattributed += 1
+            continue
+        if crash.crash_id in collided_ids:
+            summary.unattributed += 1
+            continue
+        if crash.crash_id in summary.attributed:
+            # Crashes sharing one crash_id cannot be told apart by
+            # consumers that key on it — a wrong finding-confirmation
+            # is worse than none, so drop EVERY attribution for the
+            # colliding id. (The collector suffixes merged
+            # multi-instance ids with ",instance:<name>", so this only
+            # fires on degenerate inputs.)
+            logger.warning(
+                "duplicate crash id %s in attribution input; "
+                "dropping all attributions for it", crash.crash_id,
+            )
+            del summary.attributed[crash.crash_id]
+            collided_ids.add(crash.crash_id)
+            summary.unattributed += 2
             continue
         summary.attributed[crash.crash_id] = CrashAttribution(
             crash_id=crash.crash_id,

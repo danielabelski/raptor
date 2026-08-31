@@ -1,14 +1,11 @@
 """Tests for packages/fuzzing/afl_runner.py."""
 
 import os
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 import pytest
-
-sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
 from packages.fuzzing.afl_runner import AFLRunner
 
@@ -249,6 +246,7 @@ class TestSandboxedCampaign:
         runner.sandbox_rootfs = None
         runner.binary_in_rootfs = None
         runner.cmplog_in_rootfs = None
+        runner._resolved_binary_mode = None
         return runner
 
     @staticmethod
@@ -757,3 +755,171 @@ class TestCmplogInRootfs:
                            output_dir=tmp_path / "out",
                            cmplog_in_rootfs="/src-cmplog/app")
         assert runner.cmplog_in_rootfs is None
+
+
+# ---------------------------------------------------------------------------
+# run_showmap() — batch-mode coverage
+# ---------------------------------------------------------------------------
+
+class TestShowmapCoverage:
+    """afl-showmap only supports ``@@`` substitution in ``-i`` batch
+    mode (single-run mode hard-aborts on it), reads no env var naming
+    an input file, and prints its coverage summary as a banner — the
+    runner must build a batch-mode command and parse what the tool
+    actually emits."""
+
+    _BANNER = ("[+] A coverage of 123 edges were achieved out of "
+               "65536 existing (0.19%) with 42 input files.")
+
+    def _runner(self, tmp_path: Path, input_mode: str = "file") -> AFLRunner:
+        # Bypass __init__: no AFL toolchain needed to exercise command
+        # construction and output parsing.
+        runner = AFLRunner.__new__(AFLRunner)
+        runner.output_dir = tmp_path / "out"
+        runner.output_dir.mkdir(parents=True, exist_ok=True)
+        runner.corpus_dir = tmp_path / "corpus"
+        runner.corpus_dir.mkdir(parents=True, exist_ok=True)
+        (runner.corpus_dir / "seed0").write_bytes(b"A")
+        runner.binary = tmp_path / "bin" / "app"
+        runner.binary.parent.mkdir(parents=True, exist_ok=True)
+        runner.binary.write_bytes(b"\x7fELF")
+        runner.afl_fuzz = "afl-fuzz"
+        runner.sandbox_rootfs = None
+        runner.binary_in_rootfs = None
+        runner.input_mode = input_mode
+        runner._resolved_binary_mode = None
+        return runner
+
+    def _capture_cmd(self, monkeypatch, stderr: str = "", rc: int = 0) -> dict:
+        import subprocess as sp
+
+        from packages.fuzzing import afl_runner as mod
+        seen: dict = {}
+
+        def fake_run(cmd, **kwargs):
+            seen["cmd"] = cmd
+            seen.update(kwargs)
+            return sp.CompletedProcess(cmd, rc, stdout="", stderr=stderr)
+
+        monkeypatch.setattr(mod, "_sandbox_run", fake_run)
+        return seen
+
+    def test_file_mode_uses_batch_input_never_bare_at_file(
+            self, tmp_path, monkeypatch):
+        runner = self._runner(tmp_path, input_mode="file")
+        seen = self._capture_cmd(monkeypatch, stderr=self._BANNER)
+        coverage = runner.run_showmap()
+        cmd = seen["cmd"]
+        # Batch mode: -i <inputs> -C -o <map file>; @@ only AFTER --.
+        assert "-i" in cmd and "-C" in cmd
+        assert cmd[cmd.index("-i") + 1] == str(runner.corpus_dir)
+        assert cmd[cmd.index("-o") + 1] != "/dev/null"
+        assert cmd[-1] == "@@"
+        assert cmd.index("--") < cmd.index("@@")
+        assert coverage["edges_covered"] == "123"
+        assert coverage["edges_total"] == "65536"
+        assert coverage["coverage_percent"] == "0.19"
+        assert coverage["inputs_processed"] == "42"
+
+    def test_stdin_mode_omits_at_file(self, tmp_path, monkeypatch):
+        runner = self._runner(tmp_path, input_mode="stdin")
+        seen = self._capture_cmd(monkeypatch, stderr=self._BANNER)
+        coverage = runner.run_showmap()
+        assert "@@" not in seen["cmd"]
+        assert "-i" in seen["cmd"]
+        assert coverage["edges_covered"] == "123"
+
+    def test_queue_preferred_over_seed_corpus(self, tmp_path, monkeypatch):
+        runner = self._runner(tmp_path)
+        queue = runner.output_dir / "main" / "queue"
+        queue.mkdir(parents=True)
+        (queue / "id:000000,orig:seed0").write_bytes(b"A")
+        seen = self._capture_cmd(monkeypatch, stderr=self._BANNER)
+        runner.run_showmap()
+        assert seen["cmd"][seen["cmd"].index("-i") + 1] == str(queue)
+
+    def test_binary_only_mode_mirrored(self, tmp_path, monkeypatch):
+        runner = self._runner(tmp_path)
+        runner._resolved_binary_mode = "qemu"
+        seen = self._capture_cmd(monkeypatch, stderr=self._BANNER)
+        runner.run_showmap()
+        assert "-Q" in seen["cmd"]
+        assert seen["cmd"].index("-Q") < seen["cmd"].index("--")
+
+    def test_no_inputs_returns_empty(self, tmp_path, monkeypatch):
+        runner = self._runner(tmp_path)
+        for entry in runner.corpus_dir.iterdir():
+            entry.unlink()
+        seen = self._capture_cmd(monkeypatch)
+        assert runner.run_showmap() == {}
+        assert "cmd" not in seen  # never executed without inputs
+
+    def test_failure_without_signal_returns_empty(self, tmp_path,
+                                                  monkeypatch):
+        runner = self._runner(tmp_path)
+        self._capture_cmd(monkeypatch, stderr="PROGRAM ABORT", rc=1)
+        assert runner.run_showmap() == {}
+
+    def test_edge_map_fallback_when_banner_format_drifts(self, tmp_path):
+        map_file = tmp_path / "map.txt"
+        map_file.write_text("001234:1\n004567:25\n\nnot-an-edge\n")
+        coverage = AFLRunner._parse_showmap_output(map_file, "no banner here")
+        assert coverage == {"edges_covered": "2"}
+
+    def test_banner_wins_over_edge_map(self, tmp_path):
+        map_file = tmp_path / "map.txt"
+        map_file.write_text("001234:1\n")
+        coverage = AFLRunner._parse_showmap_output(map_file, self._BANNER)
+        assert coverage["edges_covered"] == "123"
+
+    def test_missing_map_and_banner_is_empty(self, tmp_path):
+        coverage = AFLRunner._parse_showmap_output(
+            tmp_path / "absent.txt", "PROGRAM ABORT")
+        assert coverage == {}
+
+    def test_stale_edge_map_from_prior_run_not_counted(self, tmp_path,
+                                                       monkeypatch):
+        # A reused output_dir holds a previous invocation's edge map;
+        # a FAILED run must not fabricate coverage from it via the
+        # edge-map fallback.
+        runner = self._runner(tmp_path)
+        stale = runner.output_dir / "showmap-edges.txt"
+        stale.write_text("001234:1\n004567:2\n")
+        self._capture_cmd(monkeypatch, stderr="PROGRAM ABORT", rc=1)
+        assert runner.run_showmap() == {}
+        assert not stale.exists()
+
+    def test_fresh_edge_map_from_this_run_still_counted(self, tmp_path,
+                                                        monkeypatch):
+        import subprocess as sp
+
+        from packages.fuzzing import afl_runner as mod
+        runner = self._runner(tmp_path)
+        # Stale map from a prior run must not leak into the count; the
+        # map THIS run writes is what gets parsed (banner drifted away).
+        (runner.output_dir / "showmap-edges.txt").write_text("000001:1\n")
+
+        def fake_run(cmd, **kwargs):
+            map_path = Path(cmd[cmd.index("-o") + 1])
+            map_path.write_text("001234:1\n004567:2\n009999:3\n")
+            return sp.CompletedProcess(cmd, 0, stdout="",
+                                       stderr="unrecognised banner shape")
+
+        monkeypatch.setattr(mod, "_sandbox_run", fake_run)
+        assert runner.run_showmap() == {"edges_covered": "3"}
+
+
+class TestStatusPathsFound:
+    """The live status line must resolve the discovery count through
+    the shared cross-version key list — modern AFL++ renamed
+    ``paths_found`` to ``corpus_count``/``queued_paths``."""
+
+    def test_modern_key_resolved_not_na(self):
+        assert AFLRunner._status_paths_found({"corpus_count": "8"}) == 8
+        assert AFLRunner._status_paths_found({"queued_paths": "5"}) == 5
+
+    def test_legacy_key_still_resolved(self):
+        assert AFLRunner._status_paths_found({"paths_found": "3"}) == 3
+
+    def test_no_discovery_key_reads_na(self):
+        assert AFLRunner._status_paths_found({"execs_done": "1"}) == "N/A"

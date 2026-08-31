@@ -1,11 +1,8 @@
 """Tests for packages/fuzzing/crash_collector.py."""
 
-import sys
 from pathlib import Path
 
 import pytest
-
-sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
 from packages.fuzzing.crash_collector import Crash, CrashCollector
 
@@ -276,3 +273,31 @@ class TestHashFile:
         f.write_bytes(b"test")
         collector = CrashCollector(tmp_path)
         assert len(collector._hash_file(f)) == 16
+
+
+# ---------------------------------------------------------------------------
+# Merged multi-instance crash ids
+# ---------------------------------------------------------------------------
+
+class TestMergedInstanceCrashIds:
+    """AFL ids are only unique per instance; merged_crashes filenames
+    carry an ``,instance:<name>`` suffix and crash_id must keep it —
+    consumers key dicts by crash_id (SMT attribution, witnesses) and
+    two instances' ``id:000000`` must not collapse into one key."""
+
+    def test_instance_suffix_carried_into_crash_id(self, tmp_path):
+        _make_crash_file(
+            tmp_path, "id:000000,sig:11,src:000001,instance:main", b"a")
+        _make_crash_file(
+            tmp_path, "id:000000,sig:06,src:000002,instance:secondary1", b"b")
+        crashes = CrashCollector(tmp_path).collect_crashes()
+        ids = sorted(c.crash_id for c in crashes)
+        assert ids == [
+            "000000,instance:main",
+            "000000,instance:secondary1",
+        ]
+
+    def test_single_instance_id_unchanged(self, tmp_path):
+        _make_crash_file(tmp_path, "id:000042,sig:11,src:000001", b"a")
+        crashes = CrashCollector(tmp_path).collect_crashes()
+        assert crashes[0].crash_id == "000042"

@@ -206,7 +206,7 @@ def _missing_binary_diagnostics(target_dir: Path, build: subprocess.CompletedPro
         ("deps", target_dir / "release/deps"),
         ("default-deps", target_dir.parent / "src/target/release/deps"),
     ):
-        entries = []
+        entries: list[str] = []
         try:
             if not directory.resolve(strict=True).is_relative_to(target_dir.parent.resolve()):
                 details.append(f"{label}=outside cache")
